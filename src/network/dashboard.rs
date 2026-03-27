@@ -160,10 +160,6 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value red" id="v-rejected">&mdash;</div>
   </div>
   <div class="card">
-    <div class="card-label">Reject Rate</div>
-    <div class="card-value" id="v-reject-rate">&mdash;</div>
-  </div>
-  <div class="card">
     <div class="card-label">Connected Miners</div>
     <div class="card-value" id="v-miners">&mdash;</div>
   </div>
@@ -174,10 +170,6 @@ tr:last-child td { border-bottom: none; }
   <div class="card">
     <div class="card-label">Best Share</div>
     <div class="card-value" id="v-best-share">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">All-Time Best Hashrate</div>
-    <div class="card-value accent" id="v-best-hashrate">&mdash;</div>
   </div>
   <div class="card">
     <div class="card-label">Uptime</div>
@@ -195,6 +187,11 @@ tr:last-child td { border-bottom: none; }
   <table>
     <thead>
       <tr><th>Worker</th><th>Last Share</th><th>Hashrate (60s)</th><th>Hashrate (3h)</th></tr>
+    </thead>
+    <tbody id="workers-tbody">
+      <tr><td colspan="4" class="empty-row">Loading workers…</td></tr>
+    </tbody>
+  </table>
 
 <script>
 const MAX_POINTS = 60;
@@ -291,11 +288,9 @@ async function refresh() {
     const displayHashrate = d.total_hashrate_3h > 0 ? d.total_hashrate_3h : (d.total_hashrate_60s > 0 ? d.total_hashrate_60s : d.total_hashrate_hps);
     document.getElementById('v-hashrate').textContent      = fmtHr(displayHashrate, false);
     document.getElementById('v-accepted').textContent      = d.shares_accepted.toLocaleString();
-    document.getElementById('v-rejected').textContent      = d.shares_rejected.toLocaleString();
     document.getElementById('v-miners').textContent        = d.connected_miners;
     document.getElementById('v-height').textContent        = d.current_height.toLocaleString();
     document.getElementById('v-best-share').textContent    = fmtDiff(d.best_share_difficulty);
-    document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('v-uptime').textContent        = fmtUptime(d.uptime_secs);
 
     const total60s = d.total_hashrate_60s ?? 0;
@@ -305,9 +300,9 @@ async function refresh() {
 
     const total = d.shares_accepted + d.shares_rejected;
     const pct   = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';
-    const rateEl = document.getElementById('v-reject-rate');
-    rateEl.textContent  = pct + '%';
-    rateEl.className    = 'card-value ' + (parseFloat(pct) > 5 ? 'red' : 'green');
+    const rejectedEl = document.getElementById('v-rejected');
+    rejectedEl.textContent = `${d.shares_rejected.toLocaleString()} (${pct}%)`;
+    rejectedEl.className = 'card-value ' + (parseFloat(pct) > 5 ? 'red' : 'green');
 
     // Chart
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });

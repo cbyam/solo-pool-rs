@@ -594,7 +594,8 @@ async fn handle_submit(
             session.shares_accepted += 1;
             session.vardiff.record_share(session.difficulty);
             metrics::share_accepted(difficulty, worker);
-            session.stats.share_accepted(difficulty);
+            // Use the current vardiff level for best-share tracking, not just the min_diff gate.
+            session.stats.share_accepted(session.difficulty);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
                 &req.id,
@@ -614,6 +615,7 @@ async fn handle_submit(
                     session.stats.block_found();
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
+                    session.stats.share_accepted(session.difficulty);
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",
