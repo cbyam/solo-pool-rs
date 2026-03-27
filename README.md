@@ -1,5 +1,7 @@
 # solo-pool-rs
 
+[![GitHub](https://img.shields.io/github/stars/cbyam/solo-pool-rs)](https://github.com/cbyam/solo-pool-rs)
+
 A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum V1** with a clean migration path to **Stratum V2** (SRI).
 
 > **Loto mining**: 100% of the block reward goes to your configured address. No fees, no payout splits, no external dependencies beyond a Bitcoin Knots node.
@@ -56,7 +58,7 @@ rpcallowip=127.0.0.1
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/solo-pool-rs
+git clone https://github.com/cbyam/solo-pool-rs
 cd solo-pool-rs
 cp config.toml.example config.toml   # edit coinbase_address + bitcoin_rpc settings
 cargo build --release
