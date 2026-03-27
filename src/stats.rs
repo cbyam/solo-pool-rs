@@ -104,10 +104,6 @@ pub struct PoolStats {
 }
 
 impl PoolStats {
-    pub fn new() -> Arc<Self> {
-        Self::new_with_store(None)
-    }
-
     pub fn new_with_store(stats_db_path: Option<String>) -> Arc<Self> {
         let (store, best_share_difficulty, best_hashrate_hps) =
             match stats_db_path.filter(|p| !p.is_empty()) {
@@ -348,7 +344,6 @@ pub struct WorkerHashrate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_temp_db() -> String {
