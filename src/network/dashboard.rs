@@ -143,7 +143,10 @@ tr:last-child td { border-bottom: none; }
 <body>
 <header>
   <h1>&#9729; solo-pool-rs</h1>
-  <span id="last-updated">Loading&hellip;</span>
+  <div style="display:flex; gap: 1rem; align-items: center;">
+    <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
+    <span id="last-updated">Loading&hellip;</span>
+  </div>
 </header>
 
 <div class="cards">
