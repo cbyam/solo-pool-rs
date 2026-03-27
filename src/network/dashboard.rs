@@ -171,6 +171,14 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value" id="v-height">&mdash;</div>
   </div>
   <div class="card">
+    <div class="card-label">Best Hashrate (Since boot)</div>
+    <div class="card-value accent" id="v-session-best-hashrate">&mdash;</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Best Hashrate (All-time)</div>
+    <div class="card-value accent" id="v-best-hashrate">&mdash;</div>
+  </div>
+  <div class="card">
     <div class="card-label">Best Share</div>
     <div class="card-value" id="v-best-share">&mdash;</div>
   </div>
@@ -294,6 +302,8 @@ async function refresh() {
     document.getElementById('v-miners').textContent        = d.connected_miners;
     document.getElementById('v-height').textContent        = d.current_height.toLocaleString();
     document.getElementById('v-best-share').textContent    = fmtDiff(d.best_share_difficulty);
+    document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
+    document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('v-uptime').textContent        = fmtUptime(d.uptime_secs);
 
     const total60s = d.total_hashrate_60s ?? 0;

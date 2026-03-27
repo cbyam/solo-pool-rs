@@ -90,6 +90,7 @@ pub struct PoolStats {
     pub current_height: AtomicU64,
     pub best_share_difficulty: AtomicU64,
     pub best_hashrate_hps: AtomicU64,
+    pub session_best_hashrate_hps: AtomicU64,
     // Stored as f64::to_bits so we can use AtomicU64
     worker_hashrates_5m: DashMap<String, u64>,
     worker_hashrates_60s: DashMap<String, u64>,
@@ -131,6 +132,7 @@ impl PoolStats {
             current_height: AtomicU64::new(0),
             best_share_difficulty: AtomicU64::new(best_share_difficulty),
             best_hashrate_hps: AtomicU64::new(best_hashrate_hps.to_bits()),
+            session_best_hashrate_hps: AtomicU64::new(0),
             worker_hashrates_5m: DashMap::new(),
             worker_hashrates_60s: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
@@ -206,11 +208,19 @@ impl PoolStats {
             .map(|e| f64::from_bits(*e.value()))
             .sum();
 
-        let mut prev_best = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
+        // Track all-time best (persistent) and session-best (since boot)
+        let prev_best = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
         if total_hashrate_hps > prev_best {
             self.best_hashrate_hps
                 .store(total_hashrate_hps.to_bits(), Ordering::Relaxed);
             self.persist_best_hashrate_hps(total_hashrate_hps);
+        }
+
+        let prev_session_best =
+            f64::from_bits(self.session_best_hashrate_hps.load(Ordering::Relaxed));
+        if total_hashrate_hps > prev_session_best {
+            self.session_best_hashrate_hps
+                .store(total_hashrate_hps.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -271,6 +281,9 @@ impl PoolStats {
             total_hashrate_3h,
             worker_hashrates,
             uptime_secs: self.start_time.elapsed().as_secs(),
+            session_best_hashrate_hps: f64::from_bits(
+                self.session_best_hashrate_hps.load(Ordering::Relaxed),
+            ),
         }
     }
 }
@@ -293,6 +306,7 @@ pub struct StatsSnapshot {
     pub total_hashrate_3h: f64,
     pub worker_hashrates: Vec<WorkerHashrate>,
     pub uptime_secs: u64,
+    pub session_best_hashrate_hps: f64,
 }
 
 #[derive(Serialize)]
