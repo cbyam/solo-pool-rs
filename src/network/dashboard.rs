@@ -145,6 +145,15 @@ tr:last-child td { border-bottom: none; }
   <h1>&#9729; solo-pool-rs</h1>
   <div style="display:flex; gap: 1rem; align-items: center;">
     <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
+    <label style="font-size:0.72rem; color:var(--muted);">Window:
+      <select id="timeframe-select" style="margin-left:0.4rem; font-size:0.72rem; padding:0.2rem 0.4rem;">
+        <option value="36h" selected>36h</option>
+        <option value="1w">1w</option>
+        <option value="1m">1m</option>
+        <option value="6m">6m</option>
+        <option value="all">all</option>
+      </select>
+    </label>
     <span id="last-updated">Loading&hellip;</span>
   </div>
 </header>
@@ -217,17 +226,24 @@ tr:last-child td { border-bottom: none; }
   </table>
 
 <script>
-const MAX_POINTS = 60;
-const chartLabels = [];
-const chartData   = [];
+const TIME_WINDOWS = {
+  36h: 36 * 3600,
+  1w: 7 * 24 * 3600,
+  1m: 30 * 24 * 3600,
+  6m: 6 * 30 * 24 * 3600,
+  all: Number.MAX_SAFE_INTEGER,
+};
+const DEFAULT_WINDOW = '36h';
+let selectedWindow = DEFAULT_WINDOW;
+
+const chartData = [];
 
 const ctx   = document.getElementById('hashrate-chart').getContext('2d');
 const chart = new Chart(ctx, {
   type: 'line',
   data: {
-    labels: chartLabels,
     datasets: [{
-      label: 'Hashrate',
+      label: 'Hashrate (3h)',
       data: chartData,
       borderColor: '#38bdf8',
       backgroundColor: 'rgba(56,189,248,0.07)',
@@ -245,7 +261,13 @@ const chart = new Chart(ctx, {
     interaction: { mode: 'index', intersect: false },
     scales: {
       x: {
-        ticks: { color: '#64748b', maxTicksLimit: 8, font: { size: 10 } },
+        type: 'time',
+        time: {
+          unit: 'hour',
+          displayFormats: { hour: 'HH:mm' },
+          tooltipFormat: 'MMM dd HH:mm',
+        },
+        ticks: { color: '#64748b', maxTicksLimit: 10, font: { size: 10 } },
         grid:  { color: 'rgba(51,65,85,0.4)' },
         border: { color: '#334155' },
       },
@@ -302,6 +324,16 @@ function fmtTimestamp(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+function updateChartData() {
+  const now = new Date();
+  const minTime = selectedWindow === 'all'
+    ? -Infinity
+    : now.getTime() - TIME_WINDOWS[selectedWindow] * 1000;
+
+  chart.data.datasets[0].data = chartData.filter(dp => dp.x.getTime() >= minTime);
+  chart.update('none');
+}
+
 async function refresh() {
   try {
     const resp = await fetch('/stats');
@@ -310,6 +342,12 @@ async function refresh() {
 
     const displayHashrate = d.total_hashrate_3h > 0 ? d.total_hashrate_3h : (d.total_hashrate_60s > 0 ? d.total_hashrate_60s : d.total_hashrate_hps);
     document.getElementById('v-hashrate').textContent      = fmtHr(displayHashrate, false);
+
+    const now = new Date();
+    if (chartData.length === 0 || now.getSeconds() === 0) {
+      chartData.push({ x: now, y: d.total_hashrate_3h });
+    }
+    updateChartData();
     document.getElementById('v-accepted').textContent      = d.shares_accepted.toLocaleString();
     document.getElementById('v-miners').textContent        = d.connected_miners;
     document.getElementById('v-height').textContent        = d.current_height.toLocaleString();
@@ -334,10 +372,11 @@ async function refresh() {
 
     // Chart
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    chartLabels.push(now);
-    chartData.push(d.total_hashrate_hps);
-    if (chartLabels.length > MAX_POINTS) { chartLabels.shift(); chartData.shift(); }
-    chart.update('none');
+    // rolling chart data is updated above via updateChartData()
+    if (chartData.length === 0) {
+      chart.data.datasets[0].data = [{ x: new Date(), y: d.total_hashrate_3h }];
+      chart.update('none');
+    }
 
     // Workers table
     const tbody = document.getElementById('workers-tbody');
@@ -360,10 +399,19 @@ async function refresh() {
   }
 }
 
+function attachTimeframeSelector() {
+  const select = document.getElementById('timeframe-select');
+  select.addEventListener('change', () => {
+    selectedWindow = select.value;
+    updateChartData();
+  });
+}
+
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+attachTimeframeSelector();
 refresh();
 setInterval(refresh, 10000);
 </script>
