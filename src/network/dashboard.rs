@@ -171,6 +171,18 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value" id="v-height">&mdash;</div>
   </div>
   <div class="card">
+    <div class="card-label">Last Block Worker</div>
+    <div class="card-value" id="v-last-block-worker">&mdash;</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Last Block Hash</div>
+    <div class="card-value" id="v-last-block-hash">&mdash;</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Last Block Time</div>
+    <div class="card-value" id="v-last-block-time">&mdash;</div>
+  </div>
+  <div class="card">
     <div class="card-label">Best Hashrate (Since boot)</div>
     <div class="card-value accent" id="v-session-best-hashrate">&mdash;</div>
   </div>
@@ -301,6 +313,9 @@ async function refresh() {
     document.getElementById('v-accepted').textContent      = d.shares_accepted.toLocaleString();
     document.getElementById('v-miners').textContent        = d.connected_miners;
     document.getElementById('v-height').textContent        = d.current_height.toLocaleString();
+    document.getElementById('v-last-block-worker').textContent = d.last_block_worker || '—';
+    document.getElementById('v-last-block-hash').textContent   = d.last_block_hash || '—';
+    document.getElementById('v-last-block-time').textContent   = fmtTimestamp(d.last_block_ts);
     document.getElementById('v-best-share').textContent    = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);

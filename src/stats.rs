@@ -91,6 +91,9 @@ pub struct PoolStats {
     pub best_share_difficulty: AtomicU64,
     pub best_hashrate_hps: AtomicU64,
     pub session_best_hashrate_hps: AtomicU64,
+    pub last_block_worker: Mutex<Option<String>>,
+    pub last_block_hash: Mutex<Option<String>>,
+    pub last_block_ts: AtomicU64,
     // Stored as f64::to_bits so we can use AtomicU64
     worker_hashrates_5m: DashMap<String, u64>,
     worker_hashrates_60s: DashMap<String, u64>,
@@ -137,6 +140,9 @@ impl PoolStats {
             worker_hashrates_60s: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
             worker_last_submit_ts: DashMap::new(),
+            last_block_worker: Mutex::new(None),
+            last_block_hash: Mutex::new(None),
+            last_block_ts: AtomicU64::new(0),
             start_time: Instant::now(),
             store,
         })
@@ -186,8 +192,15 @@ impl PoolStats {
         self.shares_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn block_found(&self) {
+    pub fn block_found(&self, worker: &str, hash: &str) {
         self.blocks_found.fetch_add(1, Ordering::Relaxed);
+        *self.last_block_worker.lock() = Some(worker.to_string());
+        *self.last_block_hash.lock() = Some(hash.to_string());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_block_ts.store(now, Ordering::Relaxed);
     }
 
     pub fn update_height(&self, height: u64) {
@@ -284,6 +297,17 @@ impl PoolStats {
             session_best_hashrate_hps: f64::from_bits(
                 self.session_best_hashrate_hps.load(Ordering::Relaxed),
             ),
+            last_block_worker: self
+                .last_block_worker
+                .lock()
+                .clone()
+                .unwrap_or_else(|| "—".to_string()),
+            last_block_hash: self
+                .last_block_hash
+                .lock()
+                .clone()
+                .unwrap_or_else(|| "—".to_string()),
+            last_block_ts: self.last_block_ts.load(Ordering::Relaxed),
         }
     }
 }
@@ -307,6 +331,9 @@ pub struct StatsSnapshot {
     pub worker_hashrates: Vec<WorkerHashrate>,
     pub uptime_secs: u64,
     pub session_best_hashrate_hps: f64,
+    pub last_block_worker: String,
+    pub last_block_hash: String,
+    pub last_block_ts: u64,
 }
 
 #[derive(Serialize)]

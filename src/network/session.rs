@@ -612,7 +612,7 @@ async fn handle_submit(
                 Ok(_) => {
                     metrics::block_found();
                     metrics::block_submission_success();
-                    session.stats.block_found();
+                    session.stats.block_found(worker, &hex::encode(hash));
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(session.difficulty);
