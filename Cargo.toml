@@ -1,0 +1,72 @@
+[package]
+name = "solo-pool-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75.0"
+authors = []
+description = "Solo BTC mining pool with Stratum V1 (SV2-ready), targeting ASIC miners"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "solo-pool-rs"
+path = "src/main.rs"
+
+[dependencies]
+# ── Async runtime ──────────────────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+
+# ── Bitcoin primitives ─────────────────────────────────────────────────────────
+bitcoin = { version = "0.32", features = ["rand-std"] }
+hex = "0.4"
+sha2 = "0.10"
+
+# ── Bitcoin Core RPC (supports cookie auth) ────────────────────────────────────
+bitcoincore-rpc = "0.19"
+
+# ── ZMQ for block/tx notifications from Bitcoin Knots ─────────────────────────
+tmq = "0.4"          # async ZMQ bindings on top of tokio (uses libzmq)
+tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
+
+# ── Stratum V1 protocol library (SRI) ─────────────────────────────────────────
+# sv1-api = { git = "https://github.com/stratum-mining/stratum", package = "sv1-api" }
+# stratum-core = { git = "https://github.com/stratum-mining/stratum" }
+# NOTE: Uncomment above when integrating SRI crates.
+# We use a thin local sv1 layer now so the interface is stable for migration.
+
+# ── Serialization ──────────────────────────────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# ── Logging / tracing ─────────────────────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# ── Metrics (Prometheus-compatible) ───────────────────────────────────────────
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+
+# ── Dashboard HTTP server ──────────────────────────────────────────────────────
+axum = "0.7"
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "1"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+dashmap = "5"
+bytes = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
+async-trait = "0.1"
+rusqlite = "0.29"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

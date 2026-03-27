@@ -1,0 +1,118 @@
+# solo-pool-rs configuration
+# Copy this to config.toml and adjust for your environment.
+#
+#   cp config.toml.example config.toml
+#   # edit coinbase_address and bitcoin_rpc settings, then:
+#   cargo build --release
+#   ./target/release/solo-pool-rs config.toml
+
+[pool]
+# Address and port miners connect to
+listen_addr = "0.0.0.0:3335"
+
+# Your Bitcoin address — ALL block rewards go here (solo = 100%)
+coinbase_address = "bc1qyouraddresshere"
+
+# Tag embedded in the coinbase scriptSig (max ~20 bytes)
+coinbase_tag = "/solo-pool-rs/"
+
+# Initial share difficulty assigned to new miners.
+# Vardiff will adjust from here. Set near the expected steady-state value
+# for your hardware to avoid excessive rejects on first connect.
+#
+# Rough guide (targeting 1 share every 15 seconds):
+#   1 TH/s  →  ~4 096
+#   5 TH/s  →  ~20 000
+#   10 TH/s →  ~40 000
+#   100 TH/s → ~400 000
+initial_difficulty = 4096
+
+# Extranonce1 length in bytes (4 is standard; supports up to 255 miners)
+extranonce1_size = 4
+
+# Extranonce2 size advertised to miners (bytes)
+extranonce2_size = 4
+
+# Maximum number of simultaneous miner connections
+max_connections = 256
+
+# Idle connection timeout (seconds) — disconnect miners that stop responding
+idle_timeout_secs = 300
+
+[bitcoin_rpc]
+# Bitcoin Knots / Core RPC endpoint
+url = "http://127.0.0.1:8332"
+
+# Cookie-file authentication (leave user/password empty when using cookie)
+# Default location: ~/.bitcoin/.cookie
+# Override with an absolute path if using a custom datadir or rpccookiefile=
+cookie_path = "~/.bitcoin/.cookie"
+
+# Uncomment to use explicit credentials instead of cookie
+# user = "rpcuser"
+# password = "rpcpassword"
+
+# RPC timeout (seconds)
+timeout_secs = 10
+
+[zmq]
+# ZMQ endpoint for Bitcoin Knots block/hashblock notifications
+# Enable in bitcoin.conf:  zmqpubhashblock=tcp://127.0.0.1:28332
+hashblock_endpoint = "tcp://127.0.0.1:28332"
+
+# Also subscribe to raw transactions (for future fee estimation / mempool tracking)
+# zmqpubrawtx=tcp://127.0.0.1:28333
+rawtx_endpoint = "tcp://127.0.0.1:28333"
+
+# Fall back to polling if ZMQ is unavailable
+poll_fallback = true
+poll_interval_ms = 1000
+
+[vardiff]
+# Target number of seconds between share submissions per miner
+target_share_time_secs = 15
+
+# How often (seconds) to re-evaluate and adjust difficulty
+retarget_interval_secs = 60
+
+# Hard floor / ceiling on per-miner difficulty
+# Floor should be above 1 but low enough for vardiff to work on small miners.
+# Note: for cgminer/Avalon hardware the floor is sent as minimum-difficulty at
+# session start and cannot be changed without a reconnect.
+min_difficulty = 4096
+max_difficulty = 65536
+
+# Maximum difficulty adjustment ratio per retarget (e.g. 4 = up to 4× change)
+max_retarget_factor = 4.0
+
+[security]
+# Rate-limit: max new TCP connections per IP per minute
+max_connections_per_ip = 5
+
+# Max share submissions per second per connection before banning
+max_shares_per_sec = 500
+
+# Ban duration (seconds) after policy violation
+ban_duration_secs = 600
+
+# Maximum genuinely invalid shares (bad nonce/duplicate) before disconnect (0 = disabled)
+# Low-difficulty and stale shares are NOT counted — they're expected during transitions.
+max_invalid_shares = 5
+
+# JSON message size limit per line (bytes) — protects against oversized payloads
+max_message_bytes = 4096
+
+[metrics]
+# Prometheus metrics HTTP endpoint (empty string to disable)
+prometheus_addr = "0.0.0.0:9090"
+
+# Optional SQLite file for persisting all-time best stats across restarts.
+# Leave empty or omit to disable.
+stats_db_path = "pool_stats.sqlite"
+
+[logging]
+# Log level: trace | debug | info | warn | error
+level = "info"
+
+# Emit structured JSON logs (useful for log aggregators like Loki)
+json = false
