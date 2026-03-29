@@ -31,9 +31,12 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<()> {
     // ── Config ────────────────────────────────────────────────────────────────
-    let cfg_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_string());
+    let mut args = std::env::args().skip(1);
+    let cfg_path = match args.next() {
+        Some(a) if a == "--config" => args.next().unwrap_or_else(|| "config.toml".to_string()),
+        Some(a) => a,
+        None => "config.toml".to_string(),
+    };
 
     let config = Arc::new(
         config::load(&cfg_path).with_context(|| format!("Loading config from '{cfg_path}'"))?,
@@ -96,13 +99,57 @@ fn init_tracing(cfg: &config::LoggingConfig) {
 
     let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if cfg.json {
-        fmt()
-            .json()
-            .with_env_filter(filter)
-            .with_current_span(true)
-            .init();
+    if let Some(log_dir) = &cfg.log_dir {
+        use std::path::PathBuf;
+        use tracing_appender::rolling::{RollingFileAppender, Rotation};
+
+        // Expand ~ if present
+        let log_dir_path = if log_dir.starts_with("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                PathBuf::from(home).join(&log_dir[2..])
+            } else {
+                PathBuf::from(log_dir)
+            }
+        } else {
+            PathBuf::from(log_dir)
+        };
+
+        // Create directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&log_dir_path) {
+            eprintln!(
+                "Failed to create log directory {}: {}",
+                log_dir_path.display(),
+                e
+            );
+            std::process::exit(1);
+        }
+
+        let file_appender =
+            RollingFileAppender::new(Rotation::DAILY, log_dir_path, "solo-pool-rs.log");
+
+        if cfg.json {
+            fmt()
+                .json()
+                .with_env_filter(filter)
+                .with_current_span(true)
+                .with_writer(file_appender)
+                .init();
+        } else {
+            fmt()
+                .with_env_filter(filter)
+                .with_target(true)
+                .with_writer(file_appender)
+                .init();
+        }
     } else {
-        fmt().with_env_filter(filter).with_target(true).init();
+        if cfg.json {
+            fmt()
+                .json()
+                .with_env_filter(filter)
+                .with_current_span(true)
+                .init();
+        } else {
+            fmt().with_env_filter(filter).with_target(true).init();
+        }
     }
 }
