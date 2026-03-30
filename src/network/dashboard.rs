@@ -227,11 +227,11 @@ tr:last-child td { border-bottom: none; }
 
 <script>
 const TIME_WINDOWS = {
-  36h: 36 * 3600,
-  1w: 7 * 24 * 3600,
-  1m: 30 * 24 * 3600,
-  6m: 6 * 30 * 24 * 3600,
-  all: Number.MAX_SAFE_INTEGER,
+  '36h': 36 * 3600,
+  '1w': 7 * 24 * 3600,
+  '1m': 30 * 24 * 3600,
+  '6m': 6 * 30 * 24 * 3600,
+  'all': Number.MAX_SAFE_INTEGER,
 };
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
@@ -371,7 +371,7 @@ async function refresh() {
     rejectedEl.className = 'card-value ' + (parseFloat(pct) > 5 ? 'red' : 'green');
 
     // Chart
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     // rolling chart data is updated above via updateChartData()
     if (chartData.length === 0) {
       chart.data.datasets[0].data = [{ x: new Date(), y: d.total_hashrate_3h }];
@@ -393,7 +393,7 @@ async function refresh() {
         .join('');
     }
 
-    document.getElementById('last-updated').textContent = 'Updated ' + now;
+    document.getElementById('last-updated').textContent = 'Updated ' + nowLabel;
   } catch (e) {
     console.error('Dashboard refresh error:', e);
   }
