@@ -236,12 +236,15 @@ const TIME_WINDOWS = {
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
 
+const chartLabels = [];
 const chartData = [];
+const chartPoints = []; // {ts: number, value: number}
 
-const ctx   = document.getElementById('hashrate-chart').getContext('2d');
+const ctx = document.getElementById('hashrate-chart').getContext('2d');
 const chart = new Chart(ctx, {
   type: 'line',
   data: {
+    labels: chartLabels,
     datasets: [{
       label: 'Hashrate (3h)',
       data: chartData,
@@ -261,12 +264,7 @@ const chart = new Chart(ctx, {
     interaction: { mode: 'index', intersect: false },
     scales: {
       x: {
-        type: 'time',
-        time: {
-          unit: 'hour',
-          displayFormats: { hour: 'HH:mm' },
-          tooltipFormat: 'MMM dd HH:mm',
-        },
+        type: 'category',
         ticks: { color: '#64748b', maxTicksLimit: 10, font: { size: 10 } },
         grid:  { color: 'rgba(51,65,85,0.4)' },
         border: { color: '#334155' },
@@ -325,12 +323,21 @@ function fmtTimestamp(ts) {
 }
 
 function updateChartData() {
-  const now = new Date();
-  const minTime = selectedWindow === 'all'
-    ? -Infinity
-    : now.getTime() - TIME_WINDOWS[selectedWindow] * 1000;
+  const now = Date.now();
+  const windowSeconds = selectedWindow === 'all' ? Infinity : TIME_WINDOWS[selectedWindow];
+  const minTimestamp = windowSeconds === Infinity ? -Infinity : now - windowSeconds * 1000;
 
-  chart.data.datasets[0].data = chartData.filter(dp => dp.x.getTime() >= minTime);
+  while (chartPoints.length > 0 && chartPoints[0].ts < minTimestamp) {
+    chartPoints.shift();
+  }
+
+  chartLabels.length = 0;
+  chartData.length = 0;
+  chartPoints.forEach((pt) => {
+    chartLabels.push(new Date(pt.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    chartData.push(pt.value);
+  });
+
   chart.update('none');
 }
 
@@ -344,9 +351,7 @@ async function refresh() {
     document.getElementById('v-hashrate').textContent      = fmtHr(displayHashrate, false);
 
     const now = new Date();
-    if (chartData.length === 0 || now.getSeconds() === 0) {
-      chartData.push({ x: now, y: d.total_hashrate_3h });
-    }
+    chartPoints.push({ ts: now.getTime(), value: d.total_hashrate_3h });
     updateChartData();
     document.getElementById('v-accepted').textContent      = d.shares_accepted.toLocaleString();
     document.getElementById('v-miners').textContent        = d.connected_miners;
@@ -372,11 +377,6 @@ async function refresh() {
 
     // Chart
     const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    // rolling chart data is updated above via updateChartData()
-    if (chartData.length === 0) {
-      chart.data.datasets[0].data = [{ x: new Date(), y: d.total_hashrate_3h }];
-      chart.update('none');
-    }
 
     // Workers table
     const tbody = document.getElementById('workers-tbody');
