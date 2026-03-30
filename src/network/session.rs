@@ -203,8 +203,7 @@ pub async fn run(
                             let old_diff = session.difficulty;
                             session.difficulty = new_diff;
                             if let Some(worker) = &session.worker {
-                                metrics::vardiff_retarget(worker, old_diff, new_diff);
-                            }
+                                metrics::vardiff_retarget(worker, old_diff, new_diff);                                session.stats.update_worker_vardiff(worker, new_diff);                            }
                             let msg = ResponseBuilder::set_difficulty(new_diff);
                             debug!(
                                 peer = %session.peer,
@@ -275,6 +274,7 @@ pub async fn run(
     session.stats.miner_disconnected();
     let uptime = session.connect_time.elapsed().as_secs() as f64;
     if let Some(worker) = &session.worker {
+        session.stats.mark_worker_offline(worker);
         metrics::connection_duration(worker, uptime);
     }
     info!(
@@ -455,6 +455,9 @@ async fn handle_authorize(
 
     session.authorized = true;
     session.worker = Some(params.worker.clone());
+    session
+        .stats
+        .mark_worker_online(&params.worker, session.difficulty);
 
     info!(
         peer = %session.peer,
@@ -596,6 +599,7 @@ async fn handle_submit(
             metrics::share_accepted(difficulty, worker);
             // Use the current vardiff level for best-share tracking, not just the min_diff gate.
             session.stats.share_accepted(session.difficulty);
+            session.stats.worker_share_accepted(worker);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
                 &req.id,
@@ -616,6 +620,7 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(session.difficulty);
+                    session.stats.worker_share_accepted(worker);
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",
@@ -659,6 +664,10 @@ async fn handle_submit(
             );
             metrics::share_rejected(reason, worker);
             session.stats.share_rejected();
+            session.stats.worker_share_rejected(worker);
+            if let PoolError::StaleJob(_) = e {
+                session.stats.worker_share_stale(worker);
+            }
             session.shares_rejected += 1;
 
             // Low-difficulty shares are expected during vardiff transitions — the miner

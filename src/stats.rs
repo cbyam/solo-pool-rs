@@ -91,6 +91,7 @@ pub struct PoolStats {
     pub best_share_difficulty: AtomicU64,
     pub best_hashrate_hps: AtomicU64,
     pub session_best_hashrate_hps: AtomicU64,
+    pub network_hashrate_hps: AtomicU64,
     pub last_block_worker: Mutex<Option<String>>,
     pub last_block_hash: Mutex<Option<String>>,
     pub last_block_ts: AtomicU64,
@@ -99,8 +100,25 @@ pub struct PoolStats {
     worker_hashrates_60s: DashMap<String, u64>,
     worker_hashrates_3h: DashMap<String, u64>,
     worker_last_submit_ts: DashMap<String, u64>,
+    worker_states: DashMap<String, WorkerState>,
     start_time: Instant,
     store: Option<StatsStore>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct WorkerState {
+    pub worker: String,
+    pub online: bool,
+    pub current_vardiff: u64,
+    pub shares_accepted: u64,
+    pub shares_rejected: u64,
+    pub shares_stale: u64,
+    pub active_sessions: u64,
+    pub connected_ts: u64,
+    pub last_submit_ts: u64,
+    pub hashrate_60s_hps: f64,
+    pub hashrate_3h_hps: f64,
+    pub hashrate_5m_hps: f64,
 }
 
 impl PoolStats {
@@ -132,10 +150,12 @@ impl PoolStats {
             best_share_difficulty: AtomicU64::new(best_share_difficulty),
             best_hashrate_hps: AtomicU64::new(best_hashrate_hps.to_bits()),
             session_best_hashrate_hps: AtomicU64::new(0),
+            network_hashrate_hps: AtomicU64::new(0),
             worker_hashrates_5m: DashMap::new(),
             worker_hashrates_60s: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
             worker_last_submit_ts: DashMap::new(),
+            worker_states: DashMap::new(),
             last_block_worker: Mutex::new(None),
             last_block_hash: Mutex::new(None),
             last_block_ts: AtomicU64::new(0),
@@ -233,12 +253,89 @@ impl PoolStats {
         }
     }
 
-    pub fn mark_worker_submit(&self, worker: &str) {
-        let now = std::time::SystemTime::now()
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .unwrap_or(0)
+    }
+
+    pub fn mark_worker_submit(&self, worker: &str) {
+        let now = Self::now_secs();
         self.worker_last_submit_ts.insert(worker.to_string(), now);
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            state.last_submit_ts = now;
+        }
+    }
+
+    pub fn mark_worker_online(&self, worker: &str, current_vardiff: u64) {
+        let now = Self::now_secs();
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            state.online = true;
+            state.current_vardiff = current_vardiff;
+            state.connected_ts = now;
+            state.active_sessions = state.active_sessions.saturating_add(1);
+        } else {
+            self.worker_states.insert(
+                worker.to_string(),
+                WorkerState {
+                    worker: worker.to_string(),
+                    online: true,
+                    current_vardiff,
+                    shares_accepted: 0,
+                    shares_rejected: 0,
+                    shares_stale: 0,
+                    active_sessions: 1,
+                    connected_ts: now,
+                    last_submit_ts: 0,
+                    hashrate_60s_hps: 0.0,
+                    hashrate_3h_hps: 0.0,
+                    hashrate_5m_hps: 0.0,
+                },
+            );
+        }
+    }
+
+    pub fn mark_worker_offline(&self, worker: &str) {
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            if state.active_sessions > 1 {
+                state.active_sessions -= 1;
+            } else {
+                state.active_sessions = 0;
+                state.online = false;
+            }
+        }
+    }
+
+    pub fn update_worker_vardiff(&self, worker: &str, vardiff: u64) {
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            state.current_vardiff = vardiff;
+        } else {
+            self.mark_worker_online(worker, vardiff);
+        }
+    }
+
+    pub fn worker_share_accepted(&self, worker: &str) {
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            state.shares_accepted += 1;
+        }
+    }
+
+    pub fn worker_share_rejected(&self, worker: &str) {
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            state.shares_rejected += 1;
+        }
+    }
+
+    pub fn worker_share_stale(&self, worker: &str) {
+        if let Some(mut state) = self.worker_states.get_mut(worker) {
+            state.shares_stale += 1;
+        }
+    }
+
+    pub fn set_network_hashrate(&self, hps: f64) {
+        self.network_hashrate_hps
+            .store(hps.to_bits(), Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> StatsSnapshot {
@@ -277,6 +374,37 @@ impl PoolStats {
 
         let best_hashrate_hps = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
 
+        let worker_states: Vec<WorkerState> = self
+            .worker_states
+            .iter()
+            .map(|e| {
+                let mut state = e.value().clone();
+                let worker = e.key();
+                state.worker = worker.clone();
+                state.hashrate_60s_hps = self
+                    .worker_hashrates_60s
+                    .get(worker)
+                    .map(|h| f64::from_bits(*h.value()))
+                    .unwrap_or(0.0);
+                state.hashrate_3h_hps = self
+                    .worker_hashrates_3h
+                    .get(worker)
+                    .map(|h| f64::from_bits(*h.value()))
+                    .unwrap_or(0.0);
+                state.hashrate_5m_hps = self
+                    .worker_hashrates_5m
+                    .get(worker)
+                    .map(|h| f64::from_bits(*h.value()))
+                    .unwrap_or(0.0);
+                state.last_submit_ts = self
+                    .worker_last_submit_ts
+                    .get(worker)
+                    .map(|v| *v.value())
+                    .unwrap_or(0);
+                state
+            })
+            .collect();
+
         StatsSnapshot {
             shares_accepted: self.shares_accepted.load(Ordering::Relaxed),
             shares_rejected: self.shares_rejected.load(Ordering::Relaxed),
@@ -289,6 +417,8 @@ impl PoolStats {
             total_hashrate_60s,
             total_hashrate_3h,
             worker_hashrates,
+            worker_states,
+            network_hashrate_hps: f64::from_bits(self.network_hashrate_hps.load(Ordering::Relaxed)),
             uptime_secs: self.start_time.elapsed().as_secs(),
             session_best_hashrate_hps: f64::from_bits(
                 self.session_best_hashrate_hps.load(Ordering::Relaxed),
@@ -324,7 +454,9 @@ pub struct StatsSnapshot {
     pub total_hashrate_hps: f64,
     pub total_hashrate_60s: f64,
     pub total_hashrate_3h: f64,
+    pub network_hashrate_hps: f64,
     pub worker_hashrates: Vec<WorkerHashrate>,
+    pub worker_states: Vec<WorkerState>,
     pub uptime_secs: u64,
     pub session_best_hashrate_hps: f64,
     pub last_block_worker: String,

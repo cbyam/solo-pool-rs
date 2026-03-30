@@ -41,6 +41,7 @@ toml = "0.8"
 # ── Logging / tracing ─────────────────────────────────────────────────────────
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-appender = "0.2"
 
 # ── Metrics (Prometheus-compatible) ───────────────────────────────────────────
 metrics = "0.23"

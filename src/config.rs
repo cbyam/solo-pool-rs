@@ -144,6 +144,10 @@ pub struct MetricsConfig {
 pub struct LoggingConfig {
     pub level: String,
     pub json: bool,
+    /// Optional directory to write logs to (e.g., "/var/log/solo-pool-rs/").
+    /// If set, logs will be written to a file in this directory.
+    /// Supports `~` expansion.
+    pub log_dir: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

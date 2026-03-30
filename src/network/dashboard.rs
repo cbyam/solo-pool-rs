@@ -120,8 +120,10 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding: 1.5rem; min-height: 100vh; }
-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 0.5rem; }
-h1 { font-size: 1.4rem; font-weight: 700; color: var(--accent); letter-spacing: -0.02em; }
+header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; margin-bottom: 1.5rem; gap: 0.5rem; }
+h1 { grid-column: 1; font-size: 1.4rem; font-weight: 700; color: var(--accent); letter-spacing: -0.02em; text-align: left; margin: 0; }
+#network-hashrate-display { grid-column: 2; text-align: center; font-weight: 600; color: var(--accent); }
+.header-controls { grid-column: 3; justify-self: end; display: flex; gap: 1rem; align-items: center; }
 #last-updated { font-size: 0.72rem; color: var(--muted); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.9rem; margin-bottom: 1.25rem; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.2rem; }
@@ -137,28 +139,22 @@ table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
 th { text-align: left; color: var(--muted); font-weight: 500; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
 td { padding: 0.45rem 0.5rem; border-bottom: 1px solid rgba(51,65,85,0.4); }
 tr:last-child td { border-bottom: none; }
+.online { color: var(--green); }
+.offline { color: var(--red); }
 .empty-row { color: var(--muted); text-align: center; padding: 1.2rem; font-size: 0.875rem; }
 </style>
 </head>
 <body>
 <header>
   <h1>&#9729; solo-pool-rs</h1>
-  <div style="display:flex; gap: 1rem; align-items: center;">
+  <div id="network-hashrate-display">Network Hashrate: <span id="v-network-hashrate">—</span></div>
+  <div class="header-controls">
     <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
-    <label style="font-size:0.72rem; color:var(--muted);">Window:
-      <select id="timeframe-select" style="margin-left:0.4rem; font-size:0.72rem; padding:0.2rem 0.4rem;">
-        <option value="36h" selected>36h</option>
-        <option value="1w">1w</option>
-        <option value="1m">1m</option>
-        <option value="6m">6m</option>
-        <option value="all">all</option>
-      </select>
-    </label>
     <span id="last-updated">Loading&hellip;</span>
   </div>
 </header>
 
-<div class="cards">
+<div class="cards" style="display:none;">
   <div class="card">
     <div class="card-label">Total Hashrate</div>
     <div class="card-value accent" id="v-hashrate">&mdash;</div>
@@ -177,7 +173,7 @@ tr:last-child td { border-bottom: none; }
   </div>
   <div class="card">
     <div class="card-label">Block Height</div>
-    <div class="card-value" id="v-height">&mdash;</div>
+    <div class="card-value" id="v-height-hidden" title="legacy hidden block">&mdash;</div>
   </div>
   <div class="card">
     <div class="card-label">Last Block Worker</div>
@@ -208,9 +204,51 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value" id="v-uptime">&mdash;</div>
   </div>
 </div>
-
+<!-- new panels layout -->
+<div class="cards">
+  <div class="card">
+    <div class="card-label">Total Reported Hashrate</div>
+    <div class="card-value accent" id="v-reported-current" title="Current pool hash from worker rate">—</div>
+    <div class="card-value" id="v-reported-3h" style="font-size:0.8rem; font-weight:500;" title="3-hour moving average">3h avg: —</div>
+    <div class="card-value" id="v-reported-24h" style="font-size:0.8rem; font-weight:500;" title="24-hour moving average">24h avg: —</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Total Effective Hashrate</div>
+    <div class="card-value accent" id="v-effective-hashrate" title="Accepted share rate hash estimate">—</div>
+    <div class="card-value" style="font-size:0.8rem; font-weight:500;">Based on accepted shares</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Active Workers</div>
+    <div class="card-value" id="v-workers-online" style="font-size:0.8rem; font-weight:500;">Online: —</div>
+    <div class="card-value" id="v-workers-offline" style="font-size:0.8rem; font-weight:500;">Offline: —</div>
+    <div class="card-value" id="v-workers-degraded" style="font-size:0.8rem; font-weight:500;">Degraded: —</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Reject Rate</div>
+    <div class="card-value red" id="v-reject-rate">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Stale Rate</div>
+    <div class="card-value" id="v-stale-rate">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Block Height</div>
+    <div class="card-value" id="v-height" title="Height of current best chain tip">—</div>
+  </div>
+</div>
 <div class="panel">
-  <div class="panel-title">Hashrate over time</div>
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+    <div class="panel-title">Hashrate over time</div>
+    <label style="font-size:0.72rem; color:var(--muted);">Window:
+      <select id="timeframe-select" style="margin-left:0.4rem; font-size:0.72rem; padding:0.2rem 0.4rem;">
+        <option value="36h" selected>36h</option>
+        <option value="1w">1w</option>
+        <option value="1m">1m</option>
+        <option value="6m">6m</option>
+        <option value="all">all</option>
+      </select>
+    </label>
+  </div>
   <canvas id="hashrate-chart"></canvas>
 </div>
 
@@ -218,10 +256,21 @@ tr:last-child td { border-bottom: none; }
   <div class="panel-title">Workers</div>
   <table>
     <thead>
-      <tr><th>Worker</th><th>Last Share</th><th>Hashrate (60s)</th><th>Hashrate (3h)</th></tr>
+      <tr>
+        <th>Worker</th>
+        <th>Status</th>
+        <th>Vardiff</th>
+        <th>Hashrate (60s)</th>
+        <th>Hashrate (3h)</th>
+        <th>Accepted</th>
+        <th>Rejected</th>
+        <th>Stale</th>
+        <th>Last Share</th>
+        <th>Uptime</th>
+      </tr>
     </thead>
     <tbody id="workers-tbody">
-      <tr><td colspan="4" class="empty-row">Loading workers…</td></tr>
+      <tr><td colspan="10" class="empty-row">Loading workers…</td></tr>
     </tbody>
   </table>
 
@@ -251,7 +300,7 @@ const chart = new Chart(ctx, {
       borderColor: '#38bdf8',
       backgroundColor: 'rgba(56,189,248,0.07)',
       borderWidth: 2,
-      pointRadius: 2,
+      pointRadius: 0,
       pointHoverRadius: 4,
       fill: true,
       tension: 0.35,
@@ -291,6 +340,9 @@ const chart = new Chart(ctx, {
 });
 
 function fmtHr(hps, short) {
+  if (hps >= 1e21) return (hps / 1e21).toFixed(2) + (short ? ' Z'  : ' ZH/s');
+  if (hps >= 1e18) return (hps / 1e18).toFixed(2) + (short ? ' E'  : ' EH/s');
+  if (hps >= 1e15) return (hps / 1e15).toFixed(2) + (short ? ' P'  : ' PH/s');
   if (hps >= 1e12) return (hps / 1e12).toFixed(2) + (short ? ' T'  : ' TH/s');
   if (hps >= 1e9)  return (hps / 1e9 ).toFixed(2) + (short ? ' G'  : ' GH/s');
   if (hps >= 1e6)  return (hps / 1e6 ).toFixed(2) + (short ? ' M'  : ' MH/s');
@@ -347,48 +399,76 @@ async function refresh() {
     if (!resp.ok) return;
     const d = await resp.json();
 
-    const displayHashrate = d.total_hashrate_3h > 0 ? d.total_hashrate_3h : (d.total_hashrate_60s > 0 ? d.total_hashrate_60s : d.total_hashrate_hps);
-    document.getElementById('v-hashrate').textContent      = fmtHr(displayHashrate, false);
+    const reportedCurrent = d.total_hashrate_hps || 0;
+    const reported3h = d.total_hashrate_3h || 0;
+    const reported24h = d.total_hashrate_3h || 0; // TODO: add true 24h if available
+    const effectiveHashrate = d.total_hashrate_60s || d.total_hashrate_hps || 0;
+
+    document.getElementById('v-reported-current').textContent = fmtHr(reportedCurrent, false);
+    document.getElementById('v-reported-3h').textContent = '3h avg: ' + fmtHr(reported3h, false);
+    document.getElementById('v-reported-24h').textContent = '24h avg: ' + fmtHr(reported24h, false);
+    document.getElementById('v-effective-hashrate').textContent = fmtHr(effectiveHashrate, false);
 
     const now = new Date();
     chartPoints.push({ ts: now.getTime(), value: d.total_hashrate_3h });
     updateChartData();
-    document.getElementById('v-accepted').textContent      = d.shares_accepted.toLocaleString();
-    document.getElementById('v-miners').textContent        = d.connected_miners;
-    document.getElementById('v-height').textContent        = d.current_height.toLocaleString();
+
+    document.getElementById('v-miners').textContent = d.connected_miners;
+    document.getElementById('v-height').textContent = d.current_height.toLocaleString();
     document.getElementById('v-last-block-worker').textContent = d.last_block_worker || '—';
-    document.getElementById('v-last-block-hash').textContent   = d.last_block_hash || '—';
-    document.getElementById('v-last-block-time').textContent   = fmtTimestamp(d.last_block_ts);
-    document.getElementById('v-best-share').textContent    = fmtDiff(d.best_share_difficulty);
+    document.getElementById('v-last-block-hash').textContent = d.last_block_hash || '—';
+    document.getElementById('v-last-block-time').textContent = fmtTimestamp(d.last_block_ts);
+    document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
-    document.getElementById('v-uptime').textContent        = fmtUptime(d.uptime_secs);
-
-    const total60s = d.total_hashrate_60s ?? 0;
-    const total3h = d.total_hashrate_3h ?? 0;
-    // Optional: update additional totals in console
-    // console.debug('Total 60s', fmtHr(total60s,false), 'Total 3h', fmtHr(total3h,false));
+    document.getElementById('v-uptime').textContent = fmtUptime(d.uptime_secs);
 
     const total = d.shares_accepted + d.shares_rejected;
-    const pct   = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';
-    const rejectedEl = document.getElementById('v-rejected');
-    rejectedEl.textContent = `${d.shares_rejected.toLocaleString()} (${pct}%)`;
-    rejectedEl.className = 'card-value ' + (parseFloat(pct) > 5 ? 'red' : 'green');
+    const rejectPct = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';
+    const staleTotal = Array.isArray(d.worker_states) ? d.worker_states.reduce((sum, w) => sum + (w.shares_stale || 0), 0) : 0;
+    const stalePct = total > 0 ? (staleTotal / total * 100).toFixed(1) : '0.0';
+
+    document.getElementById('v-reject-rate').textContent = `${d.shares_rejected.toLocaleString()} / ${rejectPct}%`;
+    document.getElementById('v-stale-rate').textContent = `${staleTotal.toLocaleString()} / ${stalePct}%`;
+
+    const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
+    const onlineCount = workers.filter(w => w.online).length;
+    const offlineCount = workers.filter(w => !w.online).length;
+    const degradedCount = workers.filter(w => w.online && w.last_submit_ts > 0 && Math.floor(Date.now() / 1000) - w.last_submit_ts > 120).length;
+
+    document.getElementById('v-workers-online').textContent = 'Online: ' + onlineCount;
+    document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;
+    document.getElementById('v-workers-degraded').textContent = 'Degraded: ' + degradedCount;
 
     // Chart
     const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+    document.getElementById('v-network-hashrate').textContent = fmtHr(d.network_hashrate_hps, false);
+
     // Workers table
     const tbody = document.getElementById('workers-tbody');
-    const workers = Array.isArray(d.worker_hashrates) ? d.worker_hashrates : [];
     if (workers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty-row">No connected workers</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" class="empty-row">No connected workers</td></tr>';
     } else {
       tbody.innerHTML = workers
-        .sort((a, b) => b.hashrate_3h_hps - a.hashrate_3h_hps)
+        .sort((a, b) => b.hashrate_5m_hps - a.hashrate_5m_hps)
         .map(w => {
           const workerName = w.worker.includes('.') ? w.worker.split('.')[1] : w.worker;
-          return `<tr><td>${escHtml(workerName)}</td><td>${fmtTimestamp(w.last_submit_ts)}</td><td>${fmtHr(w.hashrate_60s_hps, false)}</td><td>${fmtHr(w.hashrate_3h_hps, false)}</td></tr>`;
+          const nowSec = Math.floor(Date.now() / 1000);
+          const lastShareAgo = w.last_submit_ts > 0 ? fmtUptime(nowSec - w.last_submit_ts) : '—';
+          const uptime = w.connected_ts > 0 ? fmtUptime(nowSec - w.connected_ts) : '—';
+          return `<tr>
+            <td>${escHtml(workerName)}</td>
+            <td class="${w.online ? 'online' : 'offline'}">${w.online ? 'Online' : 'Offline'}</td>
+            <td>${fmtDiff(w.current_vardiff)}</td>
+            <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
+            <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
+            <td>${w.shares_accepted.toLocaleString()}</td>
+            <td>${w.shares_rejected.toLocaleString()}</td>
+            <td>${w.shares_stale.toLocaleString()}</td>
+            <td>${lastShareAgo}</td>
+            <td>${uptime}</td>
+          </tr>`;
         })
         .join('');
     }

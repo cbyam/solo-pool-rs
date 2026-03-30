@@ -69,6 +69,22 @@ async fn main() -> Result<()> {
     let rpc =
         Arc::new(RpcClient::new(&config.bitcoin_rpc).context("Connecting to Bitcoin Knots RPC")?);
 
+    // ── Network hash rate poll ───────────────────────────────────────────────
+    {
+        let stats = stats.clone();
+        let rpc = rpc.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(30);
+            loop {
+                match rpc.network_hashrate(None, None) {
+                    Ok(network_hps) => stats.set_network_hashrate(network_hps),
+                    Err(e) => tracing::warn!("Failed to poll network hash rate: {e}"),
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     // ── ZMQ / poll ────────────────────────────────────────────────────────────
     let new_block_rx = zmq::start(&config.zmq, rpc.clone()).await;
 
@@ -147,9 +163,14 @@ fn init_tracing(cfg: &config::LoggingConfig) {
                 .json()
                 .with_env_filter(filter)
                 .with_current_span(true)
+                .with_ansi(false)
                 .init();
         } else {
-            fmt().with_env_filter(filter).with_target(true).init();
+            fmt()
+                .with_env_filter(filter)
+                .with_target(true)
+                .with_ansi(false)
+                .init();
         }
     }
 }

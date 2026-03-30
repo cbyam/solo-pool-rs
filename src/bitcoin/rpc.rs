@@ -123,6 +123,16 @@ impl RpcClient {
             .map_err(PoolError::Rpc)?
             .to_string())
     }
+
+    pub fn network_hashrate(
+        &self,
+        blocks: Option<u64>,
+        height: Option<u64>,
+    ) -> Result<f64, PoolError> {
+        self.inner
+            .get_network_hash_ps(blocks, height)
+            .map_err(PoolError::Rpc)
+    }
 }
 
 fn parse_gbt_transaction(tx: &Value) -> Result<GbtTransaction, PoolError> {

@@ -116,3 +116,8 @@ level = "info"
 
 # Emit structured JSON logs (useful for log aggregators like Loki)
 json = false
+
+# Optional: Directory to write log files to (e.g., for systemd service).
+# If set, logs will be written to a rotating file in this directory.
+# Supports ~ expansion. Leave empty or omit to log to stdout/stderr.
+log_dir = ""
