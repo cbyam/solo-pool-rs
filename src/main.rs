@@ -120,9 +120,9 @@ fn init_tracing(cfg: &config::LoggingConfig) {
         use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
         // Expand ~ if present
-        let log_dir_path = if log_dir.starts_with("~/") {
+        let log_dir_path = if let Some(stripped) = log_dir.strip_prefix("~/") {
             if let Some(home) = std::env::var_os("HOME") {
-                PathBuf::from(home).join(&log_dir[2..])
+                PathBuf::from(home).join(stripped)
             } else {
                 PathBuf::from(log_dir)
             }
@@ -157,20 +157,18 @@ fn init_tracing(cfg: &config::LoggingConfig) {
                 .with_writer(file_appender)
                 .init();
         }
+    } else if cfg.json {
+        fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_current_span(true)
+            .with_ansi(false)
+            .init();
     } else {
-        if cfg.json {
-            fmt()
-                .json()
-                .with_env_filter(filter)
-                .with_current_span(true)
-                .with_ansi(false)
-                .init();
-        } else {
-            fmt()
-                .with_env_filter(filter)
-                .with_target(true)
-                .with_ansi(false)
-                .init();
-        }
+        fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_ansi(false)
+            .init();
     }
 }

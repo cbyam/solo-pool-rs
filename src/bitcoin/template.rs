@@ -389,7 +389,9 @@ pub fn bits_to_difficulty(bits_hex: &str) -> Result<f64, PoolError> {
     let exponent = ((bits >> 24) & 0xff) as i32;
     let mantissa = (bits & 0x007f_ffff) as u64;
     if mantissa == 0 {
-        return Err(PoolError::Other(anyhow::anyhow!("Invalid bits mantissa = 0")));
+        return Err(PoolError::Other(anyhow::anyhow!(
+            "Invalid bits mantissa = 0"
+        )));
     }
 
     // difficulty = diff1_target / current_target

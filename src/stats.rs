@@ -52,7 +52,9 @@ impl StatsStore {
         })
     }
 
-    fn load_values(&self) -> Result<(u64, f64, std::collections::HashMap<String, u64>), rusqlite::Error> {
+    fn load_values(
+        &self,
+    ) -> Result<(u64, f64, std::collections::HashMap<String, u64>), rusqlite::Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT best_share_difficulty, best_hashrate_hps FROM pool_stats WHERE id = 1",
@@ -67,7 +69,8 @@ impl StatsStore {
         };
 
         let mut worker_best_shares = std::collections::HashMap::new();
-        let mut stmt = conn.prepare("SELECT worker, best_share_difficulty FROM worker_best_shares")?;
+        let mut stmt =
+            conn.prepare("SELECT worker, best_share_difficulty FROM worker_best_shares")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let worker = row.get::<_, String>(0)?;
@@ -161,9 +164,12 @@ impl PoolStats {
             match stats_db_path.filter(|p| !p.is_empty()) {
                 Some(path) => match StatsStore::open(&path) {
                     Ok(store) => match store.load_values() {
-                        Ok((best_difficulty, best_hps, worker_best_shares_map)) => {
-                            (Some(store), best_difficulty, best_hps, worker_best_shares_map)
-                        }
+                        Ok((best_difficulty, best_hps, worker_best_shares_map)) => (
+                            Some(store),
+                            best_difficulty,
+                            best_hps,
+                            worker_best_shares_map,
+                        ),
                         Err(e) => {
                             warn!("Failed to load stats from DB {}: {e}", path);
                             (None, 0, 0.0, std::collections::HashMap::new())
@@ -526,7 +532,9 @@ impl PoolStats {
             connected_miners: self.connected_miners.load(Ordering::Relaxed),
             current_height: self.current_height.load(Ordering::Relaxed),
             best_share_difficulty: self.best_share_difficulty.load(Ordering::Relaxed),
-            session_best_share_difficulty: self.session_best_share_difficulty.load(Ordering::Relaxed),
+            session_best_share_difficulty: self
+                .session_best_share_difficulty
+                .load(Ordering::Relaxed),
             best_hashrate_hps,
             total_hashrate_hps,
             total_hashrate_60s,
@@ -573,7 +581,8 @@ pub struct StatsSnapshot {
     pub total_hashrate_3h: f64,
     pub network_hashrate_hps: f64,
     pub network_difficulty: f64,
-    pub worker_hashrates: Vec<WorkerHashrate>,    pub worker_states: Vec<WorkerState>,
+    pub worker_hashrates: Vec<WorkerHashrate>,
+    pub worker_states: Vec<WorkerState>,
     pub uptime_secs: u64,
     pub session_best_hashrate_hps: f64,
     pub last_block_worker: String,
