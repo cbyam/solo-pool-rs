@@ -147,7 +147,7 @@ tr:last-child td { border-bottom: none; }
 <body>
 <header>
   <h1>&#9729; solo-pool-rs</h1>
-  <div id="network-hashrate-display">Network Hashrate: <span id="v-network-hashrate">—</span></div>
+  <div id="network-hashrate-display">Network Hashrate: <span id="v-network-hashrate">—</span> / Diff: <span id="v-network-difficulty-header">—</span></div>
   <div class="header-controls">
     <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
     <span id="last-updated">Loading&hellip;</span>
@@ -196,8 +196,20 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value accent" id="v-best-hashrate">&mdash;</div>
   </div>
   <div class="card">
-    <div class="card-label">Best Share</div>
-    <div class="card-value" id="v-best-share">&mdash;</div>
+    <div class="card-label">Best Share (All-time)</div>
+    <div class="card-value" id="v-best-share">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Best Share (Session)</div>
+    <div class="card-value" id="v-session-best-share">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Network Difficulty</div>
+    <div class="card-value" id="v-network-difficulty">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Best ≥ Network</div>
+    <div class="card-value accent" id="v-best-over-network">—</div>
   </div>
   <div class="card">
     <div class="card-label">Uptime</div>
@@ -264,7 +276,7 @@ tr:last-child td { border-bottom: none; }
         <th>Hashrate (3h)</th>
         <th>Accepted</th>
         <th>Rejected</th>
-        <th>Stale</th>
+        <th>Best Share</th>
         <th>Last Share</th>
         <th>Uptime</th>
       </tr>
@@ -401,12 +413,11 @@ async function refresh() {
 
     const reportedCurrent = d.total_hashrate_hps || 0;
     const reported3h = d.total_hashrate_3h || 0;
-    const reported24h = d.total_hashrate_3h || 0; // TODO: add true 24h if available
     const effectiveHashrate = d.total_hashrate_60s || d.total_hashrate_hps || 0;
 
     document.getElementById('v-reported-current').textContent = fmtHr(reportedCurrent, false);
     document.getElementById('v-reported-3h').textContent = '3h avg: ' + fmtHr(reported3h, false);
-    document.getElementById('v-reported-24h').textContent = '24h avg: ' + fmtHr(reported24h, false);
+    // v-reported-24h left at its default '—' until the API exposes a true 24h average
     document.getElementById('v-effective-hashrate').textContent = fmtHr(effectiveHashrate, false);
 
     const now = new Date();
@@ -419,6 +430,10 @@ async function refresh() {
     document.getElementById('v-last-block-hash').textContent = d.last_block_hash || '—';
     document.getElementById('v-last-block-time').textContent = fmtTimestamp(d.last_block_ts);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
+    document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
+    document.getElementById('v-network-difficulty').textContent = d.network_difficulty.toFixed(4);
+    document.getElementById('v-network-difficulty-header').textContent = d.network_difficulty.toFixed(4);
+    document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('v-uptime').textContent = fmtUptime(d.uptime_secs);
@@ -465,7 +480,7 @@ async function refresh() {
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
             <td>${w.shares_accepted.toLocaleString()}</td>
             <td>${w.shares_rejected.toLocaleString()}</td>
-            <td>${w.shares_stale.toLocaleString()}</td>
+            <td>${fmtDiff(w.best_share_difficulty)}</td>
             <td>${lastShareAgo}</td>
             <td>${uptime}</td>
           </tr>`;

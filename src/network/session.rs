@@ -12,7 +12,7 @@
 ///   - Submit latency tracking
 ///   - Security guards (rate limiting, invalid share counting, message size)
 use crate::{
-    bitcoin::template::StratumJob,
+    bitcoin::template::{bits_to_difficulty, StratumJob},
     config::{Config, VardiffConfig},
     error::PoolError,
     metrics,
@@ -257,6 +257,10 @@ pub async fn run(
 
                             metrics::update_job_height(job.height);
                             session.stats.update_height(job.height);
+
+                            if let Ok(net_diff) = bits_to_difficulty(&job.bits) {
+                                session.stats.set_network_difficulty(net_diff);
+                            }
                         } else {
                             session.current_job = Some(job);
                         }
@@ -581,7 +585,7 @@ async fn handle_submit(
         accept_difficulty,
         &mut session.share_set,
     ) {
-        Ok(ShareResult::Valid { difficulty, hash }) => {
+        Ok(ShareResult::Valid { assigned_difficulty, hash }) => {
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
@@ -590,16 +594,15 @@ async fn handle_submit(
                 worker = worker,
                 job = %params.job_id,
                 hash = %hex::encode(hash),
-                diff = difficulty,
+                diff = assigned_difficulty,
                 latency_ms = latency_ms,
                 "Share accepted"
             );
             session.shares_accepted += 1;
             session.vardiff.record_share(session.difficulty);
-            metrics::share_accepted(difficulty, worker);
-            // Use the current vardiff level for best-share tracking, not just the min_diff gate.
-            session.stats.share_accepted(session.difficulty);
-            session.stats.worker_share_accepted(worker);
+            metrics::share_accepted(assigned_difficulty, worker);
+            session.stats.share_accepted(assigned_difficulty);
+            session.stats.worker_share_accepted(worker, assigned_difficulty);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
                 &req.id,
@@ -607,7 +610,7 @@ async fn handle_submit(
             )])
         }
 
-        Ok(ShareResult::Block { block_hex, hash }) => {
+        Ok(ShareResult::Block { assigned_difficulty, block_hex, hash }) => {
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
@@ -619,8 +622,8 @@ async fn handle_submit(
                     session.stats.block_found(worker, &hex::encode(hash));
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
-                    session.stats.share_accepted(session.difficulty);
-                    session.stats.worker_share_accepted(worker);
+                    session.stats.share_accepted(assigned_difficulty);
+                    session.stats.worker_share_accepted(worker, assigned_difficulty);
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",

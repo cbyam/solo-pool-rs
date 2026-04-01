@@ -6,7 +6,7 @@
 ///   - Track share submission timestamps in a sliding window
 ///   - At each retarget interval, compute actual share rate vs target
 ///   - Scale difficulty proportionally, clamped by min/max and max_factor
-///   - Emit a `set_difficulty` message when difficulty changes
+///   - Return the new difficulty so the caller can send `set_difficulty`
 use crate::config::VardiffConfig;
 use std::{
     collections::VecDeque,
@@ -15,7 +15,8 @@ use std::{
 
 pub struct Vardiff {
     cfg: VardiffConfig,
-    /// Ring buffer of (arrival_time, share_difficulty) for hashrate estimation
+    /// Ring buffer of (arrival_time, assigned_difficulty) for hashrate estimation.
+    /// Each entry stores the session's assigned difficulty at the time the share was accepted.
     share_times: VecDeque<(Instant, u64)>,
     last_retarget: Instant,
     /// Current difficulty assigned to this session
@@ -36,14 +37,14 @@ impl Vardiff {
     }
 
     /// Record a valid share submission.
-    /// `share_difficulty` is the session's current difficulty setting
-    /// (used for hashrate estimation based on the effective mining target).
-    pub fn record_share(&mut self, share_difficulty: u64) {
+    /// `assigned_difficulty` is the difficulty this session had assigned when the share arrived.
+    /// This is used to estimate hashrate: H/s ≈ Σ(assigned_diff) × 2³² / elapsed.
+    pub fn record_share(&mut self, assigned_difficulty: u64) {
         self.shares_since_retarget += 1;
-        self.share_times
-            .push_back((Instant::now(), share_difficulty));
+        let now = Instant::now();
+        self.share_times.push_back((now, assigned_difficulty));
         // Evict old entries (keep only last 5 minutes)
-        let cutoff = Instant::now() - Duration::from_secs(300);
+        let cutoff = now - Duration::from_secs(300);
         while self.share_times.front().is_some_and(|&(t, _)| t < cutoff) {
             self.share_times.pop_front();
         }
@@ -64,7 +65,8 @@ impl Vardiff {
         self.last_retarget = Instant::now();
 
         if shares == 0 {
-            // No shares at all — cut difficulty in half (miner may have disconnected briefly)
+            // No shares in this window — halve difficulty so a slow/paused miner
+            // gets an easier target on reconnect, flooring at min_difficulty.
             let new_diff = (self.current / 2).max(self.cfg.min_difficulty);
             if new_diff != self.current {
                 self.current = new_diff;
@@ -103,13 +105,15 @@ impl Vardiff {
         }
     }
 
-    /// Estimated hashrate in H/s based on recent shares.
-    /// Uses the actual difficulty of each accepted share, not session_difficulty,
-    /// so hardware that ignores set_difficulty is measured correctly.
+    /// Estimated hashrate in H/s based on shares in the last 5 minutes.
+    /// Uses the session's assigned difficulty at the time each share was accepted.
+    /// This is accurate when miners follow the assigned target (normal case for a solo pool).
     pub fn estimated_hashrate(&self) -> f64 {
         self.estimated_hashrate_in_window(std::time::Duration::from_secs(300))
     }
 
+    /// Estimated hashrate in H/s over an arbitrary lookback `window`.
+    /// Returns 0.0 if fewer than two shares are present (not enough data to measure a rate).
     pub fn estimated_hashrate_in_window(&self, window: std::time::Duration) -> f64 {
         if self.share_times.len() < 2 {
             return 0.0;
@@ -140,6 +144,7 @@ impl Vardiff {
             return 0.0;
         }
 
+        // Standard Bitcoin hashrate formula: difficulty × 2³² hashes per share
         (sum_diff as f64 * 4_294_967_296.0) / elapsed
     }
 }

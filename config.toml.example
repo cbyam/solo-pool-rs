@@ -8,7 +8,7 @@
 
 [pool]
 # Address and port miners connect to
-listen_addr = "0.0.0.0:3335"
+listen_addr = "0.0.0.0:3333"
 
 # Your Bitcoin address — ALL block rewards go here (solo = 100%)
 coinbase_address = "bc1qyouraddresshere"

@@ -95,7 +95,7 @@ Configure your ASIC firmware (Braiins OS, stock firmware, etc.):
 
 | Field | Value |
 |---|---|
-| Pool URL | `stratum+tcp://<your-server-ip>:3335` |
+| Pool URL | `stratum+tcp://<your-server-ip>:3333` |
 | Worker | anything (e.g. `rig1.worker1`) |
 | Password | anything (ignored) |
 
@@ -105,15 +105,17 @@ Most modern ASICs and firmware (Braiins OS, LuxOS, etc.) will auto-negotiate `mi
 
 ---
 
-## Metrics
+## Dashboard & Metrics
 
-If `prometheus_addr` is set (default `0.0.0.0:9090`), visit:
+If `prometheus_addr` is set (default `0.0.0.0:9090`), an HTTP server starts with three routes:
 
-```
-http://<server>:9090/metrics
-```
+| Route | Description |
+|---|---|
+| `GET /` | HTML dashboard — hashrate chart, share counts, connected miners (auto-refreshes every 10 s) |
+| `GET /stats` | JSON snapshot of current pool state |
+| `GET /metrics` | Prometheus text exposition |
 
-Key metrics:
+Key Prometheus metrics:
 
 | Metric | Description |
 |---|---|
@@ -148,6 +150,8 @@ mining/engine.rs         — current job store, job history, broadcast channel
 bitcoin/template.rs      — GBT → StratumJob (coinbase, merkle branch, job ID)
 bitcoin/rpc.rs           — Bitcoin Knots RPC (cookie auth, getblocktemplate, submitblock)
 bitcoin/zmq.rs           — ZMQ hashblock listener + RPC poll fallback
+
+network/dashboard.rs     — HTTP :9090 — dashboard (GET /), stats JSON (GET /stats), Prometheus (GET /metrics)
 ```
 
 ---

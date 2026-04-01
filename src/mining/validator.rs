@@ -13,7 +13,7 @@ use crate::{
     mining::engine::JobEntry,
 };
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BIP320 version-rolling mask
@@ -29,9 +29,11 @@ pub const VERSION_ROLLING_MASK: u32 = 0x1FFF_E000;
 
 /// Per-session duplicate-share tracker.
 /// Stores (job_id, extranonce2_hex, ntime, nonce) tuples.
-/// Bounded to prevent memory exhaustion — evicts after MAX_SIZE entries.
+/// Bounded to prevent memory exhaustion — evicts the oldest entry when full.
 pub struct ShareSet {
     seen: HashSet<ShareKey>,
+    /// Insertion-order queue for FIFO eviction.
+    order: VecDeque<ShareKey>,
     max_size: usize,
 }
 
@@ -48,6 +50,7 @@ impl ShareSet {
     pub fn new() -> Self {
         Self {
             seen: HashSet::new(),
+            order: VecDeque::new(),
             max_size: 4096,
         }
     }
@@ -72,10 +75,12 @@ impl ShareSet {
             return true; // duplicate
         }
         if self.seen.len() >= self.max_size {
-            // Evict oldest (simple: clear half — HashSet has no order guarantee,
-            // so we just clear all and restart; rare event at high difficulty)
-            self.seen.clear();
+            // Evict the oldest entry rather than clearing the whole set.
+            if let Some(oldest) = self.order.pop_front() {
+                self.seen.remove(&oldest);
+            }
         }
+        self.order.push_back(key.clone());
         self.seen.insert(key);
         false
     }
@@ -106,9 +111,13 @@ pub struct ShareParams {
 #[derive(Debug)]
 pub enum ShareResult {
     /// Valid share meeting pool difficulty — keep mining
-    Valid { difficulty: u64, hash: [u8; 32] },
+    Valid { assigned_difficulty: u64, hash: [u8; 32] },
     /// 🎉 Valid share that ALSO meets network difficulty — submit block!
-    Block { block_hex: String, hash: [u8; 32] },
+    Block {
+        assigned_difficulty: u64,
+        block_hex: String,
+        hash: [u8; 32],
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,7 +154,9 @@ pub fn validate_share(
         return Err(PoolError::DuplicateShare);
     }
 
-    // ── 3. ntime validation against the advertised template time ───────────
+    // ── 3. ntime validation — pool acceptance policy, not consensus ──────────
+    // Bitcoin consensus allows any ntime ≥ median-time-past. This window
+    // (cur_time..cur_time+7200) is a tighter pool-side drift limit.
     if params.ntime < job.cur_time || params.ntime > job.cur_time.saturating_add(7200) {
         return Err(PoolError::InvalidParams {
             method: "mining.submit",
@@ -200,17 +211,20 @@ pub fn validate_share(
 
     // ── 10. Check if hash also meets network target (BLOCK FOUND!) ────────────
     if meets_target(&hash, &job.network_target) {
-        let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
-        tracing::info!(
-            "🎉 BLOCK FOUND! height={} hash={}",
-            job.height,
-            hex::encode(hash)
-        );
-        return Ok(ShareResult::Block { block_hex, hash });
-    }
-
+            let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
+            tracing::info!(
+                "🎉 BLOCK FOUND! height={} hash={}",
+                job.height,
+                hex::encode(hash)
+            );
+            return Ok(ShareResult::Block {
+                assigned_difficulty: session_difficulty,
+                block_hex,
+                hash,
+            });
+        }
     Ok(ShareResult::Valid {
-        difficulty: session_difficulty,
+        assigned_difficulty: session_difficulty,
         hash,
     })
 }

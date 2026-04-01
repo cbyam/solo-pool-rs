@@ -39,24 +39,43 @@ impl StatsStore {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS worker_best_shares (
+             worker TEXT PRIMARY KEY,
+             best_share_difficulty INTEGER NOT NULL
+             )",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
-    fn load_values(&self) -> Result<(u64, f64), rusqlite::Error> {
+    fn load_values(&self) -> Result<(u64, f64, std::collections::HashMap<String, u64>), rusqlite::Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT best_share_difficulty, best_hashrate_hps FROM pool_stats WHERE id = 1",
         )?;
         let mut rows = stmt.query([])?;
-        if let Some(row) = rows.next()? {
+        let best_values = if let Some(row) = rows.next()? {
             let best_share_difficulty = row.get::<_, u64>(0)?;
             let best_hashrate_hps = row.get::<_, f64>(1)?;
-            Ok((best_share_difficulty, best_hashrate_hps))
+            (best_share_difficulty, best_hashrate_hps)
         } else {
-            Ok((0, 0.0))
+            (0, 0.0)
+        };
+
+        let mut worker_best_shares = std::collections::HashMap::new();
+        let mut stmt = conn.prepare("SELECT worker, best_share_difficulty FROM worker_best_shares")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let worker = row.get::<_, String>(0)?;
+            let difficulty = row.get::<_, u64>(1)?;
+            worker_best_shares.insert(worker, difficulty);
         }
+
+        Ok((best_values.0, best_values.1, worker_best_shares))
     }
 
     fn set_best_share_difficulty(&self, difficulty: u64) {
@@ -76,6 +95,17 @@ impl StatsStore {
             warn!("Failed to persist best_hashrate_hps: {e}");
         }
     }
+
+    fn set_worker_best_share(&self, worker: &str, difficulty: u64) {
+        if let Err(e) = self.conn.lock().execute(
+            "INSERT INTO worker_best_shares (worker, best_share_difficulty) VALUES (?1, ?2)
+             ON CONFLICT(worker) DO UPDATE SET best_share_difficulty = excluded.best_share_difficulty
+             WHERE excluded.best_share_difficulty > worker_best_shares.best_share_difficulty",
+            params![worker, difficulty],
+        ) {
+            warn!("Failed to persist worker_best_share for {worker}: {e}");
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,9 +119,11 @@ pub struct PoolStats {
     pub connected_miners: AtomicU64,
     pub current_height: AtomicU64,
     pub best_share_difficulty: AtomicU64,
+    pub session_best_share_difficulty: AtomicU64,
     pub best_hashrate_hps: AtomicU64,
     pub session_best_hashrate_hps: AtomicU64,
     pub network_hashrate_hps: AtomicU64,
+    pub network_difficulty: AtomicU64,
     pub last_block_worker: Mutex<Option<String>>,
     pub last_block_hash: Mutex<Option<String>>,
     pub last_block_ts: AtomicU64,
@@ -100,6 +132,7 @@ pub struct PoolStats {
     worker_hashrates_60s: DashMap<String, u64>,
     worker_hashrates_3h: DashMap<String, u64>,
     worker_last_submit_ts: DashMap<String, u64>,
+    worker_best_shares: DashMap<String, u64>,
     worker_states: DashMap<String, WorkerState>,
     start_time: Instant,
     store: Option<StatsStore>,
@@ -113,6 +146,7 @@ pub struct WorkerState {
     pub shares_accepted: u64,
     pub shares_rejected: u64,
     pub shares_stale: u64,
+    pub best_share_difficulty: u64,
     pub active_sessions: u64,
     pub connected_ts: u64,
     pub last_submit_ts: u64,
@@ -123,23 +157,30 @@ pub struct WorkerState {
 
 impl PoolStats {
     pub fn new_with_store(stats_db_path: Option<String>) -> Arc<Self> {
-        let (store, best_share_difficulty, best_hashrate_hps) =
+        let (store, best_share_difficulty, best_hashrate_hps, worker_best_shares_map) =
             match stats_db_path.filter(|p| !p.is_empty()) {
                 Some(path) => match StatsStore::open(&path) {
                     Ok(store) => match store.load_values() {
-                        Ok((best_difficulty, best_hps)) => (Some(store), best_difficulty, best_hps),
+                        Ok((best_difficulty, best_hps, worker_best_shares_map)) => {
+                            (Some(store), best_difficulty, best_hps, worker_best_shares_map)
+                        }
                         Err(e) => {
                             warn!("Failed to load stats from DB {}: {e}", path);
-                            (None, 0, 0.0)
+                            (None, 0, 0.0, std::collections::HashMap::new())
                         }
                     },
                     Err(e) => {
                         warn!("Failed to open stats DB {}: {e}", path);
-                        (None, 0, 0.0)
+                        (None, 0, 0.0, std::collections::HashMap::new())
                     }
                 },
-                None => (None, 0, 0.0),
+                None => (None, 0, 0.0, std::collections::HashMap::new()),
             };
+
+        let worker_best_shares = DashMap::new();
+        for (worker, best_share) in worker_best_shares_map {
+            worker_best_shares.insert(worker, best_share);
+        }
 
         Arc::new(Self {
             shares_accepted: AtomicU64::new(0),
@@ -148,13 +189,16 @@ impl PoolStats {
             connected_miners: AtomicU64::new(0),
             current_height: AtomicU64::new(0),
             best_share_difficulty: AtomicU64::new(best_share_difficulty),
+            session_best_share_difficulty: AtomicU64::new(0),
             best_hashrate_hps: AtomicU64::new(best_hashrate_hps.to_bits()),
             session_best_hashrate_hps: AtomicU64::new(0),
             network_hashrate_hps: AtomicU64::new(0),
+            network_difficulty: AtomicU64::new(f64::to_bits(0.0)),
             worker_hashrates_5m: DashMap::new(),
             worker_hashrates_60s: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
             worker_last_submit_ts: DashMap::new(),
+            worker_best_shares,
             worker_states: DashMap::new(),
             last_block_worker: Mutex::new(None),
             last_block_hash: Mutex::new(None),
@@ -186,7 +230,8 @@ impl PoolStats {
 
     pub fn share_accepted(&self, difficulty: u64) {
         self.shares_accepted.fetch_add(1, Ordering::Relaxed);
-        // CAS loop to track best share
+
+        // CAS loop to track all-time best share
         let mut prev = self.best_share_difficulty.load(Ordering::Relaxed);
         while difficulty > prev {
             match self.best_share_difficulty.compare_exchange_weak(
@@ -200,6 +245,20 @@ impl PoolStats {
                     break;
                 }
                 Err(x) => prev = x,
+            }
+        }
+
+        // Session best share
+        let mut prev_session_best = self.session_best_share_difficulty.load(Ordering::Relaxed);
+        while difficulty > prev_session_best {
+            match self.session_best_share_difficulty.compare_exchange_weak(
+                prev_session_best,
+                difficulty,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(x) => prev_session_best = x,
             }
         }
     }
@@ -276,6 +335,12 @@ impl PoolStats {
             state.connected_ts = now;
             state.active_sessions = state.active_sessions.saturating_add(1);
         } else {
+            let best_share_difficulty = self
+                .worker_best_shares
+                .get(worker)
+                .map(|v| *v.value())
+                .unwrap_or(0);
+
             self.worker_states.insert(
                 worker.to_string(),
                 WorkerState {
@@ -285,6 +350,7 @@ impl PoolStats {
                     shares_accepted: 0,
                     shares_rejected: 0,
                     shares_stale: 0,
+                    best_share_difficulty,
                     active_sessions: 1,
                     connected_ts: now,
                     last_submit_ts: 0,
@@ -315,9 +381,23 @@ impl PoolStats {
         }
     }
 
-    pub fn worker_share_accepted(&self, worker: &str) {
+    pub fn worker_share_accepted(&self, worker: &str, difficulty: u64) {
         if let Some(mut state) = self.worker_states.get_mut(worker) {
             state.shares_accepted += 1;
+            if difficulty > state.best_share_difficulty {
+                state.best_share_difficulty = difficulty;
+            }
+        }
+
+        let mut entry = self
+            .worker_best_shares
+            .entry(worker.to_string())
+            .or_insert(0);
+        if difficulty > *entry {
+            *entry = difficulty;
+            if let Some(store) = &self.store {
+                store.set_worker_best_share(worker, difficulty);
+            }
         }
     }
 
@@ -336,6 +416,11 @@ impl PoolStats {
     pub fn set_network_hashrate(&self, hps: f64) {
         self.network_hashrate_hps
             .store(hps.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_network_difficulty(&self, difficulty: f64) {
+        self.network_difficulty
+            .store(difficulty.to_bits(), Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> StatsSnapshot {
@@ -374,12 +459,14 @@ impl PoolStats {
 
         let best_hashrate_hps = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
 
-        let worker_states: Vec<WorkerState> = self
+        let mut seen = std::collections::HashSet::new();
+        let mut worker_states: Vec<WorkerState> = self
             .worker_states
             .iter()
             .map(|e| {
                 let mut state = e.value().clone();
                 let worker = e.key();
+                seen.insert(worker.clone());
                 state.worker = worker.clone();
                 state.hashrate_60s_hps = self
                     .worker_hashrates_60s
@@ -401,9 +488,36 @@ impl PoolStats {
                     .get(worker)
                     .map(|v| *v.value())
                     .unwrap_or(0);
+                state.best_share_difficulty = self
+                    .worker_best_shares
+                    .get(worker)
+                    .map(|v| *v.value())
+                    .unwrap_or(state.best_share_difficulty);
                 state
             })
             .collect();
+
+        for entry in self.worker_best_shares.iter() {
+            let worker = entry.key();
+            if seen.contains(worker) {
+                continue;
+            }
+            worker_states.push(WorkerState {
+                worker: worker.clone(),
+                online: false,
+                current_vardiff: 0,
+                shares_accepted: 0,
+                shares_rejected: 0,
+                shares_stale: 0,
+                best_share_difficulty: *entry.value(),
+                active_sessions: 0,
+                connected_ts: 0,
+                last_submit_ts: 0,
+                hashrate_60s_hps: 0.0,
+                hashrate_3h_hps: 0.0,
+                hashrate_5m_hps: 0.0,
+            });
+        }
 
         StatsSnapshot {
             shares_accepted: self.shares_accepted.load(Ordering::Relaxed),
@@ -412,6 +526,7 @@ impl PoolStats {
             connected_miners: self.connected_miners.load(Ordering::Relaxed),
             current_height: self.current_height.load(Ordering::Relaxed),
             best_share_difficulty: self.best_share_difficulty.load(Ordering::Relaxed),
+            session_best_share_difficulty: self.session_best_share_difficulty.load(Ordering::Relaxed),
             best_hashrate_hps,
             total_hashrate_hps,
             total_hashrate_60s,
@@ -419,6 +534,7 @@ impl PoolStats {
             worker_hashrates,
             worker_states,
             network_hashrate_hps: f64::from_bits(self.network_hashrate_hps.load(Ordering::Relaxed)),
+            network_difficulty: f64::from_bits(self.network_difficulty.load(Ordering::Relaxed)),
             uptime_secs: self.start_time.elapsed().as_secs(),
             session_best_hashrate_hps: f64::from_bits(
                 self.session_best_hashrate_hps.load(Ordering::Relaxed),
@@ -450,13 +566,14 @@ pub struct StatsSnapshot {
     pub connected_miners: u64,
     pub current_height: u64,
     pub best_share_difficulty: u64,
+    pub session_best_share_difficulty: u64,
     pub best_hashrate_hps: f64,
     pub total_hashrate_hps: f64,
     pub total_hashrate_60s: f64,
     pub total_hashrate_3h: f64,
     pub network_hashrate_hps: f64,
-    pub worker_hashrates: Vec<WorkerHashrate>,
-    pub worker_states: Vec<WorkerState>,
+    pub network_difficulty: f64,
+    pub worker_hashrates: Vec<WorkerHashrate>,    pub worker_states: Vec<WorkerState>,
     pub uptime_secs: u64,
     pub session_best_hashrate_hps: f64,
     pub last_block_worker: String,
@@ -530,6 +647,29 @@ mod tests {
 
         let stats = PoolStats::new_with_store(Some(db_path.clone()));
         assert_eq!(stats.snapshot().best_share_difficulty, 1_500_000);
+
+        std::fs::remove_file(db_path).ok();
+    }
+
+    #[test]
+    fn worker_best_share_is_persisted_across_instances() {
+        let db_path = make_temp_db();
+
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            stats.mark_worker_online("w1", 1_000);
+            stats.worker_share_accepted("w1", 1000);
+            stats.worker_share_accepted("w1", 4000);
+
+            let ss = stats.snapshot();
+            let w1 = ss.worker_states.iter().find(|w| w.worker == "w1").unwrap();
+            assert_eq!(w1.best_share_difficulty, 4000);
+        }
+
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        let ss = stats.snapshot();
+        let w1 = ss.worker_states.iter().find(|w| w.worker == "w1").unwrap();
+        assert_eq!(w1.best_share_difficulty, 4000);
 
         std::fs::remove_file(db_path).ok();
     }

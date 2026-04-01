@@ -382,6 +382,26 @@ pub fn bits_to_target(bits_hex: &str) -> Result<[u8; 32], PoolError> {
     compact_to_target(bits)
 }
 
+/// Convert compact `bits` (hex string) to a network difficulty value.
+pub fn bits_to_difficulty(bits_hex: &str) -> Result<f64, PoolError> {
+    let bits = u32::from_str_radix(bits_hex, 16)
+        .map_err(|_| PoolError::Other(anyhow::anyhow!("Invalid bits: {bits_hex}")))?;
+    let exponent = ((bits >> 24) & 0xff) as i32;
+    let mantissa = (bits & 0x007f_ffff) as u64;
+    if mantissa == 0 {
+        return Err(PoolError::Other(anyhow::anyhow!("Invalid bits mantissa = 0")));
+    }
+
+    // difficulty = diff1_target / current_target
+    // diff1_target = 0x00ffff * 2^208
+    // current_target  = mantissa * 2^(8*(exponent-3))
+    // => difficulty = (0x00ffff / mantissa) * 2^(232 - 8*exponent)
+    let diff1_const = 0x00ffffu64 as f64;
+    let exponent_factor = 232.0 - (8.0 * exponent as f64);
+    let diff = diff1_const / mantissa as f64 * 2f64.powf(exponent_factor);
+    Ok(diff)
+}
+
 /// Convert a network difficulty to a 32-byte share target using exact integer division.
 ///
 /// difficulty_1_target = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
