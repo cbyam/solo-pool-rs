@@ -111,7 +111,10 @@ pub struct ShareParams {
 #[derive(Debug)]
 pub enum ShareResult {
     /// Valid share meeting pool difficulty — keep mining
-    Valid { assigned_difficulty: u64, hash: [u8; 32] },
+    Valid {
+        assigned_difficulty: u64,
+        hash: [u8; 32],
+    },
     /// 🎉 Valid share that ALSO meets network difficulty — submit block!
     Block {
         assigned_difficulty: u64,
@@ -211,18 +214,18 @@ pub fn validate_share(
 
     // ── 10. Check if hash also meets network target (BLOCK FOUND!) ────────────
     if meets_target(&hash, &job.network_target) {
-            let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
-            tracing::info!(
-                "🎉 BLOCK FOUND! height={} hash={}",
-                job.height,
-                hex::encode(hash)
-            );
-            return Ok(ShareResult::Block {
-                assigned_difficulty: session_difficulty,
-                block_hex,
-                hash,
-            });
-        }
+        let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
+        tracing::info!(
+            "🎉 BLOCK FOUND! height={} hash={}",
+            job.height,
+            hex::encode(hash)
+        );
+        return Ok(ShareResult::Block {
+            assigned_difficulty: session_difficulty,
+            block_hex,
+            hash,
+        });
+    }
     Ok(ShareResult::Valid {
         assigned_difficulty: session_difficulty,
         hash,

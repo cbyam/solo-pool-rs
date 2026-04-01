@@ -585,7 +585,10 @@ async fn handle_submit(
         accept_difficulty,
         &mut session.share_set,
     ) {
-        Ok(ShareResult::Valid { assigned_difficulty, hash }) => {
+        Ok(ShareResult::Valid {
+            assigned_difficulty,
+            hash,
+        }) => {
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
@@ -602,7 +605,9 @@ async fn handle_submit(
             session.vardiff.record_share(session.difficulty);
             metrics::share_accepted(assigned_difficulty, worker);
             session.stats.share_accepted(assigned_difficulty);
-            session.stats.worker_share_accepted(worker, assigned_difficulty);
+            session
+                .stats
+                .worker_share_accepted(worker, assigned_difficulty);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
                 &req.id,
@@ -610,7 +615,11 @@ async fn handle_submit(
             )])
         }
 
-        Ok(ShareResult::Block { assigned_difficulty, block_hex, hash }) => {
+        Ok(ShareResult::Block {
+            assigned_difficulty,
+            block_hex,
+            hash,
+        }) => {
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
@@ -623,7 +632,9 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(assigned_difficulty);
-                    session.stats.worker_share_accepted(worker, assigned_difficulty);
+                    session
+                        .stats
+                        .worker_share_accepted(worker, assigned_difficulty);
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",
