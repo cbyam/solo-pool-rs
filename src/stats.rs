@@ -47,6 +47,14 @@ impl StatsStore {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS hashrate_history (
+             ts INTEGER PRIMARY KEY,
+             hashrate_hps REAL NOT NULL
+             )",
+            [],
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -99,6 +107,38 @@ impl StatsStore {
         }
     }
 
+    fn record_hashrate_snapshot(&self, ts: u64, hps: f64) {
+        let conn = self.conn.lock();
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO hashrate_history (ts, hashrate_hps) VALUES (?1, ?2)",
+            params![ts, hps],
+        ) {
+            warn!("Failed to record hashrate snapshot: {e}");
+            return;
+        }
+        // Prune entries older than 6 months
+        let cutoff = ts.saturating_sub(6 * 30 * 24 * 3600);
+        let _ = conn.execute(
+            "DELETE FROM hashrate_history WHERE ts < ?1",
+            params![cutoff],
+        );
+    }
+
+    fn get_hashrate_history(&self, since_ts: u64) -> Vec<(u64, f64)> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT ts, hashrate_hps FROM hashrate_history WHERE ts >= ?1 ORDER BY ts ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        stmt.query_map(params![since_ts], |row| {
+            Ok((row.get::<_, u64>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     fn set_worker_best_share(&self, worker: &str, difficulty: u64) {
         if let Err(e) = self.conn.lock().execute(
             "INSERT INTO worker_best_shares (worker, best_share_difficulty) VALUES (?1, ?2)
@@ -121,6 +161,7 @@ pub struct PoolStats {
     pub blocks_found: AtomicU64,
     pub connected_miners: AtomicU64,
     pub current_height: AtomicU64,
+    pub current_coinbase_value: AtomicU64,
     pub best_share_difficulty: AtomicU64,
     pub session_best_share_difficulty: AtomicU64,
     pub best_hashrate_hps: AtomicU64,
@@ -131,9 +172,11 @@ pub struct PoolStats {
     pub last_block_hash: Mutex<Option<String>>,
     pub last_block_ts: AtomicU64,
     // Stored as f64::to_bits so we can use AtomicU64
-    worker_hashrates_5m: DashMap<String, u64>,
     worker_hashrates_60s: DashMap<String, u64>,
+    worker_hashrates_10m: DashMap<String, u64>,
     worker_hashrates_3h: DashMap<String, u64>,
+    worker_hashrates_24h: DashMap<String, u64>,
+    worker_effective_10m: DashMap<String, u64>,
     worker_last_submit_ts: DashMap<String, u64>,
     worker_best_shares: DashMap<String, u64>,
     worker_states: DashMap<String, WorkerState>,
@@ -154,8 +197,10 @@ pub struct WorkerState {
     pub connected_ts: u64,
     pub last_submit_ts: u64,
     pub hashrate_60s_hps: f64,
+    pub hashrate_10m_hps: f64,
     pub hashrate_3h_hps: f64,
-    pub hashrate_5m_hps: f64,
+    pub hashrate_24h_hps: f64,
+    pub effective_10m_hps: f64,
 }
 
 impl PoolStats {
@@ -194,15 +239,18 @@ impl PoolStats {
             blocks_found: AtomicU64::new(0),
             connected_miners: AtomicU64::new(0),
             current_height: AtomicU64::new(0),
+            current_coinbase_value: AtomicU64::new(0),
             best_share_difficulty: AtomicU64::new(best_share_difficulty),
             session_best_share_difficulty: AtomicU64::new(0),
             best_hashrate_hps: AtomicU64::new(best_hashrate_hps.to_bits()),
             session_best_hashrate_hps: AtomicU64::new(0),
             network_hashrate_hps: AtomicU64::new(0),
             network_difficulty: AtomicU64::new(f64::to_bits(0.0)),
-            worker_hashrates_5m: DashMap::new(),
             worker_hashrates_60s: DashMap::new(),
+            worker_hashrates_10m: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
+            worker_hashrates_24h: DashMap::new(),
+            worker_effective_10m: DashMap::new(),
             worker_last_submit_ts: DashMap::new(),
             worker_best_shares,
             worker_states: DashMap::new(),
@@ -284,37 +332,50 @@ impl PoolStats {
         self.last_block_ts.store(now, Ordering::Relaxed);
     }
 
-    pub fn update_height(&self, height: u64) {
+    pub fn update_height(&self, height: u64, coinbase_value: u64) {
         self.current_height.store(height, Ordering::Relaxed);
+        self.current_coinbase_value.store(coinbase_value, Ordering::Relaxed);
     }
 
-    pub fn update_worker_hashrate(&self, worker: &str, hps_60s: f64, hps_3h: f64, hps_5m: f64) {
+    pub fn update_worker_hashrate(
+        &self,
+        worker: &str,
+        hps_60s: f64,
+        hps_10m: f64,
+        hps_3h: f64,
+        hps_24h: f64,
+        effective_10m: f64,
+    ) {
         self.worker_hashrates_60s
             .insert(worker.to_string(), hps_60s.to_bits());
+        self.worker_hashrates_10m
+            .insert(worker.to_string(), hps_10m.to_bits());
         self.worker_hashrates_3h
             .insert(worker.to_string(), hps_3h.to_bits());
-        self.worker_hashrates_5m
-            .insert(worker.to_string(), hps_5m.to_bits());
+        self.worker_hashrates_24h
+            .insert(worker.to_string(), hps_24h.to_bits());
+        self.worker_effective_10m
+            .insert(worker.to_string(), effective_10m.to_bits());
 
-        let total_hashrate_hps: f64 = self
-            .worker_hashrates_5m
+        let total_10m: f64 = self
+            .worker_hashrates_10m
             .iter()
             .map(|e| f64::from_bits(*e.value()))
             .sum();
 
         // Track all-time best (persistent) and session-best (since boot)
         let prev_best = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
-        if total_hashrate_hps > prev_best {
+        if total_10m > prev_best {
             self.best_hashrate_hps
-                .store(total_hashrate_hps.to_bits(), Ordering::Relaxed);
-            self.persist_best_hashrate_hps(total_hashrate_hps);
+                .store(total_10m.to_bits(), Ordering::Relaxed);
+            self.persist_best_hashrate_hps(total_10m);
         }
 
         let prev_session_best =
             f64::from_bits(self.session_best_hashrate_hps.load(Ordering::Relaxed));
-        if total_hashrate_hps > prev_session_best {
+        if total_10m > prev_session_best {
             self.session_best_hashrate_hps
-                .store(total_hashrate_hps.to_bits(), Ordering::Relaxed);
+                .store(total_10m.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -361,8 +422,10 @@ impl PoolStats {
                     connected_ts: now,
                     last_submit_ts: 0,
                     hashrate_60s_hps: 0.0,
+                    hashrate_10m_hps: 0.0,
                     hashrate_3h_hps: 0.0,
-                    hashrate_5m_hps: 0.0,
+                    hashrate_24h_hps: 0.0,
+                    effective_10m_hps: 0.0,
                 },
             );
         }
@@ -419,6 +482,26 @@ impl PoolStats {
         }
     }
 
+
+    pub fn record_hashrate_snapshot(&self) {
+        if let Some(store) = &self.store {
+            let ts = Self::now_secs();
+            let hps: f64 = self
+                .worker_hashrates_10m
+                .iter()
+                .map(|e| f64::from_bits(*e.value()))
+                .sum();
+            store.record_hashrate_snapshot(ts, hps);
+        }
+    }
+
+    pub fn get_hashrate_history(&self, since_ts: u64) -> Vec<(u64, f64)> {
+        self.store
+            .as_ref()
+            .map(|s| s.get_hashrate_history(since_ts))
+            .unwrap_or_default()
+    }
+
     pub fn set_network_hashrate(&self, hps: f64) {
         self.network_hashrate_hps
             .store(hps.to_bits(), Ordering::Relaxed);
@@ -431,20 +514,13 @@ impl PoolStats {
 
     pub fn snapshot(&self) -> StatsSnapshot {
         let worker_hashrates: Vec<WorkerHashrate> = self
-            .worker_hashrates_5m
+            .worker_hashrates_10m
             .iter()
             .map(|e| {
                 let worker = e.key().clone();
-                let hashrate_60s_hps = self
-                    .worker_hashrates_60s
-                    .get(&worker)
-                    .map(|h| f64::from_bits(*h.value()))
-                    .unwrap_or(0.0);
-                let hashrate_3h_hps = self
-                    .worker_hashrates_3h
-                    .get(&worker)
-                    .map(|h| f64::from_bits(*h.value()))
-                    .unwrap_or(0.0);
+                let get = |map: &DashMap<String, u64>| {
+                    map.get(&worker).map(|h| f64::from_bits(*h.value())).unwrap_or(0.0)
+                };
                 WorkerHashrate {
                     worker: worker.clone(),
                     last_submit_ts: self
@@ -452,16 +528,20 @@ impl PoolStats {
                         .get(&worker)
                         .map(|v| *v.value())
                         .unwrap_or(0),
-                    hashrate_60s_hps,
-                    hashrate_3h_hps,
-                    hashrate_5m_hps: f64::from_bits(*e.value()),
+                    hashrate_60s_hps: get(&self.worker_hashrates_60s),
+                    hashrate_10m_hps: f64::from_bits(*e.value()),
+                    hashrate_3h_hps:  get(&self.worker_hashrates_3h),
+                    hashrate_24h_hps: get(&self.worker_hashrates_24h),
+                    effective_10m_hps: get(&self.worker_effective_10m),
                 }
             })
             .collect();
 
-        let total_hashrate_hps: f64 = worker_hashrates.iter().map(|w| w.hashrate_5m_hps).sum();
+        let total_hashrate_10m: f64 = worker_hashrates.iter().map(|w| w.hashrate_10m_hps).sum();
         let total_hashrate_60s: f64 = worker_hashrates.iter().map(|w| w.hashrate_60s_hps).sum();
-        let total_hashrate_3h: f64 = worker_hashrates.iter().map(|w| w.hashrate_3h_hps).sum();
+        let total_hashrate_3h:  f64 = worker_hashrates.iter().map(|w| w.hashrate_3h_hps).sum();
+        let total_hashrate_24h: f64 = worker_hashrates.iter().map(|w| w.hashrate_24h_hps).sum();
+        let total_effective_10m: f64 = worker_hashrates.iter().map(|w| w.effective_10m_hps).sum();
 
         let best_hashrate_hps = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
 
@@ -474,21 +554,14 @@ impl PoolStats {
                 let worker = e.key();
                 seen.insert(worker.clone());
                 state.worker = worker.clone();
-                state.hashrate_60s_hps = self
-                    .worker_hashrates_60s
-                    .get(worker)
-                    .map(|h| f64::from_bits(*h.value()))
-                    .unwrap_or(0.0);
-                state.hashrate_3h_hps = self
-                    .worker_hashrates_3h
-                    .get(worker)
-                    .map(|h| f64::from_bits(*h.value()))
-                    .unwrap_or(0.0);
-                state.hashrate_5m_hps = self
-                    .worker_hashrates_5m
-                    .get(worker)
-                    .map(|h| f64::from_bits(*h.value()))
-                    .unwrap_or(0.0);
+                let get = |map: &DashMap<String, u64>| {
+                    map.get(worker).map(|h| f64::from_bits(*h.value())).unwrap_or(0.0)
+                };
+                state.hashrate_60s_hps  = get(&self.worker_hashrates_60s);
+                state.hashrate_10m_hps  = get(&self.worker_hashrates_10m);
+                state.hashrate_3h_hps   = get(&self.worker_hashrates_3h);
+                state.hashrate_24h_hps  = get(&self.worker_hashrates_24h);
+                state.effective_10m_hps = get(&self.worker_effective_10m);
                 state.last_submit_ts = self
                     .worker_last_submit_ts
                     .get(worker)
@@ -520,8 +593,10 @@ impl PoolStats {
                 connected_ts: 0,
                 last_submit_ts: 0,
                 hashrate_60s_hps: 0.0,
+                hashrate_10m_hps: 0.0,
                 hashrate_3h_hps: 0.0,
-                hashrate_5m_hps: 0.0,
+                hashrate_24h_hps: 0.0,
+                effective_10m_hps: 0.0,
             });
         }
 
@@ -531,14 +606,17 @@ impl PoolStats {
             blocks_found: self.blocks_found.load(Ordering::Relaxed),
             connected_miners: self.connected_miners.load(Ordering::Relaxed),
             current_height: self.current_height.load(Ordering::Relaxed),
+            current_coinbase_value: self.current_coinbase_value.load(Ordering::Relaxed),
             best_share_difficulty: self.best_share_difficulty.load(Ordering::Relaxed),
             session_best_share_difficulty: self
                 .session_best_share_difficulty
                 .load(Ordering::Relaxed),
             best_hashrate_hps,
-            total_hashrate_hps,
             total_hashrate_60s,
+            total_hashrate_10m,
             total_hashrate_3h,
+            total_hashrate_24h,
+            total_effective_10m,
             worker_hashrates,
             worker_states,
             network_hashrate_hps: f64::from_bits(self.network_hashrate_hps.load(Ordering::Relaxed)),
@@ -573,12 +651,15 @@ pub struct StatsSnapshot {
     pub blocks_found: u64,
     pub connected_miners: u64,
     pub current_height: u64,
+    pub current_coinbase_value: u64,
     pub best_share_difficulty: u64,
     pub session_best_share_difficulty: u64,
     pub best_hashrate_hps: f64,
-    pub total_hashrate_hps: f64,
     pub total_hashrate_60s: f64,
+    pub total_hashrate_10m: f64,
     pub total_hashrate_3h: f64,
+    pub total_hashrate_24h: f64,
+    pub total_effective_10m: f64,
     pub network_hashrate_hps: f64,
     pub network_difficulty: f64,
     pub worker_hashrates: Vec<WorkerHashrate>,
@@ -595,8 +676,10 @@ pub struct WorkerHashrate {
     pub worker: String,
     pub last_submit_ts: u64,
     pub hashrate_60s_hps: f64,
+    pub hashrate_10m_hps: f64,
     pub hashrate_3h_hps: f64,
-    pub hashrate_5m_hps: f64,
+    pub hashrate_24h_hps: f64,
+    pub effective_10m_hps: f64,
 }
 
 #[cfg(test)]
@@ -625,10 +708,14 @@ mod tests {
                 6_000_000_000_000.0,
                 6_000_000_000_000.0,
                 6_000_000_000_000.0,
+                6_000_000_000_000.0,
+                6_000_000_000_000.0,
             );
             assert_eq!(stats.snapshot().best_hashrate_hps, 6_000_000_000_000.0);
             stats.update_worker_hashrate(
                 "nano",
+                4_000_000_000_000.0,
+                4_000_000_000_000.0,
                 4_000_000_000_000.0,
                 4_000_000_000_000.0,
                 4_000_000_000_000.0,

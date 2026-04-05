@@ -8,12 +8,23 @@
 ///   GET /metrics  → Prometheus text (via PrometheusHandle::render)
 use crate::stats::PoolStats;
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
 };
+use charming::{
+    component::{Axis, Grid},
+    datatype::{CompositeValue, DataPoint},
+    element::{
+        smoothness::Smoothness, AreaStyle, AxisLabel, AxisType, BoundaryGap, Color, LineStyle,
+        SplitLine, Tooltip, Trigger,
+    },
+    series::Line,
+    Chart,
+};
+use serde::{Deserialize, Serialize};
 use metrics_exporter_prometheus::PrometheusHandle;
 use std::{net::SocketAddr, sync::Arc};
 use tracing::{info, warn};
@@ -49,6 +60,8 @@ pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<Prometh
     let app = Router::new()
         .route("/", get(dashboard_html))
         .route("/stats", get(stats_json))
+        .route("/history", get(history_json))
+        .route("/chart", get(chart_json))
         .route("/metrics", get(metrics_text))
         .with_state(state);
 
@@ -96,6 +109,143 @@ async fn metrics_text(State(state): State<DashState>) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+struct HistoryParams {
+    since: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct HistoryPoint {
+    ts: u64,
+    hps: f64,
+}
+
+async fn history_json(
+    State(state): State<DashState>,
+    Query(params): Query<HistoryParams>,
+) -> Json<Vec<HistoryPoint>> {
+    let since = params.since.unwrap_or(0);
+    let points = state
+        .stats
+        .get_hashrate_history(since)
+        .into_iter()
+        .map(|(ts, hps)| HistoryPoint { ts, hps })
+        .collect();
+    Json(points)
+}
+
+#[derive(Deserialize)]
+struct ChartParams {
+    window: Option<String>,
+}
+
+async fn chart_json(
+    State(state): State<DashState>,
+    Query(params): Query<ChartParams>,
+) -> impl IntoResponse {
+    let window = params.window.as_deref().unwrap_or("36h");
+    let window_secs: u64 = match window {
+        "36h" => 36 * 3600,
+        "1w"  => 7 * 24 * 3600,
+        "1m"  => 30 * 24 * 3600,
+        "6m"  => 6 * 30 * 24 * 3600,
+        _     => 0,
+    };
+
+    let since = if window_secs > 0 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().saturating_sub(window_secs))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let mut history = state.stats.get_hashrate_history(since);
+
+    // Append current live value as the trailing edge of the chart.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let live_10m: f64 = state.stats.snapshot().total_hashrate_10m;
+    history.push((now_ms, live_10m));
+
+    let data: Vec<DataPoint> = history
+        .iter()
+        .map(|(ts, hps)| {
+            DataPoint::from(CompositeValue::from(vec![
+                CompositeValue::from(*ts as i64 * 1000),
+                CompositeValue::from(*hps),
+            ]))
+        })
+        .collect();
+
+    let chart = Chart::new()
+        .background_color(Color::Value("transparent".to_string()))
+        .tooltip(
+            Tooltip::new()
+                .trigger(Trigger::Axis)
+                .background_color(Color::Value("#1e293b".to_string()))
+                .border_color(Color::Value("#334155".to_string())),
+        )
+        .grid(
+            Grid::new()
+                .left(CompositeValue::from("60px"))
+                .right(CompositeValue::from("20px"))
+                .top(CompositeValue::from("10px"))
+                .bottom(CompositeValue::from("30px"))
+                .contain_label(true),
+        )
+        .x_axis(
+            Axis::new()
+                .type_(AxisType::Time)
+                .boundary_gap(BoundaryGap::CategoryAxis(false))
+                .split_line(SplitLine::new().line_style(
+                    LineStyle::new().color(Color::Value("rgba(51,65,85,0.4)".to_string())),
+                ))
+                .axis_label(
+                    AxisLabel::new()
+                        .color(Color::Value("#64748b".to_string()))
+                        .font_size(10.0),
+                ),
+        )
+        .y_axis(
+            Axis::new()
+                .type_(AxisType::Value)
+                .min(CompositeValue::from(0))
+                .split_line(SplitLine::new().line_style(
+                    LineStyle::new().color(Color::Value("rgba(51,65,85,0.4)".to_string())),
+                ))
+                .axis_label(
+                    AxisLabel::new()
+                        .color(Color::Value("#64748b".to_string()))
+                        .font_size(10.0),
+                ),
+        )
+        .series(
+            Line::new()
+                .data(data)
+                .show_symbol(false)
+                .smooth(Smoothness::from(0.35f64))
+                .line_style(
+                    LineStyle::new()
+                        .color(Color::Value("#38bdf8".to_string()))
+                        .width(1.0),
+                )
+                .area_style(
+                    AreaStyle::new()
+                        .color(Color::Value("rgba(56,189,248,0.08)".to_string())),
+                ),
+        );
+
+    let body = serde_json::to_string(&chart).unwrap_or_else(|_| "{}".to_string());
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dashboard HTML
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +256,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>solo-pool-rs</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 <style>
 :root {
   --bg: #0f172a;
@@ -134,7 +284,7 @@ h1 { grid-column: 1; font-size: 1.4rem; font-weight: 700; color: var(--accent); 
 .accent { color: var(--accent); }
 .panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.2rem; margin-bottom: 1.25rem; }
 .panel-title { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 1rem; }
-canvas { max-height: 240px; width: 100% !important; }
+#hashrate-chart { height: 240px; width: 100%; }
 table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
 th { text-align: left; color: var(--muted); font-weight: 500; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
 td { padding: 0.45rem 0.5rem; border-bottom: 1px solid rgba(51,65,85,0.4); }
@@ -236,21 +386,27 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value" id="v-workers-degraded" style="font-size:0.8rem; font-weight:500;">Degraded: —</div>
   </div>
   <div class="card">
-    <div class="card-label">Reject Rate</div>
-    <div class="card-value red" id="v-reject-rate">—</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Stale Rate</div>
-    <div class="card-value" id="v-stale-rate">—</div>
+    <div class="card-label">Reject / Stale</div>
+    <div class="card-value red" id="v-reject-rate" style="font-size:0.8rem; font-weight:500;">Reject: —</div>
+    <div class="card-value" id="v-stale-rate" style="font-size:0.8rem; font-weight:500;">Stale: —</div>
   </div>
   <div class="card">
     <div class="card-label">Block Height</div>
     <div class="card-value" id="v-height" title="Height of current best chain tip">—</div>
+    <div class="card-value" id="v-block-reward" style="font-size:0.8rem; font-weight:500;">Reward: —</div>
+    <div class="card-value" id="v-btc-price" style="font-size:0.8rem; font-weight:500; color:var(--muted);">BTC: —</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Probability</div>
+    <div class="card-value" id="v-prob-daily" style="font-size:0.8rem; font-weight:500;">Daily: —</div>
+    <div class="card-value" id="v-prob-monthly" style="font-size:0.8rem; font-weight:500;">Monthly: —</div>
+    <div class="card-value" id="v-prob-yearly" style="font-size:0.8rem; font-weight:500;">Yearly: —</div>
+    <div class="card-value" id="v-prob-powerball" style="font-size:0.8rem; font-weight:500; color:var(--muted);">vs Powerball: —</div>
   </div>
 </div>
 <div class="panel">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
-    <div class="panel-title">Hashrate over time</div>
+    <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes" style="cursor:help; font-size:0.7rem; color:var(--muted); border:1px solid var(--muted); border-radius:50%; padding:0 0.3rem; vertical-align:middle;">?</span></div>
     <label style="font-size:0.72rem; color:var(--muted);">Window:
       <select id="timeframe-select" style="margin-left:0.4rem; font-size:0.72rem; padding:0.2rem 0.4rem;">
         <option value="36h" selected>36h</option>
@@ -261,7 +417,7 @@ tr:last-child td { border-bottom: none; }
       </select>
     </label>
   </div>
-  <canvas id="hashrate-chart"></canvas>
+  <div id="hashrate-chart"></div>
 </div>
 
 <div class="panel">
@@ -272,8 +428,9 @@ tr:last-child td { border-bottom: none; }
         <th>Worker</th>
         <th>Status</th>
         <th>Vardiff</th>
-        <th>Hashrate (60s)</th>
+        <th>Hashrate (10m)</th>
         <th>Hashrate (3h)</th>
+        <th>Effective (10m)</th>
         <th>Accepted</th>
         <th>Rejected</th>
         <th>Best Share</th>
@@ -282,74 +439,16 @@ tr:last-child td { border-bottom: none; }
       </tr>
     </thead>
     <tbody id="workers-tbody">
-      <tr><td colspan="10" class="empty-row">Loading workers…</td></tr>
+      <tr><td colspan="11" class="empty-row">Loading workers…</td></tr>
     </tbody>
   </table>
 
 <script>
-const TIME_WINDOWS = {
-  '36h': 36 * 3600,
-  '1w': 7 * 24 * 3600,
-  '1m': 30 * 24 * 3600,
-  '6m': 6 * 30 * 24 * 3600,
-  'all': Number.MAX_SAFE_INTEGER,
-};
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
 
-const chartLabels = [];
-const chartData = [];
-const chartPoints = []; // {ts: number, value: number}
-
-const ctx = document.getElementById('hashrate-chart').getContext('2d');
-const chart = new Chart(ctx, {
-  type: 'line',
-  data: {
-    labels: chartLabels,
-    datasets: [{
-      label: 'Hashrate (3h)',
-      data: chartData,
-      borderColor: '#38bdf8',
-      backgroundColor: 'rgba(56,189,248,0.07)',
-      borderWidth: 2,
-      pointRadius: 0,
-      pointHoverRadius: 4,
-      fill: true,
-      tension: 0.35,
-    }],
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: true,
-    animation: false,
-    interaction: { mode: 'index', intersect: false },
-    scales: {
-      x: {
-        type: 'category',
-        ticks: { color: '#64748b', maxTicksLimit: 10, font: { size: 10 } },
-        grid:  { color: 'rgba(51,65,85,0.4)' },
-        border: { color: '#334155' },
-      },
-      y: {
-        min: 0,
-        ticks: { color: '#64748b', font: { size: 10 }, callback: v => fmtHr(v, true) },
-        grid:  { color: 'rgba(51,65,85,0.4)' },
-        border: { color: '#334155' },
-      },
-    },
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        backgroundColor: '#1e293b',
-        borderColor: '#334155',
-        borderWidth: 1,
-        titleColor: '#94a3b8',
-        bodyColor: '#f1f5f9',
-        callbacks: { label: c => '  ' + fmtHr(c.parsed.y, false) },
-      },
-    },
-  },
-});
+const myChart = echarts.init(document.getElementById('hashrate-chart'), null, { renderer: 'canvas' });
+window.addEventListener('resize', () => myChart.resize());
 
 function fmtHr(hps, short) {
   if (hps >= 1e21) return (hps / 1e21).toFixed(2) + (short ? ' Z'  : ' ZH/s');
@@ -386,23 +485,38 @@ function fmtTimestamp(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 
-function updateChartData() {
-  const now = Date.now();
-  const windowSeconds = selectedWindow === 'all' ? Infinity : TIME_WINDOWS[selectedWindow];
-  const minTimestamp = windowSeconds === Infinity ? -Infinity : now - windowSeconds * 1000;
-
-  while (chartPoints.length > 0 && chartPoints[0].ts < minTimestamp) {
-    chartPoints.shift();
+async function loadChart(window) {
+  try {
+    const resp = await fetch('/chart?window=' + window);
+    if (!resp.ok) return;
+    const options = await resp.json();
+    // Patch in JS formatter callbacks that cannot be serialised from Rust.
+    const yAxis = Array.isArray(options.yAxis) ? options.yAxis[0] : options.yAxis;
+    if (yAxis) yAxis.axisLabel = Object.assign(yAxis.axisLabel || {}, { formatter: v => fmtHr(v, true) });
+    const xAxis = Array.isArray(options.xAxis) ? options.xAxis[0] : options.xAxis;
+    if (xAxis) xAxis.axisLabel = Object.assign(xAxis.axisLabel || {}, {
+      formatter: v => {
+        const d = new Date(v);
+        if (d.getHours() === 0 && d.getMinutes() === 0) {
+          return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      }
+    });
+    if (options.tooltip) {
+      options.tooltip.formatter = params => {
+        if (!params || !params.length) return '';
+        const pt = params[0];
+        const ts = Array.isArray(pt.value) ? pt.value[0] : pt.value;
+        const hps = Array.isArray(pt.value) ? pt.value[1] : 0;
+        const date = new Date(ts).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return date + '<br/><span style="color:#38bdf8">Hashrate (10m)</span>: ' + fmtHr(hps, false);
+      };
+    }
+    myChart.setOption(options, true);
+  } catch (e) {
+    console.error('Chart fetch error:', e);
   }
-
-  chartLabels.length = 0;
-  chartData.length = 0;
-  chartPoints.forEach((pt) => {
-    chartLabels.push(new Date(pt.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    chartData.push(pt.value);
-  });
-
-  chart.update('none');
 }
 
 async function refresh() {
@@ -411,21 +525,23 @@ async function refresh() {
     if (!resp.ok) return;
     const d = await resp.json();
 
-    const reportedCurrent = d.total_hashrate_hps || 0;
-    const reported3h = d.total_hashrate_3h || 0;
-    const effectiveHashrate = d.total_hashrate_60s || d.total_hashrate_hps || 0;
+    const reported10m = d.total_hashrate_10m || 0;
+    const reported3h  = d.total_hashrate_3h  || 0;
+    const effective10m = d.total_effective_10m || 0;
 
-    document.getElementById('v-reported-current').textContent = fmtHr(reportedCurrent, false);
+    document.getElementById('v-reported-current').textContent = fmtHr(reported10m, false);
     document.getElementById('v-reported-3h').textContent = '3h avg: ' + fmtHr(reported3h, false);
-    // v-reported-24h left at its default '—' until the API exposes a true 24h average
-    document.getElementById('v-effective-hashrate').textContent = fmtHr(effectiveHashrate, false);
+    document.getElementById('v-reported-24h').textContent = '24h avg: ' + fmtHr(d.total_hashrate_24h || 0, false);
+    document.getElementById('v-effective-hashrate').textContent = fmtHr(effective10m, false);
 
-    const now = new Date();
-    chartPoints.push({ ts: now.getTime(), value: d.total_hashrate_3h });
-    updateChartData();
+    updateProbability(d.total_hashrate_10m || 0, d.network_hashrate_hps || 0);
 
     document.getElementById('v-miners').textContent = d.connected_miners;
     document.getElementById('v-height').textContent = d.current_height.toLocaleString();
+    if (d.current_coinbase_value) {
+      const btc = d.current_coinbase_value / 1e8;
+      document.getElementById('v-block-reward').textContent = 'Reward: ' + btc.toFixed(8) + ' BTC';
+    }
     document.getElementById('v-last-block-worker').textContent = d.last_block_worker || '—';
     document.getElementById('v-last-block-hash').textContent = d.last_block_hash || '—';
     document.getElementById('v-last-block-time').textContent = fmtTimestamp(d.last_block_ts);
@@ -443,8 +559,8 @@ async function refresh() {
     const staleTotal = Array.isArray(d.worker_states) ? d.worker_states.reduce((sum, w) => sum + (w.shares_stale || 0), 0) : 0;
     const stalePct = total > 0 ? (staleTotal / total * 100).toFixed(1) : '0.0';
 
-    document.getElementById('v-reject-rate').textContent = `${d.shares_rejected.toLocaleString()} / ${rejectPct}%`;
-    document.getElementById('v-stale-rate').textContent = `${staleTotal.toLocaleString()} / ${stalePct}%`;
+    document.getElementById('v-reject-rate').textContent = `Reject: ${d.shares_rejected.toLocaleString()} (${rejectPct}%)`;
+    document.getElementById('v-stale-rate').textContent = `Stale: ${staleTotal.toLocaleString()} (${stalePct}%)`;
 
     const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
     const onlineCount = workers.filter(w => w.online).length;
@@ -455,18 +571,15 @@ async function refresh() {
     document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;
     document.getElementById('v-workers-degraded').textContent = 'Degraded: ' + degradedCount;
 
-    // Chart
-    const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
     document.getElementById('v-network-hashrate').textContent = fmtHr(d.network_hashrate_hps, false);
 
     // Workers table
     const tbody = document.getElementById('workers-tbody');
     if (workers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="12" class="empty-row">No connected workers</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty-row">No connected workers</td></tr>';
     } else {
       tbody.innerHTML = workers
-        .sort((a, b) => b.hashrate_5m_hps - a.hashrate_5m_hps)
+        .sort((a, b) => b.hashrate_10m_hps - a.hashrate_10m_hps)
         .map(w => {
           const workerName = w.worker.includes('.') ? w.worker.split('.')[1] : w.worker;
           const nowSec = Math.floor(Date.now() / 1000);
@@ -476,8 +589,9 @@ async function refresh() {
             <td>${escHtml(workerName)}</td>
             <td class="${w.online ? 'online' : 'offline'}">${w.online ? 'Online' : 'Offline'}</td>
             <td>${fmtDiff(w.current_vardiff)}</td>
-            <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
+            <td>${fmtHr(w.hashrate_10m_hps, false)}</td>
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
+            <td>${fmtHr(w.effective_10m_hps, false)}</td>
             <td>${w.shares_accepted.toLocaleString()}</td>
             <td>${w.shares_rejected.toLocaleString()}</td>
             <td>${fmtDiff(w.best_share_difficulty)}</td>
@@ -488,17 +602,59 @@ async function refresh() {
         .join('');
     }
 
-    document.getElementById('last-updated').textContent = 'Updated ' + nowLabel;
+    document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
   } catch (e) {
     console.error('Dashboard refresh error:', e);
   }
+}
+
+function fmtOdds(p) {
+  if (p <= 0) return '—';
+  const inv = Math.round(1 / p);
+  if (inv >= 1e9)  return '1 in ' + (inv / 1e9).toFixed(1) + 'B';
+  if (inv >= 1e6)  return '1 in ' + (inv / 1e6).toFixed(2) + 'M';
+  if (inv >= 1e3)  return '1 in ' + (inv / 1e3).toFixed(1) + 'K';
+  return '1 in ' + inv.toLocaleString();
+}
+
+
+function updateProbability(ourHps, netHps) {
+  const el = id => document.getElementById(id);
+  if (!ourHps || !netHps || netHps === 0) {
+    el('v-prob-daily').textContent   = 'Daily: —';
+    el('v-prob-monthly').textContent = 'Monthly: —';
+    el('v-prob-yearly').textContent  = 'Yearly: —';
+    el('v-prob-powerball').textContent = 'vs Powerball: —';
+    return;
+  }
+  // Probability of finding a block per block (~10 min)
+  const pBlock = ourHps / netHps;
+  // Blocks per period
+  const blocksPerDay   = 144;
+  const blocksPerMonth = blocksPerDay * 30;
+  const blocksPerYear  = blocksPerDay * 365;
+  // P(at least one block in N blocks) = 1 - (1 - pBlock)^N
+  const pDaily   = 1 - Math.pow(1 - pBlock, blocksPerDay);
+  const pMonthly = 1 - Math.pow(1 - pBlock, blocksPerMonth);
+  const pYearly  = 1 - Math.pow(1 - pBlock, blocksPerYear);
+  // Powerball jackpot: 1 in 292,201,338 per ticket
+  const pPowerball = 1 / 292201338;
+  const ratio = pDaily / pPowerball;
+  const vsText = ratio >= 1
+    ? (ratio.toFixed(1) + '× better than Powerball')
+    : ((1 / ratio).toFixed(1) + '× worse than Powerball');
+
+  el('v-prob-daily').textContent   = 'Daily: '   + fmtOdds(pDaily);
+  el('v-prob-monthly').textContent = 'Monthly: ' + fmtOdds(pMonthly);
+  el('v-prob-yearly').textContent  = 'Yearly: '  + fmtOdds(pYearly);
+  el('v-prob-powerball').textContent = vsText;
 }
 
 function attachTimeframeSelector() {
   const select = document.getElementById('timeframe-select');
   select.addEventListener('change', () => {
     selectedWindow = select.value;
-    updateChartData();
+    loadChart(selectedWindow);
   });
 }
 
@@ -506,9 +662,25 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+async function fetchBtcPrice() {
+  try {
+    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const price = data?.bitcoin?.usd;
+    if (price != null) {
+      document.getElementById('v-btc-price').textContent = 'BTC $' + price.toLocaleString([], { maximumFractionDigits: 0 });
+    }
+  } catch (_) {}
+}
+
 attachTimeframeSelector();
+loadChart(DEFAULT_WINDOW);
 refresh();
+fetchBtcPrice();
 setInterval(refresh, 10000);
+setInterval(() => loadChart(selectedWindow), 60000);
+setInterval(fetchBtcPrice, 60000);
 </script>
 </body>
 </html>"#;
