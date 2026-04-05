@@ -4,7 +4,7 @@
 
 A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum V1** with a clean migration path to **Stratum V2** (SRI).
 
-> **Loto mining**: 100% of the block reward goes to your configured address. No fees, no payout splits, no external dependencies beyond a Bitcoin Knots node.
+> **Loto mining**: 100% of the block reward goes to your configured address. No fees, no payout splits, no external dependencies beyond a Bitcoin node.
 
 ---
 
@@ -16,7 +16,7 @@ A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum 
 | ASIC extensions | `version-rolling` (BIP320), `minimum-difficulty`, `subscribe-extranonce`, `mining.configure` |
 | Auth | `mining.authorize` (any worker name accepted — solo pool) |
 | Difficulty | Per-miner vardiff with configurable target share time, retarget interval, and max adjustment factor |
-| Block template | `getblocktemplate` via Bitcoin Knots RPC, ZMQ `hashblock` push (RPC poll fallback) |
+| Block template | `getblocktemplate` via Bitcoin RPC, ZMQ `hashblock` push (RPC poll fallback) |
 | Coinbase | BIP34 height, configurable tag, SegWit witness commitment, reward to your address |
 | Share validation | Header reconstruction, double-SHA256, meets-target check, duplicate detection, ntime drift check |
 | Block submission | `submitblock` on valid block, immediate with latency logging |
@@ -30,14 +30,14 @@ A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum 
 ## Requirements
 
 - **Rust** ≥ 1.75.0
-- **Bitcoin Knots** (or Bitcoin Core) with:
+- **Bitcoin** (core or knots) with:
   - RPC enabled
   - Cookie auth (default) or explicit `rpcuser`/`rpcpassword`
   - ZMQ enabled (recommended) — see below
 
 ---
 
-## Bitcoin Knots / Core configuration (`bitcoin.conf`)
+## Bitcoin configuration (`bitcoin.conf`)
 
 ```ini
 # Required: RPC
@@ -78,7 +78,7 @@ initial_difficulty = 4096                  # ~1 TH/s at 15s/share; vardiff ramps
 
 [bitcoin_rpc]
 url = "http://127.0.0.1:8332"
-cookie_path = "~/.bitcoin/.cookie"        # default Bitcoin Knots location
+cookie_path = "~/.bitcoin/.cookie"        # default Bitcoin location
 
 [zmq]
 hashblock_endpoint = "tcp://127.0.0.1:28332"
@@ -148,7 +148,7 @@ mining/engine.rs         — current job store, job history, broadcast channel
     │
     ▼
 bitcoin/template.rs      — GBT → StratumJob (coinbase, merkle branch, job ID)
-bitcoin/rpc.rs           — Bitcoin Knots RPC (cookie auth, getblocktemplate, submitblock)
+bitcoin/rpc.rs           — Bitcoin RPC (cookie auth, getblocktemplate, submitblock)
 bitcoin/zmq.rs           — ZMQ hashblock listener + RPC poll fallback
 
 network/dashboard.rs     — HTTP :9090 — dashboard (GET /), stats JSON (GET /stats), Prometheus (GET /metrics)

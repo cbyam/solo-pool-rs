@@ -69,6 +69,18 @@ async fn main() -> Result<()> {
     let rpc =
         Arc::new(RpcClient::new(&config.bitcoin_rpc).context("Connecting to Bitcoin Knots RPC")?);
 
+    // ── Hashrate history recorder (every 10 minutes) ─────────────────────────
+    {
+        let stats = stats.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(10 * 60);
+            loop {
+                stats.record_hashrate_snapshot();
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     // ── Network hash rate poll ───────────────────────────────────────────────
     {
         let stats = stats.clone();

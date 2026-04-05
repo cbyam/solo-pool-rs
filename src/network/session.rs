@@ -41,6 +41,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
     sync::broadcast,
+    task,
 };
 use tracing::{debug, error, info, warn};
 
@@ -85,9 +86,52 @@ pub struct Session {
     shares_rejected: u64,
     connect_time: Instant,
     stats: Arc<PoolStats>,
+    /// Accepted share timestamps + actual hash difficulty for effective-hashrate calculation.
+    effective_shares: std::collections::VecDeque<(Instant, u64)>,
 }
 
 impl Session {
+    /// Record an accepted share for effective-hashrate estimation.
+    /// Uses the vardiff-assigned difficulty so the result is ≤ reported hashrate
+    /// and reflects only useful (non-stale/non-rejected) contribution.
+    pub fn record_effective_share(&mut self, assigned_difficulty: u64) {
+        let now = Instant::now();
+        self.effective_shares.push_back((now, assigned_difficulty));
+        let cutoff = now - std::time::Duration::from_secs(600);
+        while self.effective_shares.front().is_some_and(|&(t, _)| t < cutoff) {
+            self.effective_shares.pop_front();
+        }
+    }
+
+    /// Effective hashrate (H/s) over the last 10 minutes, based on accepted-share
+    /// throughput using the vardiff-assigned difficulty (excludes stale/rejected).
+    pub fn effective_hashrate_10m(&self) -> f64 {
+        if self.effective_shares.len() < 2 {
+            return 0.0;
+        }
+        let now = Instant::now();
+        let cutoff = now - std::time::Duration::from_secs(600);
+        let mut sum_diff: u64 = 0;
+        let mut oldest_ts: Option<Instant> = None;
+        for &(ts, diff) in &self.effective_shares {
+            if ts >= cutoff {
+                if oldest_ts.is_none() {
+                    oldest_ts = Some(ts);
+                }
+                sum_diff += diff;
+            }
+        }
+        let oldest_ts = match oldest_ts {
+            Some(ts) => ts,
+            None => return 0.0,
+        };
+        let elapsed = now.duration_since(oldest_ts).as_secs_f64();
+        if elapsed <= 0.0 {
+            return 0.0;
+        }
+        (sum_diff as f64 * 4_294_967_296.0) / elapsed
+    }
+
     pub fn new(
         peer: SocketAddr,
         cfg: &Config,
@@ -117,6 +161,7 @@ impl Session {
             shares_rejected: 0,
             connect_time: Instant::now(),
             stats,
+            effective_shares: std::collections::VecDeque::new(),
         }
     }
 }
@@ -216,14 +261,16 @@ pub async fn run(
                             }
                         }
 
-                        let hr_60s = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(60));
-                        let hr_3h = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(10800));
-                        let hr_5m = session.vardiff.estimated_hashrate();
+                        let hr_60s  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(60));
+                        let hr_10m  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(600));
+                        let hr_3h   = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(10_800));
+                        let hr_24h  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(86_400));
+                        let eff_10m = session.effective_hashrate_10m();
                         if let Some(worker) = &session.worker {
-                            metrics::update_hashrate(hr_5m, worker);
+                            metrics::update_hashrate(hr_10m, worker);
                             session
                                 .stats
-                                .update_worker_hashrate(worker, hr_60s, hr_3h, hr_5m);
+                                .update_worker_hashrate(worker, hr_60s, hr_10m, hr_3h, hr_24h, eff_10m);
                         }
                     }
                 }
@@ -256,7 +303,7 @@ pub async fn run(
                             }
 
                             metrics::update_job_height(job.height);
-                            session.stats.update_height(job.height);
+                            session.stats.update_height(job.height, job.coinbase_value);
 
                             if let Ok(net_diff) = bits_to_difficulty(&job.bits) {
                                 session.stats.set_network_difficulty(net_diff);
@@ -511,7 +558,8 @@ async fn handle_submit(
     params: SubmitParams,
     engine: &Arc<TemplateEngine>,
 ) -> HandleResult {
-    let worker = session.worker.as_deref().unwrap_or("?");
+    let worker_owned = session.worker.clone().unwrap_or_else(|| "?".to_string());
+    let worker: &str = &worker_owned;
 
     if !session.authorized {
         metrics::share_rejected("unauthorized", worker);
@@ -557,17 +605,40 @@ async fn handle_submit(
         },
     };
 
+    let extranonce2_hex = hex::encode(&params.extranonce2);
+    let ntime_hex = format!("{:08x}", params.ntime);
+    let nonce_hex = format!("{:08x}", params.nonce);
+
     debug!(
         worker = worker,
         job_id = %params.job_id,
-        extranonce2 = %hex::encode(&params.extranonce2),
-        ntime = %format!("{:08x}", params.ntime),
-        nonce = %format!("{:08x}", params.nonce),
+        extranonce2 = %extranonce2_hex,
+        ntime = %ntime_hex,
+        nonce = %nonce_hex,
         version_bits = ?params.version_bits,
         session_version_rolling = session.version_rolling_enabled,
         session_mask = %format!("{:08x}", session.version_rolling_mask),
         "Validating submitted share"
     );
+
+    if session.share_set.check_and_insert(
+        &params.job_id,
+        &params.extranonce2,
+        params.ntime,
+        params.nonce,
+        params.version_bits.unwrap_or(0),
+    ) {
+        metrics::share_rejected("duplicate", worker);
+        session.stats.share_rejected();
+        session.stats.worker_share_rejected(worker);
+        if session.guard.invalid_shares.record_invalid() {
+            return HandleResult::Disconnect("too many invalid shares".into());
+        }
+        return HandleResult::Messages(vec![ResponseBuilder::err(
+            &req.id,
+            PoolError::DuplicateShare.to_stratum_error(),
+        )]);
+    }
 
     // Accept any share meeting the configured floor (min_difficulty), not the
     // current vardiff level.  For Avalon/cgminer hardware the hardware threshold
@@ -577,16 +648,36 @@ async fn handle_submit(
     let accept_difficulty = session.vardiff_cfg.min_difficulty;
 
     let validation_start = Instant::now();
-    match validator::validate_share(
-        &share_params,
-        &job_entry.job,
-        &job_entry,
-        &session.extranonce1,
-        accept_difficulty,
-        &mut session.share_set,
-    ) {
+    let extranonce1 = session.extranonce1.clone();
+    let share_set = std::mem::take(&mut session.share_set);
+    let job_entry = job_entry.clone();
+    let validation = task::spawn_blocking(move || {
+        let result = validator::validate_share_no_dedup(
+            &share_params,
+            &job_entry.job,
+            &job_entry,
+            &extranonce1,
+            accept_difficulty,
+        );
+        (share_set, result)
+    })
+    .await;
+
+    let validation_result = match validation {
+        Ok((share_set, result)) => {
+            session.share_set = share_set;
+            result
+        }
+        Err(e) => {
+            session.share_set = ShareSet::new();
+            error!("Share validation task failed: {e}");
+            return HandleResult::Disconnect("internal error".into());
+        }
+    };
+    match validation_result {
         Ok(ShareResult::Valid {
             assigned_difficulty,
+            hash_difficulty,
             hash,
         }) => {
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
@@ -598,16 +689,18 @@ async fn handle_submit(
                 job = %params.job_id,
                 hash = %hex::encode(hash),
                 diff = assigned_difficulty,
+                hash_diff = hash_difficulty,
                 latency_ms = latency_ms,
                 "Share accepted"
             );
             session.shares_accepted += 1;
             session.vardiff.record_share(session.difficulty);
+            session.record_effective_share(session.difficulty);
             metrics::share_accepted(assigned_difficulty, worker);
-            session.stats.share_accepted(assigned_difficulty);
+            session.stats.share_accepted(hash_difficulty);
             session
                 .stats
-                .worker_share_accepted(worker, assigned_difficulty);
+                .worker_share_accepted(worker, hash_difficulty);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
                 &req.id,
@@ -616,7 +709,7 @@ async fn handle_submit(
         }
 
         Ok(ShareResult::Block {
-            assigned_difficulty,
+            hash_difficulty,
             block_hex,
             hash,
         }) => {
@@ -631,10 +724,11 @@ async fn handle_submit(
                     session.stats.block_found(worker, &hex::encode(hash));
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
-                    session.stats.share_accepted(assigned_difficulty);
+                    session.record_effective_share(session.difficulty);
+                    session.stats.share_accepted(hash_difficulty);
                     session
                         .stats
-                        .worker_share_accepted(worker, assigned_difficulty);
+                        .worker_share_accepted(worker, hash_difficulty);
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",

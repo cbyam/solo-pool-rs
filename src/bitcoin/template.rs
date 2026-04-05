@@ -47,6 +47,9 @@ pub struct StratumJob {
     /// Merkle branch hashes (hex) for mining.notify
     pub merkle_branch: Vec<String>,
 
+    /// Merkle branch hashes as raw bytes for fast merkle root computation
+    pub merkle_branch_raw: Vec<[u8; 32]>,
+
     /// Block version (may include version-rolling mask bits)
     pub version: u32,
 
@@ -73,6 +76,9 @@ pub struct StratumJob {
 
     /// All transaction data (for block assembly)
     pub transactions: Vec<Vec<u8>>,
+
+    /// Total block reward in satoshis (subsidy + fees), from GBT coinbasevalue
+    pub coinbase_value: u64,
 }
 
 impl StratumJob {
@@ -90,11 +96,10 @@ impl StratumJob {
     pub fn merkle_root(&self, coinbase: &[u8]) -> [u8; 32] {
         let cb_hash = double_sha256(coinbase);
         let mut hash = cb_hash;
-        for branch in &self.merkle_branch {
-            let branch_bytes = hex::decode(branch).expect("valid merkle branch hex");
+        for branch in &self.merkle_branch_raw {
             let mut combined = [0u8; 64];
             combined[..32].copy_from_slice(&hash);
-            combined[32..].copy_from_slice(&branch_bytes);
+            combined[32..].copy_from_slice(branch);
             hash = double_sha256(&combined);
         }
         hash
@@ -149,7 +154,8 @@ pub fn build_job(
         })
         .collect();
 
-    let merkle_branch = compute_merkle_branch(&tx_txids);
+    let merkle_branch_raw = compute_merkle_branch_raw(&tx_txids);
+    let merkle_branch = merkle_branch_raw.iter().map(hex::encode).collect();
 
     // ── 4. Stratum-format prev_hash (byte-swap each 4-byte word) ─────────────
     let prev_hash_stratum = stratum_prev_hash(&gbt.prev_hash)?;
@@ -163,6 +169,7 @@ pub fn build_job(
         coinbase1,
         coinbase2,
         merkle_branch,
+        merkle_branch_raw,
         version: gbt.version,
         bits: gbt.bits.clone(),
         cur_time: gbt.cur_time,
@@ -173,6 +180,7 @@ pub fn build_job(
         extranonce1_len,
         extranonce2_len,
         transactions: gbt.transactions.iter().map(|t| t.data.clone()).collect(),
+        coinbase_value: gbt.coinbase_value,
     })
 }
 
@@ -317,7 +325,7 @@ fn address_to_script(address: &str) -> Result<ScriptBuf, PoolError> {
 ///
 /// `txids` must contain every non-coinbase txid in internal byte order.
 /// The returned hashes are the coinbase path siblings, from leaf upward.
-pub fn compute_merkle_branch(txids: &[[u8; 32]]) -> Vec<String> {
+pub fn compute_merkle_branch_raw(txids: &[[u8; 32]]) -> Vec<[u8; 32]> {
     if txids.is_empty() {
         return vec![];
     }
@@ -341,7 +349,7 @@ pub fn compute_merkle_branch(txids: &[[u8; 32]]) -> Vec<String> {
         };
 
         if let Some(sibling) = level[sibling_index] {
-            branch.push(hex::encode(sibling));
+            branch.push(sibling);
         }
 
         let mut next_level = Vec::with_capacity(level.len() / 2);
@@ -362,6 +370,13 @@ pub fn compute_merkle_branch(txids: &[[u8; 32]]) -> Vec<String> {
     }
 
     branch
+}
+
+pub fn compute_merkle_branch(txids: &[[u8; 32]]) -> Vec<String> {
+    compute_merkle_branch_raw(txids)
+        .iter()
+        .map(hex::encode)
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -419,6 +434,54 @@ pub fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
     }
 
     div_be_u256_by_u64(&DIFF1_TARGET, difficulty)
+}
+
+/// Compute the difficulty of a share from its hash (little-endian SHA256d output).
+///
+/// difficulty = DIFF1_TARGET / hash, where DIFF1_TARGET is Bitcoin's difficulty-1 target:
+/// `0x00000000FFFF0000000000000000000000000000000000000000000000000000`
+pub fn hash_to_difficulty(hash_le: &[u8; 32]) -> u64 {
+    // Convert LE hash to big-endian for magnitude comparison.
+    let mut hash_be = *hash_le;
+    hash_be.reverse();
+
+    // Find the first non-zero byte (position of the most significant byte).
+    let nz = hash_be.iter().position(|&b| b != 0).unwrap_or(31);
+
+    // Extract up to 8 significant bytes of the hash, left-aligned into a u64.
+    let take = 8usize.min(32 - nz);
+    let mut hash_sig: u64 = 0;
+    for j in 0..take {
+        hash_sig = (hash_sig << 8) | (hash_be[nz + j] as u64);
+    }
+    hash_sig <<= (8 - take) * 8; // left-align to fill the full 8-byte slot
+
+    if hash_sig == 0 {
+        return u64::MAX;
+    }
+
+    // DIFF1_TARGET (BE): [00 00 00 00 FF FF 00 00 ... 00]
+    //   first non-zero byte at index 4; 8 bytes from there = 0xFFFF000000000000
+    const DIFF1_NZ: i32 = 4;
+    const DIFF1_SIG: u64 = 0xFFFF_0000_0000_0000;
+
+    let ratio = DIFF1_SIG / hash_sig;
+    let exp = (nz as i32 - DIFF1_NZ) * 8; // positive → hash has more leading zeros
+
+    if exp >= 64 {
+        u64::MAX
+    } else if exp >= 0 {
+        let exp = exp as u32;
+        if ratio > u64::MAX >> exp {
+            u64::MAX
+        } else {
+            ratio << exp
+        }
+    } else if -exp >= 64 {
+        0
+    } else {
+        ratio >> (-exp) as u32
+    }
 }
 
 fn compact_to_target(bits: u32) -> Result<[u8; 32], PoolError> {

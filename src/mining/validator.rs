@@ -8,7 +8,7 @@
 ///  - Stale share detection (job not current)
 ///  - Version-rolling validation (BIP320 mask enforcement)
 use crate::{
-    bitcoin::template::{difficulty_to_target, double_sha256, StratumJob},
+    bitcoin::template::{difficulty_to_target, double_sha256, hash_to_difficulty, StratumJob},
     error::PoolError,
     mining::engine::JobEntry,
 };
@@ -30,6 +30,7 @@ pub const VERSION_ROLLING_MASK: u32 = 0x1FFF_E000;
 /// Per-session duplicate-share tracker.
 /// Stores (job_id, extranonce2_hex, ntime, nonce) tuples.
 /// Bounded to prevent memory exhaustion — evicts the oldest entry when full.
+#[derive(Clone, Default)]
 pub struct ShareSet {
     seen: HashSet<ShareKey>,
     /// Insertion-order queue for FIFO eviction.
@@ -113,11 +114,14 @@ pub enum ShareResult {
     /// Valid share meeting pool difficulty — keep mining
     Valid {
         assigned_difficulty: u64,
+        /// Actual difficulty of the hash (≥ assigned_difficulty).
+        hash_difficulty: u64,
         hash: [u8; 32],
     },
     /// 🎉 Valid share that ALSO meets network difficulty — submit block!
     Block {
-        assigned_difficulty: u64,
+        /// Actual difficulty of the hash.
+        hash_difficulty: u64,
         block_hex: String,
         hash: [u8; 32],
     },
@@ -133,31 +137,19 @@ pub enum ShareResult {
 ///   - `Ok(ShareResult::Valid)` — good share
 ///   - `Ok(ShareResult::Block)` — block found, submit immediately
 ///   - `Err(PoolError::*)` — rejected share with reason
-pub fn validate_share(
+pub fn validate_share_no_dedup(
     params: &ShareParams,
     job: &StratumJob,
     job_entry: &JobEntry,
     extranonce1: &[u8],
     session_difficulty: u64,
-    share_set: &mut ShareSet,
 ) -> Result<ShareResult, PoolError> {
     // ── 1. Stale job check ────────────────────────────────────────────────────
     if job_entry.superseded_by_clean {
         return Err(PoolError::StaleJob(params.job_id.clone()));
     }
 
-    // ── 2. Duplicate share check ──────────────────────────────────────────────
-    if share_set.check_and_insert(
-        &params.job_id,
-        &params.extranonce2,
-        params.ntime,
-        params.nonce,
-        params.version_bits.unwrap_or(0),
-    ) {
-        return Err(PoolError::DuplicateShare);
-    }
-
-    // ── 3. ntime validation — pool acceptance policy, not consensus ──────────
+    // ── 2. ntime validation — pool acceptance policy, not consensus ──────────
     // Bitcoin consensus allows any ntime ≥ median-time-past. This window
     // (cur_time..cur_time+7200) is a tighter pool-side drift limit.
     if params.ntime < job.cur_time || params.ntime > job.cur_time.saturating_add(7200) {
@@ -170,14 +162,13 @@ pub fn validate_share(
         });
     }
 
-    // ── 4. Assemble coinbase ──────────────────────────────────────────────────
+    // ── 3. Assemble coinbase ──────────────────────────────────────────────────
     let coinbase = job.assemble_coinbase(extranonce1, &params.extranonce2);
-    let _coinbase_hash = double_sha256(&coinbase);
 
-    // ── 5. Compute merkle root ────────────────────────────────────────────────
+    // ── 4. Compute merkle root ────────────────────────────────────────────────
     let merkle_root = job.merkle_root(&coinbase);
 
-    // ── 6. Resolve version (with optional BIP320 rolling) ────────────────────
+    // ── 5. Resolve version (with optional BIP320 rolling) ────────────────────
     let version = resolve_version(
         job.version,
         params.version_bits,
@@ -212,7 +203,9 @@ pub fn validate_share(
         return Err(PoolError::LowDifficulty);
     }
 
-    // ── 10. Check if hash also meets network target (BLOCK FOUND!) ────────────
+    let hash_difficulty = hash_to_difficulty(&hash);
+
+    // ── 6. Check if hash also meets network target (BLOCK FOUND!) ────────────
     if meets_target(&hash, &job.network_target) {
         let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
         tracing::info!(
@@ -221,15 +214,36 @@ pub fn validate_share(
             hex::encode(hash)
         );
         return Ok(ShareResult::Block {
-            assigned_difficulty: session_difficulty,
+            hash_difficulty,
             block_hex,
             hash,
         });
     }
     Ok(ShareResult::Valid {
         assigned_difficulty: session_difficulty,
+        hash_difficulty,
         hash,
     })
+}
+
+pub fn validate_share(
+    params: &ShareParams,
+    job: &StratumJob,
+    job_entry: &JobEntry,
+    extranonce1: &[u8],
+    session_difficulty: u64,
+    share_set: &mut ShareSet,
+) -> Result<ShareResult, PoolError> {
+    if share_set.check_and_insert(
+        &params.job_id,
+        &params.extranonce2,
+        params.ntime,
+        params.nonce,
+        params.version_bits.unwrap_or(0),
+    ) {
+        return Err(PoolError::DuplicateShare);
+    }
+    validate_share_no_dedup(params, job, job_entry, extranonce1, session_difficulty)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

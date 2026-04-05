@@ -30,7 +30,7 @@ impl Vardiff {
         Self {
             current: initial_difficulty,
             cfg,
-            share_times: VecDeque::with_capacity(256),
+            share_times: VecDeque::with_capacity(8_192),
             last_retarget: Instant::now(),
             shares_since_retarget: 0,
         }
@@ -43,8 +43,8 @@ impl Vardiff {
         self.shares_since_retarget += 1;
         let now = Instant::now();
         self.share_times.push_back((now, assigned_difficulty));
-        // Evict old entries (keep only last 5 minutes)
-        let cutoff = now - Duration::from_secs(300);
+        // Evict old entries (keep only last 24 hours)
+        let cutoff = now - Duration::from_secs(86_400);
         while self.share_times.front().is_some_and(|&(t, _)| t < cutoff) {
             self.share_times.pop_front();
         }
@@ -103,13 +103,6 @@ impl Vardiff {
         } else {
             None
         }
-    }
-
-    /// Estimated hashrate in H/s based on shares in the last 5 minutes.
-    /// Uses the session's assigned difficulty at the time each share was accepted.
-    /// This is accurate when miners follow the assigned target (normal case for a solo pool).
-    pub fn estimated_hashrate(&self) -> f64 {
-        self.estimated_hashrate_in_window(std::time::Duration::from_secs(300))
     }
 
     /// Estimated hashrate in H/s over an arbitrary lookback `window`.

@@ -40,7 +40,7 @@ max_connections = 256
 idle_timeout_secs = 300
 
 [bitcoin_rpc]
-# Bitcoin Knots / Core RPC endpoint
+# Bitcoin RPC endpoint (core/knots)
 url = "http://127.0.0.1:8332"
 
 # Cookie-file authentication (leave user/password empty when using cookie)
