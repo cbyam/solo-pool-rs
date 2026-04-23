@@ -2,6 +2,7 @@
 ///
 /// Thin wrapper around `bitcoincore-rpc` providing:
 ///  - Cookie-file authentication (Bitcoin Knots compatible)
+///  - Transparent recovery from cookie rotation (bitcoind restart)
 ///  - `getblocktemplate`
 ///  - `submitblock`
 ///  - Best-block-hash polling (ZMQ fallback)
@@ -9,6 +10,7 @@ use crate::{config::RpcConfig, error::PoolError};
 use anyhow::{anyhow, Result};
 use bitcoincore_rpc::{Client, RpcApi};
 use serde_json::{json, Value};
+use std::sync::RwLock;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
@@ -36,28 +38,84 @@ pub struct GbtTransaction {
     pub weight: u64,
 }
 
+struct Inner {
+    client: Client,
+    /// Cookie contents (user, password) we built `client` with, if cookie auth is in use.
+    /// `None` means we're using explicit creds from config and rotation recovery is a no-op.
+    cookie: Option<(String, String)>,
+}
+
 pub struct RpcClient {
-    inner: Client,
+    cfg: RpcConfig,
+    state: RwLock<Inner>,
 }
 
 impl RpcClient {
     pub fn new(cfg: &RpcConfig) -> Result<Self> {
+        let cookie = cfg.read_cookie().ok();
         let auth = cfg.rpc_auth()?;
-        let inner = Client::new(&cfg.url, auth)?;
+        let client = Client::new(&cfg.url, auth)?;
         info!("Bitcoin RPC connected to {}", cfg.url);
-        Ok(Self { inner })
+        Ok(Self {
+            cfg: cfg.clone(),
+            state: RwLock::new(Inner { client, cookie }),
+        })
+    }
+
+    /// Run `f` against the current client. If it fails and the cookie file on
+    /// disk has changed since we built the client, rebuild and retry once —
+    /// this recovers from a bitcoind restart without operator intervention.
+    fn call_with_refresh<F, T>(&self, f: F) -> Result<T, PoolError>
+    where
+        F: Fn(&Client) -> Result<T, PoolError>,
+    {
+        let first_err = {
+            let guard = self.state.read().expect("rpc state lock poisoned");
+            match f(&guard.client) {
+                Ok(v) => return Ok(v),
+                Err(e) => e,
+            }
+        };
+
+        // Only rebuild on cookie rotation — unreadable cookie or unchanged cookie
+        // means this failure isn't something we can fix by reconnecting.
+        let fresh_cookie = match self.cfg.read_cookie() {
+            Ok(c) => c,
+            Err(_) => return Err(first_err),
+        };
+
+        {
+            let guard = self.state.read().expect("rpc state lock poisoned");
+            if guard.cookie.as_ref() == Some(&fresh_cookie) {
+                return Err(first_err);
+            }
+        }
+
+        warn!("Bitcoin RPC cookie changed on disk; rebuilding client and retrying");
+        let new_client = Client::new(
+            &self.cfg.url,
+            bitcoincore_rpc::Auth::UserPass(fresh_cookie.0.clone(), fresh_cookie.1.clone()),
+        )
+        .map_err(PoolError::Rpc)?;
+
+        {
+            let mut guard = self.state.write().expect("rpc state lock poisoned");
+            guard.client = new_client;
+            guard.cookie = Some(fresh_cookie);
+        }
+
+        let guard = self.state.read().expect("rpc state lock poisoned");
+        f(&guard.client)
     }
 
     pub fn get_block_template(&self) -> Result<GbtResult, PoolError> {
-        let request = json!({
-            "rules": ["segwit"],
-            "capabilities": ["coinbasetxn", "workid"]
-        });
-
-        let result: Value = self
-            .inner
-            .call("getblocktemplate", &[request])
-            .map_err(PoolError::Rpc)?;
+        let result: Value = self.call_with_refresh(|c| {
+            let request = json!({
+                "rules": ["segwit"],
+                "capabilities": ["coinbasetxn", "workid"]
+            });
+            c.call("getblocktemplate", &[request]).map_err(PoolError::Rpc)
+        })?;
 
         let transactions = result
             .get("transactions")
@@ -96,10 +154,10 @@ impl RpcClient {
     }
 
     pub fn submit_block(&self, block_hex: &str) -> Result<(), PoolError> {
-        let result: Value = self
-            .inner
-            .call("submitblock", &[json!(block_hex)])
-            .map_err(PoolError::Rpc)?;
+        let result: Value = self.call_with_refresh(|c| {
+            c.call("submitblock", &[json!(block_hex)])
+                .map_err(PoolError::Rpc)
+        })?;
 
         if result.is_null() {
             info!("🎉 Block accepted by network!");
@@ -117,11 +175,11 @@ impl RpcClient {
     }
 
     pub fn best_block_hash(&self) -> Result<String, PoolError> {
-        Ok(self
-            .inner
-            .get_best_block_hash()
-            .map_err(PoolError::Rpc)?
-            .to_string())
+        self.call_with_refresh(|c| {
+            c.get_best_block_hash()
+                .map(|h| h.to_string())
+                .map_err(PoolError::Rpc)
+        })
     }
 
     pub fn network_hashrate(
@@ -129,9 +187,10 @@ impl RpcClient {
         blocks: Option<u64>,
         height: Option<u64>,
     ) -> Result<f64, PoolError> {
-        self.inner
-            .get_network_hash_ps(blocks, height)
-            .map_err(PoolError::Rpc)
+        self.call_with_refresh(|c| {
+            c.get_network_hash_ps(blocks, height)
+                .map_err(PoolError::Rpc)
+        })
     }
 }
 
