@@ -270,10 +270,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding: 1.5rem; min-height: 100vh; }
-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; margin-bottom: 1.5rem; gap: 0.5rem; }
-h1 { grid-column: 1; font-size: 1.4rem; font-weight: 700; color: var(--accent); letter-spacing: -0.02em; text-align: left; margin: 0; }
-#network-hashrate-display { grid-column: 2; text-align: center; font-weight: 600; color: var(--accent); }
-.header-controls { grid-column: 3; justify-self: end; display: flex; gap: 1rem; align-items: center; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; gap: 0.5rem; }
+h1 { font-size: 1.4rem; font-weight: 700; color: var(--accent); letter-spacing: -0.02em; text-align: left; margin: 0; }
+.header-controls { display: flex; gap: 1rem; align-items: center; }
 #last-updated { font-size: 0.72rem; color: var(--muted); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.9rem; margin-bottom: 1.25rem; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.2rem; }
@@ -292,12 +291,16 @@ tr:last-child td { border-bottom: none; }
 .online { color: var(--green); }
 .offline { color: var(--red); }
 .empty-row { color: var(--muted); text-align: center; padding: 1.2rem; font-size: 0.875rem; }
+@keyframes blockFlash {
+  0% { background: var(--green); }
+  100% { background: transparent; }
+}
+#v-height.block-new { animation: blockFlash 0.8s ease-out; }
 </style>
 </head>
 <body>
 <header>
   <h1>&#9729; solo-pool-rs</h1>
-  <div id="network-hashrate-display">Network Hashrate: <span id="v-network-hashrate">—</span> / Diff: <span id="v-network-difficulty-header">—</span></div>
   <div class="header-controls">
     <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
     <span id="last-updated">Loading&hellip;</span>
@@ -375,11 +378,6 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value" id="v-reported-24h" style="font-size:0.8rem; font-weight:500;" title="24-hour moving average">24h avg: —</div>
   </div>
   <div class="card">
-    <div class="card-label">Total Effective Hashrate</div>
-    <div class="card-value accent" id="v-effective-hashrate" title="Accepted share rate hash estimate">—</div>
-    <div class="card-value" style="font-size:0.8rem; font-weight:500;">Based on accepted shares</div>
-  </div>
-  <div class="card">
     <div class="card-label">Active Workers</div>
     <div class="card-value" id="v-workers-online" style="font-size:0.8rem; font-weight:500;">Online: —</div>
     <div class="card-value" id="v-workers-offline" style="font-size:0.8rem; font-weight:500;">Offline: —</div>
@@ -391,8 +389,15 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value" id="v-stale-rate" style="font-size:0.8rem; font-weight:500;">Stale: —</div>
   </div>
   <div class="card">
+    <div class="card-label">Network</div>
+    <div class="card-value accent" id="v-net-hashrate" title="Current network hashrate">—</div>
+    <div class="card-value" id="v-net-diff" style="font-size:0.8rem; font-weight:500;" title="Current network difficulty">Diff: —</div>
+    <div class="card-value" id="v-net-next-adj" style="font-size:0.8rem; font-weight:500; color:var(--muted);" title="Estimated time until the next difficulty adjustment (2016-block epochs, ~10 min/block)">Next adj: —</div>
+  </div>
+  <div class="card">
     <div class="card-label">Block Height</div>
     <div class="card-value" id="v-height" title="Height of current best chain tip">—</div>
+    <div class="card-value" id="v-block-transaction-count" style="font-size:0.8rem; font-weight:500;">Txs: —</div>
     <div class="card-value" id="v-block-reward" style="font-size:0.8rem; font-weight:500;">Reward: —</div>
     <div class="card-value" id="v-btc-price" style="font-size:0.8rem; font-weight:500; color:var(--muted);">BTC: —</div>
   </div>
@@ -426,11 +431,12 @@ tr:last-child td { border-bottom: none; }
     <thead>
       <tr>
         <th>Worker</th>
+        <th>Mode</th>
         <th>Status</th>
         <th>Vardiff</th>
-        <th>Hashrate (10m)</th>
+        <th>Hashrate (1m)</th>
         <th>Hashrate (3h)</th>
-        <th>Effective (10m)</th>
+        <th>Hashrate (24h)</th>
         <th>Accepted</th>
         <th>Rejected</th>
         <th>Best Share</th>
@@ -439,13 +445,14 @@ tr:last-child td { border-bottom: none; }
       </tr>
     </thead>
     <tbody id="workers-tbody">
-      <tr><td colspan="11" class="empty-row">Loading workers…</td></tr>
+      <tr><td colspan="12" class="empty-row">Loading workers…</td></tr>
     </tbody>
   </table>
 
 <script>
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
+let lastBlockHeight = 0;
 
 const myChart = echarts.init(document.getElementById('hashrate-chart'), null, { renderer: 'canvas' });
 window.addEventListener('resize', () => myChart.resize());
@@ -467,6 +474,18 @@ function fmtDiff(d) {
   if (d >= 1e6)  return (d / 1e6 ).toFixed(2) + 'M';
   if (d >= 1e3)  return (d / 1e3 ).toFixed(1) + 'K';
   return d.toString();
+}
+
+function fmtNextAdjustment(height) {
+  if (!height || height <= 0) return '—';
+  // Difficulty retargets every 2016 blocks; estimate ~10 min/block.
+  const into = height % 2016;
+  const blocksLeft = 2016 - into;
+  const secs = blocksLeft * 600;
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const eta = d > 0 ? (d + 'd ' + h + 'h') : (h + 'h');
+  return '~' + eta + ' (' + blocksLeft + ' blk)';
 }
 
 function fmtUptime(secs) {
@@ -527,17 +546,28 @@ async function refresh() {
 
     const reported10m = d.total_hashrate_10m || 0;
     const reported3h  = d.total_hashrate_3h  || 0;
-    const effective10m = d.total_effective_10m || 0;
 
     document.getElementById('v-reported-current').textContent = fmtHr(reported10m, false);
     document.getElementById('v-reported-3h').textContent = '3h avg: ' + fmtHr(reported3h, false);
     document.getElementById('v-reported-24h').textContent = '24h avg: ' + fmtHr(d.total_hashrate_24h || 0, false);
-    document.getElementById('v-effective-hashrate').textContent = fmtHr(effective10m, false);
 
     updateProbability(d.total_hashrate_10m || 0, d.network_hashrate_hps || 0);
 
     document.getElementById('v-miners').textContent = d.connected_miners;
+    
+    // Flash green on new block height
+    if (d.current_height !== lastBlockHeight) {
+      const heightEl = document.getElementById('v-height');
+      heightEl.classList.remove('block-new');
+      // Trigger reflow to restart animation
+      void heightEl.offsetWidth;
+      heightEl.classList.add('block-new');
+      lastBlockHeight = d.current_height;
+    }
     document.getElementById('v-height').textContent = d.current_height.toLocaleString();
+    if (d.current_block_transaction_count != null) {
+      document.getElementById('v-block-transaction-count').textContent = 'Txs: ' + d.current_block_transaction_count.toLocaleString();
+    }
     if (d.current_coinbase_value) {
       const btc = d.current_coinbase_value / 1e8;
       document.getElementById('v-block-reward').textContent = 'Reward: ' + btc.toFixed(8) + ' BTC';
@@ -548,8 +578,12 @@ async function refresh() {
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
     document.getElementById('v-network-difficulty').textContent = d.network_difficulty.toFixed(4);
-    document.getElementById('v-network-difficulty-header').textContent = d.network_difficulty.toFixed(4);
     document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';
+
+    // Network card (human-readable hashrate + difficulty + next-adjustment ETA)
+    document.getElementById('v-net-hashrate').textContent = fmtHr(d.network_hashrate_hps || 0, false);
+    document.getElementById('v-net-diff').textContent = 'Diff: ' + fmtDiff(d.network_difficulty || 0);
+    document.getElementById('v-net-next-adj').textContent = 'Next adj: ' + fmtNextAdjustment(d.current_height || 0);
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('v-uptime').textContent = fmtUptime(d.uptime_secs);
@@ -571,27 +605,27 @@ async function refresh() {
     document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;
     document.getElementById('v-workers-degraded').textContent = 'Degraded: ' + degradedCount;
 
-    document.getElementById('v-network-hashrate').textContent = fmtHr(d.network_hashrate_hps, false);
-
     // Workers table
     const tbody = document.getElementById('workers-tbody');
     if (workers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="11" class="empty-row">No connected workers</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" class="empty-row">No connected workers</td></tr>';
     } else {
       tbody.innerHTML = workers
-        .sort((a, b) => b.hashrate_10m_hps - a.hashrate_10m_hps)
+        .sort((a, b) => b.hashrate_60s_hps - a.hashrate_60s_hps)
         .map(w => {
           const workerName = w.worker.includes('.') ? w.worker.split('.')[1] : w.worker;
           const nowSec = Math.floor(Date.now() / 1000);
           const lastShareAgo = w.last_submit_ts > 0 ? fmtUptime(nowSec - w.last_submit_ts) : '—';
           const uptime = w.connected_ts > 0 ? fmtUptime(nowSec - w.connected_ts) : '—';
+          const mode = (w.protocol || 'sv1').toUpperCase();
           return `<tr>
             <td>${escHtml(workerName)}</td>
+            <td>${mode}</td>
             <td class="${w.online ? 'online' : 'offline'}">${w.online ? 'Online' : 'Offline'}</td>
             <td>${fmtDiff(w.current_vardiff)}</td>
-            <td>${fmtHr(w.hashrate_10m_hps, false)}</td>
+            <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
-            <td>${fmtHr(w.effective_10m_hps, false)}</td>
+            <td>${fmtHr(w.hashrate_24h_hps, false)}</td>
             <td>${w.shares_accepted.toLocaleString()}</td>
             <td>${w.shares_rejected.toLocaleString()}</td>
             <td>${fmtDiff(w.best_share_difficulty)}</td>
