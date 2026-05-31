@@ -15,6 +15,9 @@ pub struct Config {
     pub security: SecurityConfig,
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
+    /// Stratum V2 settings. Optional — defaults to enabled if the section is absent.
+    #[serde(default)]
+    pub sv2: Sv2Config,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,6 +34,30 @@ pub struct PoolConfig {
     pub extranonce2_size: usize,
     pub max_connections: usize,
     pub idle_timeout_secs: u64,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stratum V2
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Sv2Config {
+    /// Accept Stratum V2 (Extended Channel, Noise-encrypted) connections on the
+    /// same listen port as SV1. The protocol is auto-detected from the first
+    /// byte of each connection ('{' → SV1 JSON, otherwise → SV2 Noise
+    /// handshake). When false, the pool rejects SV2 and only serves SV1.
+    ///
+    /// The Noise authority keypair is generated per process; miners such as the
+    /// NerdQAxe++ do not pin/verify the pool identity, so no key configuration is
+    /// required. (A persistent, configurable authority key can be added later for
+    /// identity pinning.)
+    pub enabled: bool,
+}
+
+impl Default for Sv2Config {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

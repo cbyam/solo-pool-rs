@@ -226,6 +226,7 @@ pub fn validate_share_no_dedup(
     })
 }
 
+#[allow(dead_code)]
 pub fn validate_share(
     params: &ShareParams,
     job: &StratumJob,
