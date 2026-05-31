@@ -1,6 +1,6 @@
 [package]
 name = "solo-pool-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75.0"
 authors = []
@@ -27,11 +27,20 @@ bitcoincore-rpc = "0.19"
 tmq = "0.4"          # async ZMQ bindings on top of tokio (uses libzmq)
 tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 
-# ── Stratum V1 protocol library (SRI) ─────────────────────────────────────────
-# sv1-api = { git = "https://github.com/stratum-mining/stratum", package = "sv1-api" }
-# stratum-core = { git = "https://github.com/stratum-mining/stratum" }
-# NOTE: Uncomment above when integrating SRI crates.
-# We use a thin local sv1 layer now so the interface is stable for migration.
+# ── Stratum V2 protocol (SRI crates) ──────────────────────────────────────────
+# Plaintext SV2 (Extended Channel) support. We use binary_sv2 for message
+# (de)serialization and framing_sv2 for the 6-byte SV2 frame header; the per-
+# connection frame read/write is done directly over tokio (see protocol/sv2).
+#
+# SV1 is still spoken via the hand-rolled layer in protocol/sv1.rs — both
+# protocols are auto-detected on the same listen port (see network/server.rs).
+#
+# Phase 2 (Noise encryption) will add codec_sv2 (noise_sv2 feature) + noise_sv2.
+const_sv2 = "4.0.1"            # shared SV2 message-type / channel-bit constants
+binary_sv2 = "5.0.1"           # SV2 binary message (de)serialization
+framing_sv2 = "6.0.1"          # SV2 frame header (extension_type, msg_type, length)
+common_messages_sv2 = "7.1.0"  # SetupConnection(Success/Error)
+mining_sv2 = "9.0.0"           # mining protocol messages (extended channel)
 
 # ── Serialization ──────────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
@@ -60,9 +69,11 @@ parking_lot = "0.12"
 dashmap = "5"
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
-async-trait = "0.1"
 rusqlite = "0.29"
 charming = "0.6"
+codec_sv2 = { version = "5.0.0", features = ["noise_sv2"] }
+noise_sv2 = "1.4.2"
+secp256k1 = { version = "0.28", features = ["rand", "std"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
