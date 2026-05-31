@@ -1,4 +1,4 @@
-/// solo-pool-rs — Solo BTC mining pool (Stratum V1, SV2-ready)
+/// solo-pool-rs — Solo BTC mining pool (Stratum V1 + V2, auto-detected on one port)
 ///
 /// Startup sequence:
 ///   1. Load config.toml

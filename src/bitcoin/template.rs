@@ -82,13 +82,26 @@ pub struct StratumJob {
 }
 
 impl StratumJob {
-    /// Assemble the full coinbase by splicing extranonce1 + extranonce2.
+    /// Assemble the full coinbase by splicing the pool prefix + miner extranonce
+    /// into the reserved region.
+    ///
+    /// The two parts are placed back-to-back and must exactly fill the reserved
+    /// extranonce region (`extranonce1_len + extranonce2_len`). The split between
+    /// them is chosen per session, not fixed: SV1 uses `extranonce1_len` /
+    /// `extranonce2_len`, while an SV2 extended channel may use a different
+    /// prefix length (`total - granted`) as long as the two still sum to the
+    /// reserved width. A mismatched total leaves the region zeroed so the share
+    /// simply fails validation instead of panicking.
     pub fn assemble_coinbase(&self, extranonce1: &[u8], extranonce2: &[u8]) -> Vec<u8> {
         let mut cb = self.coinbase_template.clone();
         let off = self.extranonce_offset;
-        cb[off..off + self.extranonce1_len].copy_from_slice(extranonce1);
-        cb[off + self.extranonce1_len..off + self.extranonce1_len + self.extranonce2_len]
-            .copy_from_slice(extranonce2);
+        let total = self.extranonce1_len + self.extranonce2_len;
+        let (p, m) = (extranonce1.len(), extranonce2.len());
+        if p + m != total {
+            return cb;
+        }
+        cb[off..off + p].copy_from_slice(extranonce1);
+        cb[off + p..off + p + m].copy_from_slice(extranonce2);
         cb
     }
 
@@ -372,6 +385,7 @@ pub fn compute_merkle_branch_raw(txids: &[[u8; 32]]) -> Vec<[u8; 32]> {
     branch
 }
 
+#[allow(dead_code)]
 pub fn compute_merkle_branch(txids: &[[u8; 32]]) -> Vec<String> {
     compute_merkle_branch_raw(txids)
         .iter()

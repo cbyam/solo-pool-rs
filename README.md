@@ -2,7 +2,7 @@
 
 [![GitHub](https://img.shields.io/github/stars/cbyam/solo-pool-rs)](https://github.com/cbyam/solo-pool-rs)
 
-A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum V1** with a clean migration path to **Stratum V2** (SRI).
+A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum V1 and Stratum V2** (SRI). Both protocols are auto-detected on a single listen port.
 
 > **Loto mining**: 100% of the block reward goes to your configured address. No fees, no payout splits, no external dependencies beyond a Bitcoin node.
 
@@ -12,8 +12,8 @@ A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum 
 
 | Category | Detail |
 |---|---|
-| Protocol | Stratum V1 (JSON-RPC over TCP) |
-| ASIC extensions | `version-rolling` (BIP320), `minimum-difficulty`, `subscribe-extranonce`, `mining.configure` |
+| Protocol | Stratum V1 (JSON-RPC over TCP) **and** Stratum V2 (Extended Channel, Noise-encrypted) — auto-detected per connection on one port |
+| ASIC extensions | SV1: `version-rolling` (BIP320), `minimum-difficulty`, `subscribe-extranonce`, `mining.configure`. SV2: extended channel with BIP320 version rolling |
 | Auth | `mining.authorize` (any worker name accepted — solo pool) |
 | Difficulty | Per-miner vardiff with configurable target share time, retarget interval, and max adjustment factor |
 | Block template | `getblocktemplate` via Bitcoin RPC, ZMQ `hashblock` push (RPC poll fallback) |
@@ -23,7 +23,7 @@ A solo Bitcoin mining pool written in Rust, targeting ASIC miners via **Stratum 
 | Security | Per-IP connection rate limiting, per-session share rate limiting (token bucket), invalid share counting, IP ban list with TTL, message size limit |
 | Metrics | Prometheus endpoint (`/metrics`) — hashrate, share counts, block finds, connected miners |
 | Logging | Structured JSON or human-readable via `tracing` |
-| SV2 | Migration shim documented in `src/protocol/sv2_stub.rs` |
+| SV2 | Native Noise-encrypted mining protocol (`src/protocol/sv2/`) using the SRI crates — pool acts as the Noise responder. Authority keypair auto-generated; miner identity pinning not required. |
 
 ---
 
@@ -102,6 +102,26 @@ Configure your ASIC firmware (Braiins OS, stock firmware, etc.):
 ### Version-rolling (BIP320)
 
 Most modern ASICs and firmware (Braiins OS, LuxOS, etc.) will auto-negotiate `mining.configure` and enable version-rolling. No extra configuration needed — the pool advertises mask `1fffe000`.
+
+### Stratum V2 (e.g. NerdQAxe++)
+
+SV2-capable firmware connects to the **same host and port** as SV1 — the pool
+auto-detects the protocol from the first byte, so there is no separate port.
+
+On a NerdQAxe++ (AxeOS ≥ v1.0.37):
+
+| Field | Value |
+|---|---|
+| Stratum | select **Stratum V2** |
+| Encryption | **on** (Noise) — no authority pubkey needed; leave it unset |
+| Host / Port | `<your-server-ip>` : `3333` (same as SV1) |
+| Worker | anything (used as the SV2 `user_identity`) |
+
+The connection is secured with the SV2 **Noise** handshake (pool = responder),
+then the device opens an **Extended Channel**; the pool serves it
+`NewExtendedMiningJob` + `SetNewPrevHash` from the same `getblocktemplate`
+pipeline as SV1. Set `enabled = false` under `[sv2]` in `config.toml` to refuse
+SV2 and serve SV1 only.
 
 ---
 
