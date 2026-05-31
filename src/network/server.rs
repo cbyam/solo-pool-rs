@@ -28,7 +28,14 @@ pub async fn run(
     stats: Arc<PoolStats>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&config.pool.listen_addr).await?;
-    info!("Stratum V1 listener on {}", config.pool.listen_addr);
+    if config.sv2.enabled {
+        info!(
+            "Stratum listener on {} (SV1 + SV2 auto-detected)",
+            config.pool.listen_addr
+        );
+    } else {
+        info!("Stratum V1 listener on {}", config.pool.listen_addr);
+    }
 
     let conn_limiter = ConnectionRateLimiter::new(config.security.max_connections_per_ip);
     let active_count = Arc::new(AtomicUsize::new(0));
@@ -99,7 +106,31 @@ pub async fn run(
         let active_count = active_count.clone();
 
         tokio::spawn(async move {
-            crate::network::session::run(stream, peer, config, engine, ban_list, stats).await;
+            // Auto-detect the protocol from the first byte without consuming it:
+            // SV1 is JSON ('{'); SV2 frames start with a binary extension_type
+            // (0x00 for the standard mining protocol's SetupConnection).
+            let mut first = [0u8; 1];
+            let is_sv1 = match stream.peek(&mut first).await {
+                Ok(0) => {
+                    // Connection closed before sending anything.
+                    active_count.fetch_sub(1, Ordering::Relaxed);
+                    return;
+                }
+                Ok(_) => first[0] == b'{',
+                Err(e) => {
+                    warn!("Peek failed for {peer}: {e}");
+                    active_count.fetch_sub(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+
+            if is_sv1 {
+                crate::network::session::run(stream, peer, config, engine, ban_list, stats).await;
+            } else if config.sv2.enabled {
+                crate::protocol::sv2::run(stream, peer, config, engine, ban_list, stats).await;
+            } else {
+                warn!("SV2 connection from {peer} rejected (sv2.enabled = false)");
+            }
             active_count.fetch_sub(1, Ordering::Relaxed);
         });
     }

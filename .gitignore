@@ -4,4 +4,6 @@ config.toml
 *.log
 .vscode/
 .claude/
-*.sqllite
+.cursor/
+.windsurf/
+*.sqlite

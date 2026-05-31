@@ -30,7 +30,13 @@ initial_difficulty = 4096
 # Extranonce1 length in bytes (4 is standard; supports up to 255 miners)
 extranonce1_size = 4
 
-# Extranonce2 size advertised to miners (bytes)
+# Extranonce2 size advertised to SV1 miners (bytes). The Avalon Nano needs 4.
+#
+# extranonce1_size + extranonce2_size is the TOTAL extranonce region reserved in
+# the coinbase. SV2 devices carve their requested rolling extranonce out of this
+# same total (prefix = total - granted), so the total must be >= any SV2 device's
+# min_extranonce_size (a NerdQAxe++ asks for 8 → 4 + 4 = 8 works). Raise the
+# total (e.g. extranonce1_size = 8) only if an SV2 OpenChannel is still rejected.
 extranonce2_size = 4
 
 # Maximum number of simultaneous miner connections
@@ -38,6 +44,19 @@ max_connections = 256
 
 # Idle connection timeout (seconds) — disconnect miners that stop responding
 idle_timeout_secs = 300
+
+[sv2]
+# Accept Stratum V2 (Extended Channel, Noise-encrypted) connections on the SAME
+# listen_addr as SV1. The protocol is auto-detected from the first byte of each
+# connection, so no separate port is needed. Point an SV2-capable miner (e.g. a
+# NerdQAxe++ on AxeOS >= v1.0.37, "Stratum V2" selected) at the same host:port
+# as your SV1 miners.
+#
+# The Noise authority keypair is generated automatically per process; the miner
+# does not verify pool identity, so no key configuration is required.
+#
+# Set to false to refuse SV2 and serve SV1 only.
+enabled = true
 
 [bitcoin_rpc]
 # Bitcoin RPC endpoint (core/knots)
