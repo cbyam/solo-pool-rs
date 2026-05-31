@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.75.0"
 authors = []
-description = "Solo BTC mining pool with Stratum V1 (SV2-ready), targeting ASIC miners"
+description = "Solo BTC mining pool for ASIC miners — Stratum V1 and Noise-encrypted Stratum V2, auto-detected on a single port"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
