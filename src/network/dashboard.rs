@@ -3,8 +3,9 @@
 /// Visual HTTP dashboard served on the configured prometheus_addr.
 ///
 /// Routes:
-///   GET /         → HTML dashboard (Chart.js, auto-refreshes every 10 s)
-///   GET /stats    → JSON snapshot of PoolStats
+///   GET /            → HTML dashboard (Chart.js, auto-refreshes every 10 s)
+///   GET /favicon.ico → embedded site icon
+///   GET /stats       → JSON snapshot of PoolStats
 ///   GET /metrics  → Prometheus text (via PrometheusHandle::render)
 use crate::stats::PoolStats;
 use axum::{
@@ -59,6 +60,7 @@ pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<Prometh
     let state = DashState { stats, prometheus };
     let app = Router::new()
         .route("/", get(dashboard_html))
+        .route("/favicon.ico", get(favicon))
         .route("/stats", get(stats_json))
         .route("/history", get(history_json))
         .route("/chart", get(chart_json))
@@ -82,6 +84,13 @@ pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<Prometh
 
 async fn dashboard_html() -> Html<&'static str> {
     Html(DASHBOARD_HTML)
+}
+
+async fn favicon() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/x-icon")],
+        include_bytes!("favicon.ico").as_slice(),
+    )
 }
 
 async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsSnapshot> {
@@ -255,6 +264,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
 <title>solo-pool-rs</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 <style>
