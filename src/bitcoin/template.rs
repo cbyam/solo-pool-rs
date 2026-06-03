@@ -15,15 +15,40 @@ use bitcoin::{
 };
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Job ID counter
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Per-job sequence number — the low 32 bits of every job id.
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Per-process epoch occupying the high 32 bits of every job id.
+///
+/// The sequence counter restarts at 1 on each process start, so without this a
+/// redeploy re-mints the same ids the previous process used. In-flight shares
+/// from before the restart would then resolve against a *different* job that
+/// happens to share the id and get booked as `stale`. Seeding the high bits from
+/// the wall clock makes post-restart ids disjoint from the previous process's,
+/// so such stragglers honestly surface as `job_not_found` instead.
+fn job_epoch() -> u64 {
+    static EPOCH: OnceLock<u64> = OnceLock::new();
+    *EPOCH.get_or_init(|| {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // Low 32 bits of the unix-millis clock, parked in the high half of the id.
+        // Distinct per millisecond — two restarts can't collide in practice.
+        (millis & 0xFFFF_FFFF) << 32
+    })
+}
+
 pub fn next_job_id() -> String {
-    format!("{:08x}", JOB_COUNTER.fetch_add(1, Ordering::Relaxed))
+    let seq = JOB_COUNTER.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF;
+    format!("{:016x}", job_epoch() | seq)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
