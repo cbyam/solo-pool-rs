@@ -1,0 +1,34 @@
+# solo-pool-rs — example Docker deployment.
+#
+#   1. cp config.toml.example config.toml   # edit coinbase_address etc.
+#   2. docker compose up -d
+#
+# host networking is the simplest setup: the pool reaches bitcoind's RPC
+# (127.0.0.1:8332) and ZMQ (127.0.0.1:28332) on the host, and the listen/metrics
+# ports in config.toml are exposed directly. On non-Linux hosts (Docker Desktop)
+# host networking is limited — see the note at the bottom.
+services:
+  solo-pool:
+    # Use the published image…
+    image: ghcr.io/cbyam/solo-pool-rs:latest
+    # …or build from this checkout instead:
+    # build: .
+    container_name: solo-pool-rs
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      # Read the Bitcoin cookie. Left side is the host path (default Bitcoin Core
+      # datadir — change it if you use a custom datadir); right side matches the
+      # default cookie_path = "~/.bitcoin/.cookie" inside the container.
+      - ${HOME}/.bitcoin/.cookie:/root/.bitcoin/.cookie:ro
+      # Persist all-time stats. Set stats_db_path = "data/pool_stats.sqlite" in
+      # config.toml so the SQLite file lands in this mounted volume.
+      - ./data:/app/data
+
+# Without host networking, drop `network_mode: host`, add:
+#   ports:
+#     - "3333:3333"   # stratum (match listen_addr)
+#     - "9090:9090"   # dashboard + metrics
+# and set bitcoin_rpc.url in config.toml to host.docker.internal:8332
+# (Docker Desktop) or your host's LAN IP.
