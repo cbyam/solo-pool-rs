@@ -1,0 +1,57 @@
+name: Release
+
+# Cut a release by pushing a tag, e.g.:
+#   git tag -a v0.3.0 -m "v0.3.0" && git push origin v0.3.0
+# This builds a Linux x86_64 binary, attaches it to a GitHub Release, and
+# generates release notes from the commits since the previous tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build & publish release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libzmq
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          install -Dm755 target/release/solo-pool-rs dist/solo-pool-rs
+          install -Dm644 config.toml.example dist/config.toml.example
+          install -Dm644 README.md dist/README.md
+          tar -C dist -czf "solo-pool-rs-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" .
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: solo-pool-rs-*.tar.gz
+          generate_release_notes: true
+          body: |
+            ## solo-pool-rs ${{ github.ref_name }}
+
+            ### Install
+
+            **Docker (recommended)** — no system dependencies:
+            ```bash
+            docker pull ghcr.io/cbyam/solo-pool-rs:${{ github.ref_name }}
+            ```
+
+            **Binary** — the attached tarball is a dynamically linked Linux
+            x86_64 build and requires `libzmq5` on the host
+            (`apt-get install libzmq5`).

@@ -25,8 +25,8 @@ use charming::{
     series::Line,
     Chart,
 };
-use serde::{Deserialize, Serialize};
 use metrics_exporter_prometheus::PrometheusHandle;
+use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tracing::{info, warn};
 
@@ -155,10 +155,10 @@ async fn chart_json(
     let window = params.window.as_deref().unwrap_or("36h");
     let window_secs: u64 = match window {
         "36h" => 36 * 3600,
-        "1w"  => 7 * 24 * 3600,
-        "1m"  => 30 * 24 * 3600,
-        "6m"  => 6 * 30 * 24 * 3600,
-        _     => 0,
+        "1w" => 7 * 24 * 3600,
+        "1m" => 30 * 24 * 3600,
+        "6m" => 6 * 30 * 24 * 3600,
+        _ => 0,
     };
 
     let since = if window_secs > 0 {
@@ -243,8 +243,7 @@ async fn chart_json(
                         .width(1.0),
                 )
                 .area_style(
-                    AreaStyle::new()
-                        .color(Color::Value("rgba(56,189,248,0.08)".to_string())),
+                    AreaStyle::new().color(Color::Value("rgba(56,189,248,0.08)".to_string())),
                 ),
         );
 
@@ -313,6 +312,7 @@ tr:last-child td { border-bottom: none; }
   <h1>&#9729; solo-pool-rs</h1>
   <div class="header-controls">
     <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
+    <span id="server-uptime" style="font-size: 0.72rem; color: var(--muted);" title="How long this pool process has been running">Uptime: &mdash;</span>
     <span id="last-updated">Loading&hellip;</span>
   </div>
 </header>
@@ -403,6 +403,7 @@ tr:last-child td { border-bottom: none; }
     <div class="card-value accent" id="v-net-hashrate" title="Current network hashrate">—</div>
     <div class="card-value" id="v-net-diff" style="font-size:0.8rem; font-weight:500;" title="Current network difficulty">Diff: —</div>
     <div class="card-value" id="v-net-next-adj" style="font-size:0.8rem; font-weight:500; color:var(--muted);" title="Estimated time until the next difficulty adjustment (2016-block epochs, ~10 min/block)">Next adj: —</div>
+    <div class="card-value" id="v-net-adj-pct" style="font-size:0.8rem; font-weight:500; color:var(--muted);" title="Estimated difficulty change at the next retarget, from actual block timestamps in the current 2016-block epoch. Clamped to the protocol's [-75%, +300%] range.">Est. move: —</div>
   </div>
   <div class="card">
     <div class="card-label">Block Height</div>
@@ -496,6 +497,19 @@ function fmtNextAdjustment(height) {
   const h = Math.floor((secs % 86400) / 3600);
   const eta = d > 0 ? (d + 'd ' + h + 'h') : (h + 'h');
   return '~' + eta + ' (' + blocksLeft + ' blk)';
+}
+
+// Estimated difficulty change at the next retarget. Computed on the backend from
+// accurate epoch block timestamps (rpc.estimate_difficulty_change_pct); null
+// until first polled or right after a retarget.
+function fmtAdjustmentPct(pct) {
+  if (pct === null || pct === undefined || !isFinite(pct)) {
+    return { text: '—', color: 'var(--muted)' };
+  }
+  const sign = pct >= 0 ? '+' : '';
+  // Difficulty up = harder for miners (red), down = easier (green).
+  const color = pct > 0.05 ? 'var(--red)' : (pct < -0.05 ? 'var(--green)' : 'var(--muted)');
+  return { text: sign + pct.toFixed(2) + '%', color };
 }
 
 function fmtUptime(secs) {
@@ -594,9 +608,14 @@ async function refresh() {
     document.getElementById('v-net-hashrate').textContent = fmtHr(d.network_hashrate_hps || 0, false);
     document.getElementById('v-net-diff').textContent = 'Diff: ' + fmtDiff(d.network_difficulty || 0);
     document.getElementById('v-net-next-adj').textContent = 'Next adj: ' + fmtNextAdjustment(d.current_height || 0);
+    const adj = fmtAdjustmentPct(d.est_difficulty_change_pct);
+    const adjEl = document.getElementById('v-net-adj-pct');
+    adjEl.textContent = 'Est. move: ' + adj.text;
+    adjEl.style.color = adj.color;
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('v-uptime').textContent = fmtUptime(d.uptime_secs);
+    document.getElementById('server-uptime').textContent = 'Uptime: ' + fmtUptime(d.uptime_secs);
 
     const total = d.shares_accepted + d.shares_rejected;
     const rejectPct = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';

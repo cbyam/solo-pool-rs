@@ -1,0 +1,53 @@
+[Unit]
+Description=solo-pool-rs — solo Bitcoin mining pool
+Documentation=https://github.com/cbyam/solo-pool-rs
+# Start after the network is up. If you run bitcoind under systemd too, add it
+# so the pool starts after your node:
+#   After=network-online.target bitcoind.service
+#   Wants=network-online.target bitcoind.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/solo-pool-rs /etc/solo-pool-rs/config.toml
+Restart=on-failure
+RestartSec=5
+
+# Dedicated unprivileged user (create it once — see README).
+User=solo-pool
+Group=solo-pool
+
+# systemd creates and owns /var/lib/solo-pool-rs for you. Point the SQLite
+# stats DB there:  stats_db_path = "/var/lib/solo-pool-rs/pool_stats.sqlite"
+StateDirectory=solo-pool-rs
+
+# Logs go to the journal (journalctl -u solo-pool-rs). Keep log_dir empty in
+# config.toml to use this. For file logging instead, uncomment the next line
+# and set log_dir = "/var/log/solo-pool-rs" in config.toml:
+#   LogsDirectory=solo-pool-rs
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=strict
+# read-only (not true) so a Bitcoin cookie under a home dir stays readable.
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The pool must READ bitcoind's RPC cookie. Either add `solo-pool` to the group
+# that can read your node's data dir (bitcoind's own group, or a shared node
+# group like `bitstack` covering CLN/electrum/etc.) and set rpccookieperms=group
+# so the cookie is group-readable, or use explicit rpcuser/rpcpassword in
+# config.toml instead of cookie auth. If your datadir is outside any home
+# directory, also grant read access here, e.g.:
+#   ReadOnlyPaths=/srv/bitcoin/.cookie
+
+[Install]
+WantedBy=multi-user.target
