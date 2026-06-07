@@ -114,7 +114,8 @@ impl RpcClient {
                 "rules": ["segwit"],
                 "capabilities": ["coinbasetxn", "workid"]
             });
-            c.call("getblocktemplate", &[request]).map_err(PoolError::Rpc)
+            c.call("getblocktemplate", &[request])
+                .map_err(PoolError::Rpc)
         })?;
 
         let transactions = result
@@ -190,6 +191,42 @@ impl RpcClient {
         self.call_with_refresh(|c| {
             c.get_network_hash_ps(blocks, height)
                 .map_err(PoolError::Rpc)
+        })
+    }
+
+    /// Estimate the difficulty change (percent, e.g. `+1.85`) at the next
+    /// 2016-block retarget using accurate on-chain timestamps for the current
+    /// epoch — not a hashrate proxy.
+    ///
+    /// The retarget keeps 2016 blocks at ~10 min each, so
+    ///   new / old = target_timespan / projected_actual_timespan
+    ///             = 600 × blocks_into_epoch / elapsed_seconds
+    /// where `elapsed_seconds` is measured between the first block of the epoch
+    /// and the chain tip. Clamped to the protocol's [-75%, +300%] limit.
+    /// Returns `NaN` right after a retarget (no interval to measure yet).
+    pub fn estimate_difficulty_change_pct(&self) -> Result<f64, PoolError> {
+        self.call_with_refresh(|c| {
+            let height = c.get_block_count().map_err(PoolError::Rpc)?;
+            let into_epoch = height % 2016;
+            if into_epoch == 0 {
+                return Ok(f64::NAN);
+            }
+            let epoch_start = height - into_epoch;
+
+            let tip_hash = c.get_block_hash(height).map_err(PoolError::Rpc)?;
+            let start_hash = c.get_block_hash(epoch_start).map_err(PoolError::Rpc)?;
+            let tip_time = c.get_block_header(&tip_hash).map_err(PoolError::Rpc)?.time as i64;
+            let start_time = c
+                .get_block_header(&start_hash)
+                .map_err(PoolError::Rpc)?
+                .time as i64;
+
+            let elapsed = (tip_time - start_time) as f64;
+            if elapsed <= 0.0 {
+                return Ok(f64::NAN);
+            }
+            let expected = into_epoch as f64 * 600.0;
+            Ok(((expected / elapsed - 1.0) * 100.0).clamp(-75.0, 300.0))
         })
     }
 }

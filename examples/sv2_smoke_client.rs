@@ -33,14 +33,26 @@ fn frame_bytes(msg_type: u8, channel_msg: bool, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-async fn send(s: &mut TcpStream, enc: &mut NoiseEncoder<Marker>, st: &mut State, mt: u8, ch: bool, payload: &[u8]) {
-    let frame: Sv2Frame<Marker, Vec<u8>> = Sv2Frame::from_bytes_unchecked(frame_bytes(mt, ch, payload));
+async fn send(
+    s: &mut TcpStream,
+    enc: &mut NoiseEncoder<Marker>,
+    st: &mut State,
+    mt: u8,
+    ch: bool,
+    payload: &[u8],
+) {
+    let frame: Sv2Frame<Marker, Vec<u8>> =
+        Sv2Frame::from_bytes_unchecked(frame_bytes(mt, ch, payload));
     let bytes = enc.encode(Frame::Sv2(frame), st).expect("encode");
     s.write_all(bytes.as_ref()).await.unwrap();
     s.flush().await.unwrap();
 }
 
-async fn recv(s: &mut TcpStream, dec: &mut StandardNoiseDecoder<Marker>, st: &mut State) -> (u8, Vec<u8>) {
+async fn recv(
+    s: &mut TcpStream,
+    dec: &mut StandardNoiseDecoder<Marker>,
+    st: &mut State,
+) -> (u8, Vec<u8>) {
     loop {
         match dec.next_frame(st) {
             Ok(Frame::Sv2(mut f)) => {
@@ -59,7 +71,9 @@ async fn recv(s: &mut TcpStream, dec: &mut StandardNoiseDecoder<Marker>, st: &mu
 
 #[tokio::main]
 async fn main() {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:13335".to_string());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:13335".to_string());
     let mut s = TcpStream::connect(&addr).await.expect("connect");
     println!("connected to {addr}");
 
@@ -92,7 +106,15 @@ async fn main() {
         firmware: Str0255::try_from(String::new()).unwrap(),
         device_id: Str0255::try_from(String::new()).unwrap(),
     };
-    send(&mut s, &mut enc, &mut state, 0x00, false, &binary_sv2::to_bytes(setup).unwrap()).await;
+    send(
+        &mut s,
+        &mut enc,
+        &mut state,
+        0x00,
+        false,
+        &binary_sv2::to_bytes(setup).unwrap(),
+    )
+    .await;
     let (mt, _) = recv(&mut s, &mut dec, &mut state).await;
     println!("← msg_type 0x{mt:02x} (expect 0x01 SetupConnectionSuccess)");
     assert_eq!(mt, 0x01);
@@ -105,18 +127,32 @@ async fn main() {
         max_target: U256::from([0xffu8; 32]),
         min_extranonce_size: 8, // NerdQAxe++ asks for 8; pool grants >= this
     };
-    send(&mut s, &mut enc, &mut state, 0x13, false, &binary_sv2::to_bytes(open).unwrap()).await;
+    send(
+        &mut s,
+        &mut enc,
+        &mut state,
+        0x13,
+        false,
+        &binary_sv2::to_bytes(open).unwrap(),
+    )
+    .await;
 
     let mut saw_success = false;
     let mut saw_job = false;
     let mut saw_prevhash = false;
     for _ in 0..6 {
-        let (mt, mut payload) = match tokio::time::timeout(Duration::from_secs(8), recv(&mut s, &mut dec, &mut state)).await {
-            Ok(v) => v,
-            Err(_) => break,
-        };
+        let (mt, mut payload) =
+            match tokio::time::timeout(Duration::from_secs(8), recv(&mut s, &mut dec, &mut state))
+                .await
+            {
+                Ok(v) => v,
+                Err(_) => break,
+            };
         match mt {
-            0x14 => { saw_success = true; println!("← 0x14 OpenExtendedMiningChannelSuccess"); }
+            0x14 => {
+                saw_success = true;
+                println!("← 0x14 OpenExtendedMiningChannelSuccess");
+            }
             0x1f => {
                 saw_job = true;
                 let j: NewExtendedMiningJob = binary_sv2::from_bytes(&mut payload).unwrap();
@@ -131,12 +167,16 @@ async fn main() {
                 let p: SetNewPrevHash = binary_sv2::from_bytes(&mut payload).unwrap();
                 println!(
                     "← 0x20 SetNewPrevHash: job_id={} nbits=0x{:08x} prev_hash={}",
-                    p.job_id, p.nbits, hex::encode(p.prev_hash.inner_as_ref()),
+                    p.job_id,
+                    p.nbits,
+                    hex::encode(p.prev_hash.inner_as_ref()),
                 );
             }
             other => println!("← 0x{other:02x} (other)"),
         }
-        if saw_success && saw_job && saw_prevhash { break; }
+        if saw_success && saw_job && saw_prevhash {
+            break;
+        }
     }
 
     assert!(saw_success, "no OpenExtendedMiningChannelSuccess");

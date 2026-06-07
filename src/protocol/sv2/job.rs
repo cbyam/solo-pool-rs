@@ -68,7 +68,11 @@ pub fn build_new_extended_job(
     job_id: u32,
     future: bool,
 ) -> Result<NewExtendedMiningJob<'static>> {
-    let merkle: Vec<U256> = job.merkle_branch_raw.iter().map(|h| U256::from(*h)).collect();
+    let merkle: Vec<U256> = job
+        .merkle_branch_raw
+        .iter()
+        .map(|h| U256::from(*h))
+        .collect();
 
     let min_ntime = if future {
         Sv2Option::new(None)
@@ -119,7 +123,10 @@ mod tests {
             let le = difficulty_to_sv2_target(diff);
             let mut le_rev = le;
             le_rev.reverse();
-            assert_eq!(be, le_rev, "SV2 LE target must be reverse of BE target (diff={diff})");
+            assert_eq!(
+                be, le_rev,
+                "SV2 LE target must be reverse of BE target (diff={diff})"
+            );
         }
     }
 

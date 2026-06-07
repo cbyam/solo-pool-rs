@@ -92,6 +92,10 @@ async fn main() -> Result<()> {
                     Ok(network_hps) => stats.set_network_hashrate(network_hps),
                     Err(e) => tracing::warn!("Failed to poll network hash rate: {e}"),
                 }
+                match rpc.estimate_difficulty_change_pct() {
+                    Ok(pct) => stats.set_est_difficulty_change_pct(pct),
+                    Err(e) => tracing::warn!("Failed to estimate difficulty change: {e}"),
+                }
                 tokio::time::sleep(interval).await;
             }
         });
