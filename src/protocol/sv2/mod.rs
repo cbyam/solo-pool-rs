@@ -31,7 +31,7 @@ use crate::{
     stats::PoolStats,
 };
 use const_sv2::{
-    MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB, MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH,
+    MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB,
     MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL, MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCES,
     MESSAGE_TYPE_OPEN_MINING_CHANNEL_ERROR, MESSAGE_TYPE_SETUP_CONNECTION,
     MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS, MESSAGE_TYPE_SET_TARGET,
@@ -97,7 +97,12 @@ struct Sv2Session {
 }
 
 impl Sv2Session {
-    fn new(peer: SocketAddr, cfg: &Config, extranonce_prefix: Vec<u8>, stats: Arc<PoolStats>) -> Self {
+    fn new(
+        peer: SocketAddr,
+        cfg: &Config,
+        extranonce_prefix: Vec<u8>,
+        stats: Arc<PoolStats>,
+    ) -> Self {
         let initial_diff = cfg.pool.initial_difficulty;
         Self {
             peer,
@@ -143,7 +148,6 @@ impl Sv2Session {
             .find(|(j, _)| *j == sv2_job_id)
             .map(|(_, s)| s.clone())
     }
-
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -376,7 +380,10 @@ async fn handle_setup_connection(
 
     match messages::setup_connection_success(used_version) {
         Ok(p) => {
-            if !writer.send(MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS, false, &p).await {
+            if !writer
+                .send(MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS, false, &p)
+                .await
+            {
                 return Flow::Disconnect("write".into());
             }
             Flow::Continue
@@ -413,7 +420,9 @@ async fn handle_open_extended(
         );
         match messages::open_channel_error_extranonce(open.request_id) {
             Ok(p) => {
-                let _ = writer.send(MESSAGE_TYPE_OPEN_MINING_CHANNEL_ERROR, false, &p).await;
+                let _ = writer
+                    .send(MESSAGE_TYPE_OPEN_MINING_CHANNEL_ERROR, false, &p)
+                    .await;
             }
             Err(e) => error!("encode OpenMiningChannelError: {e}"),
         }
@@ -447,8 +456,12 @@ async fn handle_open_extended(
         target = open.max_target;
     }
 
-    session.stats.mark_worker_online(&open.user_identity, session.difficulty);
-    session.stats.set_worker_protocol(&open.user_identity, "sv2");
+    session
+        .stats
+        .mark_worker_online(&open.user_identity, session.difficulty);
+    session
+        .stats
+        .set_worker_protocol(&open.user_identity, "sv2");
     info!(peer = %session.peer, worker = %open.user_identity, channel_id, "SV2 extended channel opened");
 
     match messages::open_extended_success(
@@ -459,7 +472,10 @@ async fn handle_open_extended(
         session.extranonce_prefix.clone(),
     ) {
         Ok(p) => {
-            if !writer.send(MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCES, false, &p).await {
+            if !writer
+                .send(MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCES, false, &p)
+                .await
+            {
                 return Flow::Disconnect("write".into());
             }
         }
@@ -510,7 +526,13 @@ async fn handle_submit(
         if session.guard.invalid_shares.record_invalid() {
             return Flow::Disconnect("too many invalid shares".into());
         }
-        return reject(session, writer, submit.sequence_number, "bad-extranonce-size").await;
+        return reject(
+            session,
+            writer,
+            submit.sequence_number,
+            "bad-extranonce-size",
+        )
+        .await;
     }
 
     let submit_start = Instant::now();
@@ -594,7 +616,11 @@ async fn handle_submit(
     };
 
     match validation_result {
-        Ok(ShareResult::Valid { assigned_difficulty, hash_difficulty, hash }) => {
+        Ok(ShareResult::Valid {
+            assigned_difficulty,
+            hash_difficulty,
+            hash,
+        }) => {
             metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
             debug!(
                 worker = %worker, hash = %hex::encode(hash), diff = assigned_difficulty,
@@ -605,12 +631,18 @@ async fn handle_submit(
             session.vardiff.record_share(session.difficulty);
             metrics::share_accepted(assigned_difficulty, &worker);
             session.stats.share_accepted(hash_difficulty);
-            session.stats.worker_share_accepted(&worker, hash_difficulty);
+            session
+                .stats
+                .worker_share_accepted(&worker, hash_difficulty);
             session.stats.mark_worker_submit(&worker);
             accept(session, writer, submit.sequence_number).await
         }
 
-        Ok(ShareResult::Block { hash_difficulty, block_hex, hash }) => {
+        Ok(ShareResult::Block {
+            hash_difficulty,
+            block_hex,
+            hash,
+        }) => {
             metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
             match engine.submit_block(&block_hex) {
                 Ok(_) => {
@@ -620,15 +652,26 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(hash_difficulty);
-                    session.stats.worker_share_accepted(&worker, hash_difficulty);
+                    session
+                        .stats
+                        .worker_share_accepted(&worker, hash_difficulty);
                     session.stats.mark_worker_submit(&worker);
-                    info!("🏆 Block submitted (SV2)! worker={worker} hash={}", hex::encode(hash));
+                    info!(
+                        "🏆 Block submitted (SV2)! worker={worker} hash={}",
+                        hex::encode(hash)
+                    );
                     accept(session, writer, submit.sequence_number).await
                 }
                 Err(e) => {
                     metrics::block_submission_failure(&format!("{:?}", e));
                     error!("SV2 submitblock failed: {e}");
-                    reject(session, writer, submit.sequence_number, "block-submit-failed").await
+                    reject(
+                        session,
+                        writer,
+                        submit.sequence_number,
+                        "block-submit-failed",
+                    )
+                    .await
                 }
             }
         }
@@ -693,7 +736,10 @@ async fn send_job(
         }
     };
     debug!(peer = %peer, sv2_job_id, future, clean = future, "Sending SV2 NewExtendedMiningJob");
-    if !writer.send(MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB, true, &payload).await {
+    if !writer
+        .send(MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB, true, &payload)
+        .await
+    {
         return false;
     }
 
@@ -712,21 +758,23 @@ async fn send_job(
                 return false;
             }
         };
-        if !writer.send(MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, true, &payload).await {
+        if !writer
+            .send(MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, true, &payload)
+            .await
+        {
             return false;
         }
     }
     true
 }
 
-async fn accept(
-    session: &Sv2Session,
-    writer: &mut NoiseWriter,
-    seq: u32,
-) -> Flow {
+async fn accept(session: &Sv2Session, writer: &mut NoiseWriter, seq: u32) -> Flow {
     match messages::submit_shares_success(session.channel_id, seq, session.difficulty) {
         Ok(p) => {
-            if !writer.send(MESSAGE_TYPE_SUBMIT_SHARES_SUCCESS, true, &p).await {
+            if !writer
+                .send(MESSAGE_TYPE_SUBMIT_SHARES_SUCCESS, true, &p)
+                .await
+            {
                 return Flow::Disconnect("write".into());
             }
             Flow::Continue
@@ -735,15 +783,13 @@ async fn accept(
     }
 }
 
-async fn reject(
-    session: &Sv2Session,
-    writer: &mut NoiseWriter,
-    seq: u32,
-    code: &str,
-) -> Flow {
+async fn reject(session: &Sv2Session, writer: &mut NoiseWriter, seq: u32, code: &str) -> Flow {
     match messages::submit_shares_error(session.channel_id, seq, code) {
         Ok(p) => {
-            if !writer.send(MESSAGE_TYPE_SUBMIT_SHARES_ERROR, true, &p).await {
+            if !writer
+                .send(MESSAGE_TYPE_SUBMIT_SHARES_ERROR, true, &p)
+                .await
+            {
                 return Flow::Disconnect("write".into());
             }
             Flow::Continue

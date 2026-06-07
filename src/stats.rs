@@ -126,9 +126,9 @@ impl StatsStore {
 
     fn get_hashrate_history(&self, since_ts: u64) -> Vec<(u64, f64)> {
         let conn = self.conn.lock();
-        let mut stmt = match conn.prepare(
-            "SELECT ts, hashrate_hps FROM hashrate_history WHERE ts >= ?1 ORDER BY ts ASC",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT ts, hashrate_hps FROM hashrate_history WHERE ts >= ?1 ORDER BY ts ASC")
+        {
             Ok(s) => s,
             Err(_) => return vec![],
         };
@@ -169,6 +169,9 @@ pub struct PoolStats {
     pub session_best_hashrate_hps: AtomicU64,
     pub network_hashrate_hps: AtomicU64,
     pub network_difficulty: AtomicU64,
+    /// Estimated difficulty change (%) at the next retarget, from epoch timestamps.
+    /// Stored as f64::to_bits; NaN until first polled / right after a retarget.
+    pub est_difficulty_change_pct: AtomicU64,
     pub last_block_worker: Mutex<Option<String>>,
     pub last_block_hash: Mutex<Option<String>>,
     pub last_block_ts: AtomicU64,
@@ -249,6 +252,7 @@ impl PoolStats {
             session_best_hashrate_hps: AtomicU64::new(0),
             network_hashrate_hps: AtomicU64::new(0),
             network_difficulty: AtomicU64::new(f64::to_bits(0.0)),
+            est_difficulty_change_pct: AtomicU64::new(f64::to_bits(f64::NAN)),
             worker_hashrates_60s: DashMap::new(),
             worker_hashrates_10m: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
@@ -337,8 +341,10 @@ impl PoolStats {
 
     pub fn update_height(&self, height: u64, coinbase_value: u64, transaction_count: u64) {
         self.current_height.store(height, Ordering::Relaxed);
-        self.current_coinbase_value.store(coinbase_value, Ordering::Relaxed);
-        self.current_block_transaction_count.store(transaction_count, Ordering::Relaxed);
+        self.current_coinbase_value
+            .store(coinbase_value, Ordering::Relaxed);
+        self.current_block_transaction_count
+            .store(transaction_count, Ordering::Relaxed);
     }
 
     pub fn update_worker_hashrate(
@@ -498,7 +504,6 @@ impl PoolStats {
         }
     }
 
-
     pub fn record_hashrate_snapshot(&self) {
         if let Some(store) = &self.store {
             let ts = Self::now_secs();
@@ -528,6 +533,11 @@ impl PoolStats {
             .store(difficulty.to_bits(), Ordering::Relaxed);
     }
 
+    pub fn set_est_difficulty_change_pct(&self, pct: f64) {
+        self.est_difficulty_change_pct
+            .store(pct.to_bits(), Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> StatsSnapshot {
         let worker_hashrates: Vec<WorkerHashrate> = self
             .worker_hashrates_10m
@@ -535,7 +545,9 @@ impl PoolStats {
             .map(|e| {
                 let worker = e.key().clone();
                 let get = |map: &DashMap<String, u64>| {
-                    map.get(&worker).map(|h| f64::from_bits(*h.value())).unwrap_or(0.0)
+                    map.get(&worker)
+                        .map(|h| f64::from_bits(*h.value()))
+                        .unwrap_or(0.0)
                 };
                 WorkerHashrate {
                     worker: worker.clone(),
@@ -546,7 +558,7 @@ impl PoolStats {
                         .unwrap_or(0),
                     hashrate_60s_hps: get(&self.worker_hashrates_60s),
                     hashrate_10m_hps: f64::from_bits(*e.value()),
-                    hashrate_3h_hps:  get(&self.worker_hashrates_3h),
+                    hashrate_3h_hps: get(&self.worker_hashrates_3h),
                     hashrate_24h_hps: get(&self.worker_hashrates_24h),
                 }
             })
@@ -554,7 +566,7 @@ impl PoolStats {
 
         let total_hashrate_10m: f64 = worker_hashrates.iter().map(|w| w.hashrate_10m_hps).sum();
         let total_hashrate_60s: f64 = worker_hashrates.iter().map(|w| w.hashrate_60s_hps).sum();
-        let total_hashrate_3h:  f64 = worker_hashrates.iter().map(|w| w.hashrate_3h_hps).sum();
+        let total_hashrate_3h: f64 = worker_hashrates.iter().map(|w| w.hashrate_3h_hps).sum();
         let total_hashrate_24h: f64 = worker_hashrates.iter().map(|w| w.hashrate_24h_hps).sum();
 
         let best_hashrate_hps = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
@@ -569,12 +581,14 @@ impl PoolStats {
                 seen.insert(worker.clone());
                 state.worker = worker.clone();
                 let get = |map: &DashMap<String, u64>| {
-                    map.get(worker).map(|h| f64::from_bits(*h.value())).unwrap_or(0.0)
+                    map.get(worker)
+                        .map(|h| f64::from_bits(*h.value()))
+                        .unwrap_or(0.0)
                 };
-                state.hashrate_60s_hps  = get(&self.worker_hashrates_60s);
-                state.hashrate_10m_hps  = get(&self.worker_hashrates_10m);
-                state.hashrate_3h_hps   = get(&self.worker_hashrates_3h);
-                state.hashrate_24h_hps  = get(&self.worker_hashrates_24h);
+                state.hashrate_60s_hps = get(&self.worker_hashrates_60s);
+                state.hashrate_10m_hps = get(&self.worker_hashrates_10m);
+                state.hashrate_3h_hps = get(&self.worker_hashrates_3h);
+                state.hashrate_24h_hps = get(&self.worker_hashrates_24h);
                 if let Some(p) = self.worker_protocol.get(worker) {
                     state.protocol = p.value().clone();
                 }
@@ -627,7 +641,9 @@ impl PoolStats {
             connected_miners: self.connected_miners.load(Ordering::Relaxed),
             current_height: self.current_height.load(Ordering::Relaxed),
             current_coinbase_value: self.current_coinbase_value.load(Ordering::Relaxed),
-            current_block_transaction_count: self.current_block_transaction_count.load(Ordering::Relaxed),
+            current_block_transaction_count: self
+                .current_block_transaction_count
+                .load(Ordering::Relaxed),
             best_share_difficulty: self.best_share_difficulty.load(Ordering::Relaxed),
             session_best_share_difficulty: self
                 .session_best_share_difficulty
@@ -641,6 +657,9 @@ impl PoolStats {
             worker_states,
             network_hashrate_hps: f64::from_bits(self.network_hashrate_hps.load(Ordering::Relaxed)),
             network_difficulty: f64::from_bits(self.network_difficulty.load(Ordering::Relaxed)),
+            est_difficulty_change_pct: f64::from_bits(
+                self.est_difficulty_change_pct.load(Ordering::Relaxed),
+            ),
             uptime_secs: self.start_time.elapsed().as_secs(),
             session_best_hashrate_hps: f64::from_bits(
                 self.session_best_hashrate_hps.load(Ordering::Relaxed),
@@ -682,6 +701,7 @@ pub struct StatsSnapshot {
     pub total_hashrate_24h: f64,
     pub network_hashrate_hps: f64,
     pub network_difficulty: f64,
+    pub est_difficulty_change_pct: f64,
     pub worker_hashrates: Vec<WorkerHashrate>,
     pub worker_states: Vec<WorkerState>,
     pub uptime_secs: u64,
@@ -707,8 +727,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_temp_db() -> String {
-        static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(1);
+        static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut path = std::env::temp_dir();
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)

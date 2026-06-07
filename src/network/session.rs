@@ -653,9 +653,7 @@ async fn handle_submit(
             session.vardiff.record_share(session.difficulty);
             metrics::share_accepted(assigned_difficulty, worker);
             session.stats.share_accepted(hash_difficulty);
-            session
-                .stats
-                .worker_share_accepted(worker, hash_difficulty);
+            session.stats.worker_share_accepted(worker, hash_difficulty);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
                 &req.id,
@@ -680,9 +678,7 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(hash_difficulty);
-                    session
-                        .stats
-                        .worker_share_accepted(worker, hash_difficulty);
+                    session.stats.worker_share_accepted(worker, hash_difficulty);
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",
