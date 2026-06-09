@@ -165,12 +165,14 @@ fn init_tracing(cfg: &config::LoggingConfig) {
                 .with_env_filter(filter)
                 .with_current_span(true)
                 .with_writer(file_appender)
+                .with_ansi(false)
                 .init();
         } else {
             fmt()
                 .with_env_filter(filter)
                 .with_target(true)
                 .with_writer(file_appender)
+                .with_ansi(false)
                 .init();
         }
     } else if cfg.json {
