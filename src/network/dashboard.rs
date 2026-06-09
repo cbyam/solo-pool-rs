@@ -258,7 +258,10 @@ async fn chart_json(
 // Dashboard HTML
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
+// The build version is baked into the footer at compile time from
+// CARGO_PKG_VERSION (sourced from Cargo.toml), so it can never drift from the
+// crate version. `concat!` keeps the whole page a single `&'static str`.
+const DASHBOARD_HTML: &str = concat!(r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -745,5 +748,8 @@ setInterval(refresh, 10000);
 setInterval(() => loadChart(selectedWindow), 60000);
 setInterval(fetchBtcPrice, 60000);
 </script>
+<footer style="margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);text-align:center;font-size:0.7rem;color:var(--muted);">
+  solo-pool-rs v"#, env!("CARGO_PKG_VERSION"), r#" &middot; <a href="https://github.com/cbyam/solo-pool-rs" style="color:var(--muted);text-decoration:none;">source</a>
+</footer>
 </body>
-</html>"#;
+</html>"#);
