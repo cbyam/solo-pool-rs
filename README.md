@@ -253,6 +253,9 @@ cargo fmt --all -- --check
 
 CI runs fmt, clippy, tests, and a release build on every push and PR.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks a PR must pass, and
+commit/PR conventions.
+
 ## Releasing
 
 Versioning follows [SemVer](https://semver.org/). While pre-1.0, breaking
