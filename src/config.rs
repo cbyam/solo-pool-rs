@@ -149,6 +149,15 @@ pub struct SecurityConfig {
     pub ban_duration_secs: u64,
     pub max_invalid_shares: u32,
     pub max_message_bytes: usize,
+    /// Maximum byte length of an accepted worker/user-identity name. Bounds the
+    /// global stats maps and Prometheus label cardinality against untrusted
+    /// names. Defaults to 128 (fits a bech32m address + `.worker` suffix).
+    #[serde(default = "default_max_worker_name_len")]
+    pub max_worker_name_len: usize,
+}
+
+fn default_max_worker_name_len() -> usize {
+    128
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

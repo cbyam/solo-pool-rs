@@ -121,6 +121,11 @@ max_invalid_shares = 5
 # JSON message size limit per line (bytes) — protects against oversized payloads
 max_message_bytes = 4096
 
+# Maximum byte length of an accepted worker/user-identity name. Bounds the
+# global per-worker stats maps and Prometheus label cardinality against
+# untrusted names. 128 fits a bech32m payout address plus a `.worker` suffix.
+max_worker_name_len = 128
+
 [metrics]
 # Prometheus metrics HTTP endpoint (empty string to disable)
 prometheus_addr = "0.0.0.0:9090"
