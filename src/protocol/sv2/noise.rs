@@ -88,14 +88,22 @@ pub struct NoiseReader {
     reader: OwnedReadHalf,
     decoder: Decoder,
     state: Arc<Mutex<State>>,
+    /// Upper bound on the bytes we will read for a single frame chunk before
+    /// rejecting the connection. The SV2 frame header carries an attacker-chosen
+    /// u24 length (up to ~16 MB); without this cap the decoder would allocate and
+    /// `read_exact` that whole frame (and AEAD-decrypt it) before the post-decode
+    /// `check_message_size` ever runs. Set from `security.max_message_bytes` plus
+    /// framing/AEAD overhead.
+    max_frame: usize,
 }
 
 impl NoiseReader {
-    pub fn new(reader: OwnedReadHalf, state: Arc<Mutex<State>>) -> Self {
+    pub fn new(reader: OwnedReadHalf, state: Arc<Mutex<State>>, max_frame: usize) -> Self {
         Self {
             reader,
             decoder: Decoder::new(),
             state,
+            max_frame,
         }
     }
 
@@ -119,6 +127,13 @@ impl NoiseReader {
                 }
                 Err(codec_sv2::Error::MissingBytes(_)) => {
                     let writable = self.decoder.writable();
+                    if writable.len() > self.max_frame {
+                        return Err(io_err(format!(
+                            "SV2 frame too large: {} > {} bytes",
+                            writable.len(),
+                            self.max_frame
+                        )));
+                    }
                     self.reader.read_exact(writable).await?;
                 }
                 Err(e) => return Err(io_err(format!("noise decode error: {e:?}"))),

@@ -99,6 +99,47 @@ impl ConnectionRateLimiter {
         entry.push(Instant::now());
         true
     }
+
+    /// Periodic cleanup — drop per-IP windows whose timestamps have all aged out.
+    /// Without this the map grows one permanent entry per distinct source IP
+    /// (spoofed / IPv6 ranges), since `check_and_record` only trims an entry when
+    /// that same IP reconnects. Call from a background task every few minutes.
+    pub fn prune(&self) {
+        let one_minute_ago = Instant::now() - Duration::from_secs(60);
+        self.windows
+            .retain(|_, times| times.iter().any(|&t| t > one_minute_ago));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Worker-name validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Validate an untrusted worker/user identity before it is stored as a key in
+/// the global stats maps and Prometheus metric labels, or rendered on the
+/// dashboard. Rejects empty, over-long, and control/whitespace-bearing names so
+/// an attacker cannot grow those maps without bound or inject newlines/control
+/// characters into logs, metric exposition, or the dashboard HTML.
+///
+/// `max_len` is a byte cap (128 by default) — comfortably larger than a bech32m
+/// payout address plus a `.workername` suffix, so legitimate miners are unaffected.
+pub fn validate_worker_name(name: &str, max_len: usize) -> Result<(), crate::error::PoolError> {
+    let invalid = |detail: &str| crate::error::PoolError::InvalidParams {
+        method: "worker name",
+        detail: detail.into(),
+    };
+    if name.is_empty() {
+        return Err(invalid("worker name must not be empty"));
+    }
+    if name.len() > max_len {
+        return Err(invalid("worker name too long"));
+    }
+    if name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(invalid(
+            "worker name must not contain control or whitespace characters",
+        ));
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -179,6 +220,7 @@ pub struct SessionGuard {
     pub share_rate: ShareRateLimiter,
     pub invalid_shares: InvalidShareCounter,
     pub max_message_bytes: usize,
+    pub max_worker_name_len: usize,
 }
 
 impl SessionGuard {
@@ -187,6 +229,7 @@ impl SessionGuard {
             share_rate: ShareRateLimiter::new(cfg.max_shares_per_sec),
             invalid_shares: InvalidShareCounter::new(cfg.max_invalid_shares),
             max_message_bytes: cfg.max_message_bytes,
+            max_worker_name_len: cfg.max_worker_name_len,
         }
     }
 
@@ -197,5 +240,53 @@ impl SessionGuard {
         } else {
             Ok(())
         }
+    }
+
+    /// Validate an untrusted worker/user-identity name against the configured cap.
+    pub fn check_worker_name(&self, name: &str) -> Result<(), crate::error::PoolError> {
+        validate_worker_name(name, self.max_worker_name_len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_name_accepts_typical_addresses() {
+        assert!(validate_worker_name("bc1qexampleaddress", 128).is_ok());
+        assert!(validate_worker_name("bc1q...address.nerdqaxe01", 128).is_ok());
+    }
+
+    #[test]
+    fn worker_name_rejects_empty_and_overlong() {
+        assert!(validate_worker_name("", 128).is_err());
+        let long = "a".repeat(129);
+        assert!(validate_worker_name(&long, 128).is_err());
+        assert!(validate_worker_name(&"a".repeat(128), 128).is_ok());
+    }
+
+    #[test]
+    fn worker_name_rejects_control_and_whitespace() {
+        assert!(validate_worker_name("bad\nname", 128).is_err());
+        assert!(validate_worker_name("bad name", 128).is_err());
+        assert!(validate_worker_name("bad\tname", 128).is_err());
+        assert!(validate_worker_name("bad\0name", 128).is_err());
+    }
+
+    #[test]
+    fn rate_limiter_prune_drops_stale_entries() {
+        let rl = ConnectionRateLimiter::new(10);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(rl.check_and_record(ip));
+        assert_eq!(rl.windows.len(), 1);
+        // Force the recorded timestamp to be older than the 60s window.
+        rl.windows
+            .get_mut(&ip)
+            .unwrap()
+            .iter_mut()
+            .for_each(|t| *t -= Duration::from_secs(120));
+        rl.prune();
+        assert_eq!(rl.windows.len(), 0);
     }
 }

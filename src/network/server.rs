@@ -41,14 +41,16 @@ pub async fn run(
     let active_count = Arc::new(AtomicUsize::new(0));
     let max_connections = config.pool.max_connections;
 
-    // Background ban-list pruner
+    // Background ban-list + rate-limiter pruner
     {
         let bl = ban_list.clone();
+        let rl = conn_limiter.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
             loop {
                 interval.tick().await;
                 bl.prune();
+                rl.prune();
             }
         });
     }
@@ -109,15 +111,24 @@ pub async fn run(
             // Auto-detect the protocol from the first byte without consuming it:
             // SV1 is JSON ('{'); SV2 frames start with a binary extension_type
             // (0x00 for the standard mining protocol's SetupConnection).
+            // Force the protocol-detect byte to arrive promptly so a peer cannot
+            // hold the connection (and its slot) open by sending nothing.
+            let handshake_timeout = tokio::time::Duration::from_secs(config.pool.idle_timeout_secs);
             let mut first = [0u8; 1];
-            let is_sv1 = match stream.peek(&mut first).await {
-                Ok(0) => {
+            let peek = tokio::time::timeout(handshake_timeout, stream.peek(&mut first)).await;
+            let is_sv1 = match peek {
+                Err(_) => {
+                    warn!("Protocol-detect timeout for {peer}");
+                    active_count.fetch_sub(1, Ordering::Relaxed);
+                    return;
+                }
+                Ok(Ok(0)) => {
                     // Connection closed before sending anything.
                     active_count.fetch_sub(1, Ordering::Relaxed);
                     return;
                 }
-                Ok(_) => first[0] == b'{',
-                Err(e) => {
+                Ok(Ok(_)) => first[0] == b'{',
+                Ok(Err(e)) => {
                     warn!("Peek failed for {peer}: {e}");
                     active_count.fetch_sub(1, Ordering::Relaxed);
                     return;
