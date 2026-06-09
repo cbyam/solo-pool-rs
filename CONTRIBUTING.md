@@ -75,4 +75,4 @@ Releases are cut separately from merges — see the **Releasing** section of the
 ## License
 
 By contributing, you agree that your contributions will be dual-licensed under
-the same terms as the project: **MIT OR Apache-2.0**.
+the same terms as the project: [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE).
