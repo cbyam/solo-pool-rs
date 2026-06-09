@@ -134,10 +134,7 @@ pub fn validate_worker_name(name: &str, max_len: usize) -> Result<(), crate::err
     if name.len() > max_len {
         return Err(invalid("worker name too long"));
     }
-    if name
-        .chars()
-        .any(|c| c.is_control() || c.is_whitespace())
-    {
+    if name.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err(invalid(
             "worker name must not contain control or whitespace characters",
         ));

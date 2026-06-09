@@ -347,7 +347,11 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(if buf.is_empty() { None } else { Some(buf.len()) });
+            return Ok(if buf.is_empty() {
+                None
+            } else {
+                Some(buf.len())
+            });
         }
         if let Some(pos) = available.iter().position(|&b| b == b'\n') {
             buf.extend_from_slice(&available[..pos]);
@@ -513,10 +517,7 @@ async fn handle_authorize(
 
     if let Err(e) = session.guard.check_worker_name(&params.worker) {
         warn!(peer = %session.peer, "Rejected worker name: {e}");
-        return HandleResult::Messages(vec![ResponseBuilder::err(
-            &req.id,
-            e.to_stratum_error(),
-        )]);
+        return HandleResult::Messages(vec![ResponseBuilder::err(&req.id, e.to_stratum_error())]);
     }
 
     session.authorized = true;
@@ -851,9 +852,15 @@ mod tests {
         let mut r = BufReader::new(&data[..]);
         let mut buf = Vec::new();
 
-        assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), Some(5));
+        assert_eq!(
+            read_line_bounded(&mut r, &mut buf, 64).await.unwrap(),
+            Some(5)
+        );
         assert_eq!(&buf, b"hello");
-        assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), Some(5));
+        assert_eq!(
+            read_line_bounded(&mut r, &mut buf, 64).await.unwrap(),
+            Some(5)
+        );
         assert_eq!(&buf, b"world");
         assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), None);
     }
@@ -869,7 +876,11 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         // The accumulator never grew far past the cap (bounded by the BufReader
         // chunk size), proving we abort mid-stream rather than reading all 10k.
-        assert!(buf.len() <= 16 + 8192, "buffer grew unbounded: {}", buf.len());
+        assert!(
+            buf.len() <= 16 + 8192,
+            "buffer grew unbounded: {}",
+            buf.len()
+        );
     }
 
     #[tokio::test]
@@ -878,6 +889,9 @@ mod tests {
         data.push(b'\n');
         let mut r = BufReader::new(&data[..]);
         let mut buf = Vec::new();
-        assert_eq!(read_line_bounded(&mut r, &mut buf, 16).await.unwrap(), Some(16));
+        assert_eq!(
+            read_line_bounded(&mut r, &mut buf, 16).await.unwrap(),
+            Some(16)
+        );
     }
 }
