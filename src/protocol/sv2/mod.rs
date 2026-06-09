@@ -170,10 +170,22 @@ pub async fn run(
     info!("SV2 miner connected: {peer}");
 
     // ── Noise handshake (pool = responder) ───────────────────────────────────
+    // Bounded so a peer cannot hold the connection open mid-handshake (the
+    // session-loop idle timeout only starts once we reach transport mode).
     let mut stream = stream;
-    let state = match noise::responder_handshake(&mut stream).await {
-        Ok(s) => s,
-        Err(e) => {
+    let handshake_timeout = Duration::from_secs(config.pool.idle_timeout_secs);
+    let state = match tokio::time::timeout(
+        handshake_timeout,
+        noise::responder_handshake(&mut stream),
+    )
+    .await
+    {
+        Err(_) => {
+            warn!("SV2 {peer} Noise handshake timed out");
+            return;
+        }
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             warn!("SV2 {peer} Noise handshake failed: {e}");
             return;
         }
@@ -191,7 +203,9 @@ pub async fn run(
     // Shared cipher state; reader (own task) decrypts, writer (this task) encrypts.
     let state = Arc::new(tokio::sync::Mutex::new(state));
     let (reader_half, writer_half) = stream.into_split();
-    let mut nreader = noise::NoiseReader::new(reader_half, state.clone());
+    // Allow the configured message size plus SV2 framing + Noise AEAD overhead.
+    let max_frame = config.security.max_message_bytes.saturating_add(1024);
+    let mut nreader = noise::NoiseReader::new(reader_half, state.clone(), max_frame);
     let mut writer = NoiseWriter::new(writer_half, state, peer);
 
     // read_exact into the codec buffer is not cancel-safe, so frames are read in
@@ -404,6 +418,10 @@ async fn handle_open_extended(
         Ok(o) => o,
         Err(e) => return Flow::Disconnect(format!("bad OpenExtendedMiningChannel: {e}")),
     };
+
+    if let Err(e) = session.guard.check_worker_name(&open.user_identity) {
+        return Flow::Disconnect(format!("invalid user_identity: {e}"));
+    }
 
     // Grant the device its requested extranonce out of the coinbase's reserved
     // total; the remaining bytes become the pool prefix. This is independent of

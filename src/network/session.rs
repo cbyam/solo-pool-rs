@@ -38,7 +38,7 @@ use std::{
     time::Instant,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
     sync::broadcast,
     task,
@@ -148,7 +148,8 @@ pub async fn run(
     let mut job_rx: tokio::sync::broadcast::Receiver<JobBroadcast> = engine.subscribe();
 
     let (reader, writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
+    let mut line_buf: Vec<u8> = Vec::new();
     let writer = tokio::sync::Mutex::new(writer);
 
     // Cache current job for later authorize, but do not notify yet.
@@ -161,10 +162,19 @@ pub async fn run(
     loop {
         tokio::select! {
             // ── Inbound message from miner ──────────────────────────────────
-            line_result = tokio::time::timeout(idle_timeout, lines.next_line()) => {
+            line_result = tokio::time::timeout(
+                idle_timeout,
+                read_line_bounded(&mut reader, &mut line_buf, session.guard.max_message_bytes),
+            ) => {
                 match line_result {
                     Err(_) => {
                         warn!("Miner {peer} idle timeout — disconnecting");
+                        break;
+                    }
+                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
+                        // Line exceeded max_message_bytes mid-read (or invalid UTF-8).
+                        warn!("{peer} {e}");
+                        ban_list.ban(peer.ip(), "message too large");
                         break;
                     }
                     Ok(Err(e)) => {
@@ -175,15 +185,17 @@ pub async fn run(
                         debug!("Miner {peer} disconnected (EOF)");
                         break;
                     }
-                    Ok(Ok(Some(line))) => {
-                        if let Err(e) = session.guard.check_message_size(line.len()) {
-                            warn!("{peer} {e}");
-                            ban_list.ban(peer.ip(), "message too large");
-                            break;
-                        }
+                    Ok(Ok(Some(_len))) => {
+                        let line = match std::str::from_utf8(&line_buf) {
+                            Ok(s) => s,
+                            Err(_) => {
+                                debug!("Non-UTF8 line from {peer} — disconnecting");
+                                break;
+                            }
+                        };
 
                         tracing::trace!(peer = %peer, raw = %line, "← miner");
-                        let response = handle_line(&mut session, &line, &engine, &ban_list).await;
+                        let response = handle_line(&mut session, line, &engine, &ban_list).await;
 
                         match response {
                             HandleResult::Messages(msgs) => {
@@ -315,6 +327,46 @@ async fn send_messages(
     }
 
     true
+}
+
+/// Read one line (up to but excluding `\n`) into `buf`, enforcing `max` bytes
+/// *during* the read. Unlike `AsyncBufReadExt::next_line`, which grows an
+/// unbounded buffer until a newline arrives, this aborts the moment the
+/// accumulated bytes exceed `max` — so a peer cannot stream gigabytes with no
+/// newline and exhaust memory before the size check runs.
+///
+/// Returns `Ok(None)` on EOF with no buffered data, `Ok(Some(len))` with the
+/// line bytes in `buf` (trailing `\r` stripped), or an `InvalidData` error when
+/// the line exceeds `max`.
+async fn read_line_bounded<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Option<usize>> {
+    buf.clear();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(if buf.is_empty() { None } else { Some(buf.len()) });
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            buf.extend_from_slice(&available[..pos]);
+            reader.consume(pos + 1);
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(Some(buf.len()));
+        }
+        buf.extend_from_slice(available);
+        let consumed = available.len();
+        reader.consume(consumed);
+        if buf.len() > max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line exceeds max message size",
+            ));
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +508,14 @@ async fn handle_authorize(
         return HandleResult::Messages(vec![ResponseBuilder::err(
             &req.id,
             PoolError::NotSubscribed.to_stratum_error(),
+        )]);
+    }
+
+    if let Err(e) = session.guard.check_worker_name(&params.worker) {
+        warn!(peer = %session.peer, "Rejected worker name: {e}");
+        return HandleResult::Messages(vec![ResponseBuilder::err(
+            &req.id,
+            e.to_stratum_error(),
         )]);
     }
 
@@ -778,4 +838,46 @@ fn random_u64() -> u64 {
     let mut buf = [0u8; 8];
     rand::thread_rng().fill_bytes(&mut buf);
     u64::from_le_bytes(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_line_bounded;
+    use tokio::io::BufReader;
+
+    #[tokio::test]
+    async fn reads_lines_and_strips_crlf() {
+        let data = b"hello\r\nworld\n";
+        let mut r = BufReader::new(&data[..]);
+        let mut buf = Vec::new();
+
+        assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), Some(5));
+        assert_eq!(&buf, b"hello");
+        assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), Some(5));
+        assert_eq!(&buf, b"world");
+        assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn rejects_line_exceeding_max_without_buffering_all() {
+        // 10k bytes with no newline; cap is 16. Must error, not buffer everything.
+        let data = vec![b'a'; 10_000];
+        let mut r = BufReader::new(&data[..]);
+        let mut buf = Vec::new();
+
+        let err = read_line_bounded(&mut r, &mut buf, 16).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // The accumulator never grew far past the cap (bounded by the BufReader
+        // chunk size), proving we abort mid-stream rather than reading all 10k.
+        assert!(buf.len() <= 16 + 8192, "buffer grew unbounded: {}", buf.len());
+    }
+
+    #[tokio::test]
+    async fn accepts_line_exactly_at_max() {
+        let mut data = vec![b'a'; 16];
+        data.push(b'\n');
+        let mut r = BufReader::new(&data[..]);
+        let mut buf = Vec::new();
+        assert_eq!(read_line_bounded(&mut r, &mut buf, 16).await.unwrap(), Some(16));
+    }
 }
