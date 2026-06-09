@@ -1,18 +1,43 @@
 [Unit]
 Description=solo-pool-rs — solo Bitcoin mining pool
 Documentation=https://github.com/cbyam/solo-pool-rs
-# Start after the network is up. If you run bitcoind under systemd too, add it
-# so the pool starts after your node:
-#   After=network-online.target bitcoind.service
-#   Wants=network-online.target bitcoind.service
-After=network-online.target
-Wants=network-online.target
+# Start after the network is up AND after your Bitcoin node. If bitcoind runs
+# under systemd (recommended), order against it so the pool starts after the
+# node. Rename "bitcoind.service" if your node unit is named differently, or
+# drop these two tokens if bitcoind is managed outside systemd.
+After=network-online.target bitcoind.service
+Wants=network-online.target bitcoind.service
+
+# Cap restart storms. NOTE: these belong in [Unit], not [Service] — systemd
+# silently ignores them if placed under [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/solo-pool-rs /etc/solo-pool-rs/config.toml
 Restart=on-failure
 RestartSec=5
+
+# ── Wait until bitcoind's RPC is actually ready ───────────────────────────────
+# Ordering (After=bitcoind.service) is necessary but NOT sufficient: a
+# Type=simple bitcoind is considered "started" the instant its process forks,
+# while the RPC still returns -28 ("Verifying blocks…/Loading…") for some time.
+# Starting the pool then makes getblocktemplate fail and can exit it on a
+# transient error. Block here until the RPC answers a real call.
+#
+# Uncomment and adjust the cookie path / port for your node. Then raise
+# TimeoutStartSec so the probe has room (default start timeout is 90s).
+# -datadir is set to an accessible dir so bitcoin-cli does not try to read its
+# default ~/.bitcoin (ProtectHome above blocks it, and bitcoin-cli aborts on the
+# permission error before it ever makes the RPC call).
+#   ExecStartPre=/bin/sh -c 'for i in $(seq 1 150); do \
+#     /usr/local/bin/bitcoin-cli -datadir=/var/lib/solo-pool-rs \
+#       -rpcconnect=127.0.0.1 -rpcport=8332 \
+#       -rpccookiefile=/var/lib/bitcoind/.cookie getblockchaininfo >/dev/null 2>&1 \
+#     && exit 0; sleep 2; done; \
+#     echo "bitcoind RPC not ready after 300s" >&2; exit 1'
+#   TimeoutStartSec=330
 
 # Dedicated unprivileged user (create it once — see README).
 User=solo-pool
