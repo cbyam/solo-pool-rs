@@ -253,6 +253,43 @@ cargo fmt --all -- --check
 
 CI runs fmt, clippy, tests, and a release build on every push and PR.
 
+## Releasing
+
+Versioning follows [SemVer](https://semver.org/). While pre-1.0, breaking
+changes bump the **minor** version and everything else bumps the **patch**
+version. Changes are recorded in [CHANGELOG.md](CHANGELOG.md) under
+`[Unreleased]` as they merge.
+
+To cut a release (e.g. `v0.3.1`):
+
+```bash
+# 1. Promote the changelog: rename [Unreleased] -> [0.3.1] - <date>, add a fresh
+#    empty [Unreleased], and update the compare links at the bottom.
+
+# 2. Bump the version in Cargo.toml, then refresh Cargo.lock.
+#    edit Cargo.toml:  version = "0.3.1"
+cargo build
+
+# 3. Commit the version bump + changelog together.
+git add Cargo.toml Cargo.lock CHANGELOG.md
+git commit -m "release: v0.3.1 — <one-line summary>"
+
+# 4. Tag and push. The tag is what triggers the release automation.
+git tag -a v0.3.1 -m "v0.3.1"
+git push && git push origin v0.3.1
+```
+
+Pushing a `v*` tag triggers two workflows automatically:
+
+- **`release.yml`** — builds the Linux x86_64 binary, packages a tarball
+  (binary + `config.toml.example` + README), and publishes a GitHub Release with
+  auto-generated notes.
+- **`docker.yml`** — builds and pushes the image to
+  `ghcr.io/cbyam/solo-pool-rs:<tag>`.
+
+So the only manual steps are the changelog promotion, the version bump, and the
+tag push — CI produces the artifacts and the GitHub Release.
+
 ---
 
 ## License
