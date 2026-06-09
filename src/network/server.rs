@@ -113,8 +113,7 @@ pub async fn run(
             // (0x00 for the standard mining protocol's SetupConnection).
             // Force the protocol-detect byte to arrive promptly so a peer cannot
             // hold the connection (and its slot) open by sending nothing.
-            let handshake_timeout =
-                tokio::time::Duration::from_secs(config.pool.idle_timeout_secs);
+            let handshake_timeout = tokio::time::Duration::from_secs(config.pool.idle_timeout_secs);
             let mut first = [0u8; 1];
             let peek = tokio::time::timeout(handshake_timeout, stream.peek(&mut first)).await;
             let is_sv1 = match peek {
