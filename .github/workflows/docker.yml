@@ -12,12 +12,17 @@ permissions:
   contents: read
   packages: write
 
+env:
+  # Run JS actions on Node 24 ahead of GitHub's 2026-06-16 forced default, so
+  # any incompatibility surfaces here instead of on a release day.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   image:
     name: Build & push image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
