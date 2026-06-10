@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-10
+
 ### Added
 - Config: `pool.found_block_dir` (default `found-blocks`) — directory where the
   raw hex of every found block is archived before submission.
@@ -100,7 +102,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cbyam/solo-pool-rs/releases/tag/v0.2.0
