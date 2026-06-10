@@ -13,11 +13,15 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, error, warn};
+use tokio::{
+    sync::{broadcast, RwLock},
+    task,
+};
+use tracing::{debug, error, info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -42,6 +46,15 @@ pub struct JobBroadcast {
 /// This keeps Avalon/ASIC hardware fed — at 5 TH/s the 32-bit nonce space
 /// exhausts in <1ms, so miners need periodic work updates to stay active.
 const NTIME_REFRESH_SECS: u64 = 30;
+
+/// In-line submitblock attempts before handing off to the background retrier.
+/// Kept small so the miner still gets a timely share response.
+const SUBMIT_INLINE_ATTEMPTS: u32 = 3;
+
+/// Background retrier cadence and give-up horizon. Past the deadline the block
+/// is almost certainly orphaned, but its hex stays archived on disk either way.
+const SUBMIT_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+const SUBMIT_RETRY_DEADLINE: Duration = Duration::from_secs(2 * 60 * 60);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -187,8 +200,121 @@ impl TemplateEngine {
         }
     }
 
-    /// Submit a complete block to Bitcoin Core.
-    pub fn submit_block(&self, block_hex: &str) -> Result<(), PoolError> {
-        self.rpc.submit_block(block_hex)
+    /// Submit a found block, guaranteeing it cannot be silently lost: the raw
+    /// hex is archived to disk *before* the first attempt, transient RPC
+    /// failures are retried in-line a few times, and if those fail a detached
+    /// background task keeps retrying while the caller reports the failure.
+    pub async fn submit_found_block(
+        self: &Arc<Self>,
+        height: u64,
+        hash_hex: &str,
+        block_hex: String,
+    ) -> Result<(), PoolError> {
+        self.archive_found_block(height, hash_hex, &block_hex);
+
+        let mut last_err = None;
+        for attempt in 1..=SUBMIT_INLINE_ATTEMPTS {
+            match self.try_submit(block_hex.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(e) if is_permanent_reject(&e) => return Err(e),
+                Err(e) => {
+                    warn!(
+                        "submitblock attempt {attempt}/{SUBMIT_INLINE_ATTEMPTS} \
+                         failed for block {hash_hex} (height {height}): {e}"
+                    );
+                    last_err = Some(e);
+                }
+            }
+            if attempt < SUBMIT_INLINE_ATTEMPTS {
+                tokio::time::sleep(Duration::from_millis(500 << attempt)).await;
+            }
+        }
+
+        self.spawn_resubmit_task(height, hash_hex.to_owned(), block_hex);
+        Err(last_err
+            .unwrap_or_else(|| PoolError::Other(anyhow::anyhow!("submitblock never attempted"))))
     }
+
+    /// One submitblock attempt, off the async runtime (the RPC client blocks).
+    async fn try_submit(&self, block_hex: String) -> Result<(), PoolError> {
+        let rpc = self.rpc.clone();
+        task::spawn_blocking(move || rpc.submit_block(&block_hex))
+            .await
+            .map_err(|e| PoolError::Other(anyhow::anyhow!("submitblock task panicked: {e}")))?
+    }
+
+    /// Write the block hex to `<found_block_dir>/block_<height>_<hash>.hex`
+    /// before submission, so the block survives a crash or node outage and can
+    /// be replayed by hand. Failure is loud but non-fatal — submission must
+    /// still proceed.
+    fn archive_found_block(&self, height: u64, hash_hex: &str, block_hex: &str) -> Option<PathBuf> {
+        let dir = Path::new(&self.pool_cfg.found_block_dir);
+        let path = dir.join(format!("block_{height}_{hash_hex}.hex"));
+        let res = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, block_hex));
+        match res {
+            Ok(()) => {
+                info!("Archived found block to {}", path.display());
+                Some(path)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to archive found block {hash_hex} to {}: {e}",
+                    path.display()
+                );
+                None
+            }
+        }
+    }
+
+    /// Keep resubmitting a found block in the background after the in-line
+    /// attempts failed — e.g. while bitcoind restarts. `submit_block` treats
+    /// "duplicate" as success, so racing an earlier attempt is harmless.
+    fn spawn_resubmit_task(self: &Arc<Self>, height: u64, hash_hex: String, block_hex: String) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let deadline = Instant::now() + SUBMIT_RETRY_DEADLINE;
+            let mut attempt = SUBMIT_INLINE_ATTEMPTS;
+            while Instant::now() < deadline {
+                tokio::time::sleep(SUBMIT_RETRY_INTERVAL).await;
+                attempt += 1;
+                match engine.try_submit(block_hex.clone()).await {
+                    Ok(()) => {
+                        metrics::block_found();
+                        metrics::block_submission_success();
+                        info!(
+                            "🏆 Block {hash_hex} (height {height}) accepted on \
+                             retry attempt {attempt}"
+                        );
+                        return;
+                    }
+                    Err(e) if is_permanent_reject(&e) => {
+                        error!(
+                            "Block {hash_hex} (height {height}) permanently \
+                             rejected on retry attempt {attempt}: {e}"
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "submitblock retry attempt {attempt} for block \
+                             {hash_hex} (height {height}) failed: {e}"
+                        );
+                    }
+                }
+            }
+            error!(
+                "Giving up resubmitting block {hash_hex} (height {height}) after {:?}; \
+                 its hex remains archived in {} — submit manually with \
+                 `bitcoin-cli submitblock`",
+                SUBMIT_RETRY_DEADLINE, engine.pool_cfg.found_block_dir
+            );
+        });
+    }
+}
+
+/// A consensus-level rejection: the block itself is invalid or outdated, so
+/// resubmitting the same bytes can never succeed. Everything else (transport
+/// errors, node restarting, unexpected responses) is worth retrying.
+fn is_permanent_reject(e: &PoolError) -> bool {
+    matches!(e, PoolError::SubmitBlockRejected(_))
 }

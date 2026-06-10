@@ -87,11 +87,16 @@ impl ConnectionRateLimiter {
 
     /// Returns `true` if this connection should be allowed.
     pub fn check_and_record(&self, ip: IpAddr) -> bool {
-        let one_minute_ago = Instant::now() - Duration::from_secs(60);
+        // `Instant` is monotonic-since-boot on Linux, so plain subtraction
+        // panics when the host has been up for less than the window. `None`
+        // means every recorded timestamp is necessarily inside the window.
+        let one_minute_ago = Instant::now().checked_sub(Duration::from_secs(60));
         let mut entry = self.windows.entry(ip).or_default();
 
         // Evict old entries
-        entry.retain(|&t| t > one_minute_ago);
+        if let Some(cutoff) = one_minute_ago {
+            entry.retain(|&t| t > cutoff);
+        }
 
         if entry.len() >= self.max_per_minute as usize {
             return false;
@@ -105,7 +110,9 @@ impl ConnectionRateLimiter {
     /// (spoofed / IPv6 ranges), since `check_and_record` only trims an entry when
     /// that same IP reconnects. Call from a background task every few minutes.
     pub fn prune(&self) {
-        let one_minute_ago = Instant::now() - Duration::from_secs(60);
+        let Some(one_minute_ago) = Instant::now().checked_sub(Duration::from_secs(60)) else {
+            return; // host up < 60s — nothing can be stale yet
+        };
         self.windows
             .retain(|_, times| times.iter().any(|&t| t > one_minute_ago));
     }
