@@ -665,6 +665,7 @@ async fn handle_submit(
     let accept_difficulty = session.vardiff_cfg.min_difficulty;
 
     let validation_start = Instant::now();
+    let job_height = job_entry.job.height;
     let extranonce1 = session.extranonce1.clone();
     let share_set = std::mem::take(&mut session.share_set);
     let job_entry = job_entry.clone();
@@ -730,7 +731,10 @@ async fn handle_submit(
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
-            let submit_result = engine.submit_block(&block_hex);
+            let block_hash_hex = hex::encode(hash);
+            let submit_result = engine
+                .submit_found_block(job_height, &block_hash_hex, block_hex)
+                .await;
             match submit_result {
                 Ok(_) => {
                     metrics::block_found();
