@@ -165,14 +165,27 @@ impl RpcClient {
             return Ok(());
         }
 
-        if let Some(reason) = result.as_str() {
-            warn!("submitblock rejected: {reason}");
-            return Err(PoolError::SubmitBlockRejected(reason.to_owned()));
+        match result.as_str() {
+            // The node already has this block — an earlier (possibly retried)
+            // submission went through. Success, not an error.
+            Some("duplicate") | Some("duplicate-inconclusive") => {
+                info!("submitblock: node already has this block (duplicate)");
+                Ok(())
+            }
+            // Valid block that did not become the chain tip (lost a same-height
+            // race). It was accepted and stored — resubmitting cannot help.
+            Some("inconclusive") => {
+                warn!("submitblock: block valid but not on the best chain (inconclusive)");
+                Ok(())
+            }
+            Some(reason) => {
+                warn!("submitblock rejected: {reason}");
+                Err(PoolError::SubmitBlockRejected(reason.to_owned()))
+            }
+            None => Err(PoolError::Other(anyhow!(
+                "unexpected submitblock response: {result}"
+            ))),
         }
-
-        Err(PoolError::Other(anyhow!(
-            "unexpected submitblock response: {result}"
-        )))
     }
 
     pub fn best_block_hash(&self) -> Result<String, PoolError> {
