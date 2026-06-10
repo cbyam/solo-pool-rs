@@ -201,16 +201,28 @@ impl TemplateEngine {
     }
 
     /// Submit a found block, guaranteeing it cannot be silently lost: the raw
-    /// hex is archived to disk *before* the first attempt, transient RPC
-    /// failures are retried in-line a few times, and if those fail a detached
-    /// background task keeps retrying while the caller reports the failure.
+    /// hex is archived to disk in parallel with the first attempt, transient
+    /// RPC failures are retried in-line a few times, and if those fail a
+    /// detached background task keeps retrying while the caller reports the
+    /// failure.
     pub async fn submit_found_block(
         self: &Arc<Self>,
         height: u64,
         hash_hex: &str,
         block_hex: String,
     ) -> Result<(), PoolError> {
-        self.archive_found_block(height, hash_hex, &block_hex);
+        let block_hex = Arc::new(block_hex);
+
+        // Archive concurrently on a blocking thread — submission is in a race
+        // against the rest of the network and must not wait on disk; the
+        // archive only matters if submission fails, and it still lands within
+        // milliseconds of the submit going out.
+        {
+            let dir = self.pool_cfg.found_block_dir.clone();
+            let hash = hash_hex.to_owned();
+            let hex = block_hex.clone();
+            task::spawn_blocking(move || archive_found_block(&dir, height, &hash, &hex));
+        }
 
         let mut last_err = None;
         for attempt in 1..=SUBMIT_INLINE_ATTEMPTS {
@@ -236,40 +248,22 @@ impl TemplateEngine {
     }
 
     /// One submitblock attempt, off the async runtime (the RPC client blocks).
-    async fn try_submit(&self, block_hex: String) -> Result<(), PoolError> {
+    async fn try_submit(&self, block_hex: Arc<String>) -> Result<(), PoolError> {
         let rpc = self.rpc.clone();
         task::spawn_blocking(move || rpc.submit_block(&block_hex))
             .await
             .map_err(|e| PoolError::Other(anyhow::anyhow!("submitblock task panicked: {e}")))?
     }
 
-    /// Write the block hex to `<found_block_dir>/block_<height>_<hash>.hex`
-    /// before submission, so the block survives a crash or node outage and can
-    /// be replayed by hand. Failure is loud but non-fatal — submission must
-    /// still proceed.
-    fn archive_found_block(&self, height: u64, hash_hex: &str, block_hex: &str) -> Option<PathBuf> {
-        let dir = Path::new(&self.pool_cfg.found_block_dir);
-        let path = dir.join(format!("block_{height}_{hash_hex}.hex"));
-        let res = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, block_hex));
-        match res {
-            Ok(()) => {
-                info!("Archived found block to {}", path.display());
-                Some(path)
-            }
-            Err(e) => {
-                error!(
-                    "Failed to archive found block {hash_hex} to {}: {e}",
-                    path.display()
-                );
-                None
-            }
-        }
-    }
-
     /// Keep resubmitting a found block in the background after the in-line
     /// attempts failed — e.g. while bitcoind restarts. `submit_block` treats
     /// "duplicate" as success, so racing an earlier attempt is harmless.
-    fn spawn_resubmit_task(self: &Arc<Self>, height: u64, hash_hex: String, block_hex: String) {
+    fn spawn_resubmit_task(
+        self: &Arc<Self>,
+        height: u64,
+        hash_hex: String,
+        block_hex: Arc<String>,
+    ) {
         let engine = self.clone();
         tokio::spawn(async move {
             let deadline = Instant::now() + SUBMIT_RETRY_DEADLINE;
@@ -317,4 +311,27 @@ impl TemplateEngine {
 /// errors, node restarting, unexpected responses) is worth retrying.
 fn is_permanent_reject(e: &PoolError) -> bool {
     matches!(e, PoolError::SubmitBlockRejected(_))
+}
+
+/// Write the block hex to `<found_block_dir>/block_<height>_<hash>.hex` so the
+/// block survives a crash or node outage and can be replayed by hand. Runs on
+/// a blocking thread in parallel with submission. Failure is loud but
+/// non-fatal — submission proceeds regardless.
+fn archive_found_block(dir: &str, height: u64, hash_hex: &str, block_hex: &str) -> Option<PathBuf> {
+    let dir = Path::new(dir);
+    let path = dir.join(format!("block_{height}_{hash_hex}.hex"));
+    let res = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, block_hex));
+    match res {
+        Ok(()) => {
+            info!("Archived found block to {}", path.display());
+            Some(path)
+        }
+        Err(e) => {
+            error!(
+                "Failed to archive found block {hash_hex} to {}: {e}",
+                path.display()
+            );
+            None
+        }
+    }
 }
