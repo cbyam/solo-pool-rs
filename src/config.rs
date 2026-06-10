@@ -34,6 +34,16 @@ pub struct PoolConfig {
     pub extranonce2_size: usize,
     pub max_connections: usize,
     pub idle_timeout_secs: u64,
+    /// Directory where the raw hex of every block this pool finds is archived
+    /// before submission, so a failed `submitblock` can be retried or replayed
+    /// by hand (`bitcoin-cli submitblock "$(cat <file>)"`). Relative paths
+    /// resolve against the service working directory, like `stats_db_path`.
+    #[serde(default = "default_found_block_dir")]
+    pub found_block_dir: String,
+}
+
+fn default_found_block_dir() -> String {
+    "found-blocks".into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

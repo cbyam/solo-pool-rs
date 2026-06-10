@@ -662,7 +662,11 @@ async fn handle_submit(
             hash,
         }) => {
             metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
-            match engine.submit_block(&block_hex) {
+            let block_hash_hex = hex::encode(hash);
+            match engine
+                .submit_found_block(job_entry.job.height, &block_hash_hex, block_hex)
+                .await
+            {
                 Ok(_) => {
                     metrics::block_found();
                     metrics::block_submission_success();

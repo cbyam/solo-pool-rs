@@ -9,6 +9,26 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Config: `pool.found_block_dir` (default `found-blocks`) — directory where the
+  raw hex of every found block is archived before submission.
+
+### Fixed
+- Mining: a found block can no longer be silently lost when `submitblock`
+  fails. The block hex is archived to disk before the first attempt, transient
+  RPC failures are retried in-line and then by a background task (for up to two
+  hours), and `duplicate`/`inconclusive` node responses are treated as success
+  so retries are idempotent. Submission now also runs via `spawn_blocking`
+  instead of blocking the session task on the synchronous RPC client.
+- Network: a transient `accept()` error (e.g. `ECONNABORTED` from a peer reset
+  mid-handshake, or `EMFILE` under fd exhaustion) no longer terminates the
+  listener — and with it the whole pool. The accept loop now logs, backs off
+  briefly, and continues.
+- Security: the connection rate limiter no longer panics on `Instant`
+  underflow when the pool starts within 60 seconds of host boot — previously
+  this could kill the background pruner task (leaving the per-IP window map
+  growing forever) or crash the accept loop on an incoming connection.
+
 ## [0.3.1] - 2026-06-09
 
 ### Added

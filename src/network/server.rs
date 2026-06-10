@@ -56,7 +56,19 @@ pub async fn run(
     }
 
     loop {
-        let (stream, peer) = listener.accept().await?;
+        let (stream, peer) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                // accept() returns transient, per-connection errors (peer RST
+                // mid-handshake → ECONNABORTED) and resource errors under fd
+                // exhaustion (EMFILE/ENFILE); none of them may kill the
+                // listener. Back off briefly so the loop doesn't spin while
+                // the process is out of descriptors.
+                warn!("accept() failed: {e}");
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
 
         // ── Global connection cap ────────────────────────────────────────────
         let reserved = loop {
