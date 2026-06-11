@@ -9,6 +9,45 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-11
+
+### Changed
+- **Packaging (Docker): the runtime image now runs as a non-root user
+  (uid:gid `10001`, `solo-pool`) instead of root.** This is a breaking change
+  for existing Docker / Compose deployers and needs two one-time migration
+  steps:
+  - Grant the container read access to bitcoind's cookie via the host node
+    group — `docker run --group-add <gid>` or Compose `group_add` — and set
+    `rpccookieperms=group` in `bitcoin.conf`.
+  - `chown -R 10001:10001` any persisted `./data` volume so the SQLite stats DB
+    and found-block archives stay writable.
+
+  The default in-container cookie path also moves from `/root/.bitcoin/.cookie`
+  to `/home/solo-pool/.bitcoin/.cookie`. The binary is byte-identical and needs
+  no root (the stratum and dashboard ports are both >1024); only the image
+  contract changes. The systemd unit already ran unprivileged and is unaffected.
+
+### Fixed
+- Packaging (Docker): the runtime image was missing `libsqlite3.so.0`, which
+  `rusqlite` links — the binary failed at dynamic-link time before `main()`, so
+  the published images never actually started. (Bare-metal/systemd installs were
+  unaffected, linking the host's library.) The runtime stage now installs
+  `libsqlite3-0` alongside `libzmq5`.
+- Config: reject `extranonce1_size + extranonce2_size == 0` at startup. A zero
+  total extranonce width underflowed the `usize` subtraction in SV2
+  `OpenExtendedMiningChannel` channel setup; it now fails fast at load with a
+  clear message instead of risking a runtime panic.
+
+### Security
+- Network: enforce `max_message_bytes` on the newline-terminated path of the
+  SV1 line reader. A line whose terminating newline fell within a single read
+  buffer (~8 KiB) was returned without the size check, so the configured limit
+  could be exceeded; the cap is now applied on that path too.
+- Metrics: bound the `pool_block_submissions_failed_total` `reason` label to a
+  small fixed set of values instead of the `Debug`-formatted error. The error
+  text carries node-influenced strings (RPC messages, rejection reasons) that
+  would otherwise mint unbounded Prometheus label series.
+
 ## [0.3.2] - 2026-06-10
 
 ### Added
@@ -102,7 +141,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.2.0...v0.3.0
