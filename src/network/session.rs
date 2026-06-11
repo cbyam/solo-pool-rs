@@ -359,6 +359,16 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
             if buf.last() == Some(&b'\r') {
                 buf.pop();
             }
+            // Enforce the cap here too: a newline early in a single BufReader
+            // chunk reaches this branch without the per-iteration check below,
+            // so an oversize line ending within one ~8 KiB read would otherwise
+            // slip through.
+            if buf.len() > max {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "line exceeds max message size",
+                ));
+            }
             return Ok(Some(buf.len()));
         }
         buf.extend_from_slice(available);
@@ -755,7 +765,7 @@ async fn handle_submit(
                     )])
                 }
                 Err(e) => {
-                    metrics::block_submission_failure(&format!("{:?}", e));
+                    metrics::block_submission_failure(e.submit_failure_label());
                     error!("submitblock failed: {e}");
                     HandleResult::Messages(vec![ResponseBuilder::err(
                         &req.id,
@@ -885,6 +895,19 @@ mod tests {
             "buffer grew unbounded: {}",
             buf.len()
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversize_line_ending_within_one_chunk() {
+        // A newline-terminated line larger than the cap, delivered in a single
+        // BufReader chunk so it hits the newline-found branch. Must still error.
+        let mut data = vec![b'a'; 100];
+        data.push(b'\n');
+        let mut r = BufReader::new(&data[..]);
+        let mut buf = Vec::new();
+
+        let err = read_line_bounded(&mut r, &mut buf, 16).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[tokio::test]
