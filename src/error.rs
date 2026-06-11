@@ -95,6 +95,20 @@ impl StratumErrCode {
 }
 
 impl PoolError {
+    /// A small, fixed label for the `pool_block_submissions_failed_total` metric.
+    /// Never derive this from the error's `Display`/`Debug` text: those carry
+    /// node-influenced strings (RPC messages, rejection reasons) that would mint
+    /// unbounded Prometheus label series.
+    pub fn submit_failure_label(&self) -> &'static str {
+        match self {
+            PoolError::Rpc(_) => "rpc_error",
+            PoolError::SubmitBlockRejected(_) => "rejected",
+            PoolError::TemplateUnavailable => "template_unavailable",
+            PoolError::Io(_) => "io",
+            _ => "other",
+        }
+    }
+
     /// Map a PoolError to the appropriate Stratum error tuple `[code, message, null]`.
     pub fn to_stratum_error(&self) -> serde_json::Value {
         let (code, msg) = match self {

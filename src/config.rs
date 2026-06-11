@@ -200,10 +200,28 @@ pub struct LoggingConfig {
 // Load helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+impl Config {
+    /// Reject configurations that would later panic or misbehave at runtime.
+    fn validate(&self) -> Result<()> {
+        // SV2 `OpenExtendedMiningChannel` derives `prefix_len` as
+        // `extranonce_total - granted` (granted >= 1). A zero total underflows
+        // that `usize` subtraction, so refuse it at boot rather than per-channel.
+        if self.pool.extranonce1_size + self.pool.extranonce2_size == 0 {
+            anyhow::bail!(
+                "[pool] extranonce1_size + extranonce2_size must be >= 1 (got 0): \
+                 a zero total extranonce width underflows SV2 channel setup"
+            );
+        }
+        Ok(())
+    }
+}
+
 pub fn load(path: &str) -> Result<Config> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("Opening config file: {path}"))?;
-    toml::from_str(&raw).context("Parsing config TOML")
+    let config: Config = toml::from_str(&raw).context("Parsing config TOML")?;
+    config.validate()?;
+    Ok(config)
 }
 
 /// Expand a leading `~` to the home directory.

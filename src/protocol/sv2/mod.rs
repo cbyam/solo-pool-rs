@@ -685,7 +685,7 @@ async fn handle_submit(
                     accept(session, writer, submit.sequence_number).await
                 }
                 Err(e) => {
-                    metrics::block_submission_failure(&format!("{:?}", e));
+                    metrics::block_submission_failure(e.submit_failure_label());
                     error!("SV2 submitblock failed: {e}");
                     reject(
                         session,

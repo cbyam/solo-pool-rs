@@ -48,19 +48,10 @@ underflow panic). Line references are as of that review and may drift.
 - [ ] Fix ghost-online accounting: repeated `mining.authorize` increments
   `active_sessions` per call but disconnect decrements once, for the last name
   only. (`src/network/session.rs`, `src/stats.rs`)
-- [ ] Enforce `max_message_bytes` on the newline-found path of
-  `read_line_bounded` (currently accepts up to BufReader capacity ~8 KiB).
-  (`src/network/session.rs`)
 - [ ] Hot-path cleanups: recompute hashrate windows only on accepted shares
   (today: 4 full deque scans per inbound message); move per-share hex/format
   allocations inside `debug!` so they're skipped when disabled; reuse a scratch
   buffer instead of cloning `coinbase_template` per share.
-- [ ] Use a small static reason enum for the `block_submission_failure` metric
-  label instead of `Debug`-formatted errors (label cardinality).
-  (`src/metrics/mod.rs`)
-- [ ] Reject SV2 `OpenExtendedMiningChannel` when `extranonce_total == 0` to
-  avoid a `usize` underflow on misconfigured extranonce sizes.
-  (`src/protocol/sv2/mod.rs`)
 
 ## Planned features
 
