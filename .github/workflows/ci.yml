@@ -8,9 +8,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # Run JS actions on Node 24 ahead of GitHub's 2026-06-16 forced default, so
-  # any incompatibility surfaces here instead of on a release day.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
