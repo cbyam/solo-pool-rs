@@ -75,10 +75,10 @@ pub fn block_submission_success() {
     counter!("pool_block_submissions_success_total").increment(1);
 }
 
-pub fn block_submission_failure(reason: &str) {
+pub fn block_submission_failure(reason: &'static str) {
     counter!(
         "pool_block_submissions_failed_total",
-        "reason" => reason.to_string()
+        "reason" => reason
     )
     .increment(1);
 }
