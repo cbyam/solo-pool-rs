@@ -24,16 +24,35 @@ RUN touch src/main.rs \
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
+# Runtime shared libs the binary links: libzmq5 (tmq/ZMQ) and libsqlite3
+# (rusqlite stats DB — without it the dynamic linker fails before main()).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libzmq5 ca-certificates \
+        libzmq5 libsqlite3-0 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Run as a dedicated unprivileged user — the binary needs no root: the stratum
+# and dashboard ports are >1024, and bitcoind's RPC cookie is read via a
+# supplementary group supplied at run time (see docker-compose.yml / README).
+# uid/gid 10001 is fixed so a host-side `chown` of the data volume stays valid
+# across image rebuilds.
+RUN groupadd --gid 10001 solo-pool \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/solo-pool \
+        --shell /usr/sbin/nologin solo-pool
 
 COPY --from=builder /build/target/release/solo-pool-rs /usr/local/bin/solo-pool-rs
 
+# /app is the working dir, so relative paths in config.toml (stats_db_path,
+# found_block_dir) resolve under it; /app/data is the persistence mount point.
+# Both are owned by the runtime user so the SQLite DB and found-block archives
+# are writable.
+RUN mkdir -p /app/data && chown -R solo-pool:solo-pool /app
 WORKDIR /app
-# So a `~/.bitcoin/.cookie` cookie_path (the Bitcoin default) expands to
-# /root/.bitcoin/.cookie inside the container — mount your host cookie there.
-ENV HOME=/root
+
+# The default `~/.bitcoin/.cookie` cookie_path now expands under the non-root
+# home — mount your host cookie at /home/solo-pool/.bitcoin/.cookie.
+ENV HOME=/home/solo-pool
+
+USER solo-pool
 
 # Stratum (SV1 + SV2) and the dashboard/metrics HTTP port.
 EXPOSE 3333 9090
