@@ -48,10 +48,15 @@ curl -O https://raw.githubusercontent.com/cbyam/solo-pool-rs/main/config.toml.ex
 mv config.toml.example config.toml
 $EDITOR config.toml          # set coinbase_address + bitcoin_rpc
 
-# 2. Run (host networking lets it reach bitcoind's RPC + ZMQ on localhost)
+# 2. Run (host networking lets it reach bitcoind's RPC + ZMQ on localhost).
+#    The image runs as the non-root user uid:gid 10001, so it reads the cookie
+#    via a supplementary group: pass your node group's GID (find it with
+#    `stat -c %g "$HOME/.bitcoin/.cookie"`) and set rpccookieperms=group in
+#    bitcoin.conf so the cookie is group-readable.
 docker run -d --name solo-pool-rs --network host \
+  --group-add "$(stat -c %g "$HOME/.bitcoin/.cookie")" \
   -v "$PWD/config.toml:/app/config.toml:ro" \
-  -v "$HOME/.bitcoin/.cookie:/root/.bitcoin/.cookie:ro" \
+  -v "$HOME/.bitcoin/.cookie:/home/solo-pool/.bitcoin/.cookie:ro" \
   ghcr.io/cbyam/solo-pool-rs:latest
 ```
 
@@ -62,6 +67,12 @@ docker compose up -d
 ```
 
 Then open the dashboard at `http://<host>:9090/`.
+
+> **Upgrading from ≤ 0.3.x:** the image now runs as a non-root user (uid:gid
+> `10001`) instead of root. Two one-time changes are needed: grant cookie access
+> via the node group as shown above (`--group-add` / Compose `group_add`), and if
+> you persist data with `-v ./data:/app/data`, make that host dir writable by the
+> new uid — `sudo chown -R 10001:10001 ./data`. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

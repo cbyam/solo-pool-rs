@@ -16,14 +16,25 @@ services:
     container_name: solo-pool-rs
     restart: unless-stopped
     network_mode: host
+    # The image runs as the non-root user solo-pool (uid:gid 10001), so the
+    # container also needs READ access to bitcoind's cookie. Add the host group
+    # that owns the cookie as a supplementary group — find its GID with
+    # `stat -c %g "$HOME/.bitcoin/.cookie"` — and set `rpccookieperms=group` in
+    # bitcoin.conf so the cookie is group-readable. Replace the GID below:
+    group_add:
+      - "1000"   # <-- your node group's GID (e.g. `bitstack`); REQUIRED for cookie auth
     volumes:
       - ./config.toml:/app/config.toml:ro
       # Read the Bitcoin cookie. Left side is the host path (default Bitcoin Core
       # datadir — change it if you use a custom datadir); right side matches the
-      # default cookie_path = "~/.bitcoin/.cookie" inside the container.
-      - ${HOME}/.bitcoin/.cookie:/root/.bitcoin/.cookie:ro
-      # Persist all-time stats. Set stats_db_path = "data/pool_stats.sqlite" in
-      # config.toml so the SQLite file lands in this mounted volume.
+      # default cookie_path = "~/.bitcoin/.cookie" inside the container, which now
+      # expands under the non-root home /home/solo-pool.
+      - ${HOME}/.bitcoin/.cookie:/home/solo-pool/.bitcoin/.cookie:ro
+      # Persist all-time stats and found-block archives. The image runs as uid
+      # 10001, so this host dir must be writable by that uid:
+      #   mkdir -p data && sudo chown -R 10001:10001 data
+      # Then in config.toml set stats_db_path = "data/pool_stats.sqlite" and
+      # found_block_dir = "data/found-blocks" so both land in this volume.
       - ./data:/app/data
 
 # Without host networking, drop `network_mode: host`, add:
