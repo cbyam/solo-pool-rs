@@ -22,6 +22,30 @@ everything else bumps the **patch** version.
   pool runs on Raspberry Pi–class hosts and arm64 servers. Release tarballs
   now include an `aarch64-unknown-linux-gnu` build alongside x86_64.
 
+### Fixed
+- Repeated `mining.authorize` calls on one connection no longer inflate the
+  dashboard's per-worker `active_sessions` count (ghost-online accounting);
+  re-authorizing the same name is now a no-op, and switching names releases
+  the previous one.
+
+### Security
+- **Pre-auth DoS hardening** (the two High items from the June 2026 review):
+  - A connection now has 10 seconds (was: the full 300 s idle timeout) to make
+    protocol progress before authorizing a worker — covering the protocol
+    auto-detect peek, the SV2 Noise handshake, and every pre-auth message — so
+    silent connections can no longer pin the bounded global connection slots.
+  - Worker-identity cardinality is now capped: one connection may authorize at
+    most `security.max_authorizations_per_session` distinct names (default 8,
+    0 disables; new config key). The per-session token bucket
+    (`max_shares_per_sec`) now applies to **all** inbound messages, not just
+    share submits, so authorize/configure floods are rate-limited too.
+  - Offline workers idle > 24 h are evicted from the in-memory stats maps, and
+    Prometheus series untouched for 24 h are dropped from the exporter, so
+    attacker-minted worker names no longer leak memory or label series forever.
+  - The persisted `worker_best_shares` table is bounded to the top 512 rows by
+    difficulty (pruned at boot and periodically); an inflated table from an
+    earlier run is trimmed before being loaded into RAM.
+
 ## [0.4.0] - 2026-06-11
 
 ### Changed

@@ -12,7 +12,18 @@ use std::sync::{
     Arc,
 };
 use std::time::Instant;
-use tracing::warn;
+use tracing::{info, warn};
+
+/// Offline workers idle longer than this are evicted from the in-memory stats
+/// maps (their persisted best share survives, subject to the cap below). Keeps
+/// per-message stats work and dashboard payloads bounded against connections
+/// that mint many distinct worker names.
+const IDLE_WORKER_EVICT_SECS: u64 = 86_400;
+
+/// Maximum rows kept in `worker_best_shares` (in memory and in SQLite), keeping
+/// the highest difficulties. Bounds boot-time load and dashboard growth; a solo
+/// operator's real fleet is far below this.
+const MAX_WORKER_BEST_SHARES: usize = 512;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Persistent store for all-time metrics
@@ -55,9 +66,28 @@ impl StatsStore {
             [],
         )?;
 
-        Ok(Self {
+        let store = Self {
             conn: Mutex::new(conn),
-        })
+        };
+        // Enforce the row cap at boot so an attacker-inflated table from a
+        // previous run is trimmed before load_values pulls it into RAM.
+        store.prune_worker_best_shares(MAX_WORKER_BEST_SHARES);
+        Ok(store)
+    }
+
+    /// Keep only the `keep` highest-difficulty rows in `worker_best_shares`.
+    fn prune_worker_best_shares(&self, keep: usize) {
+        match self.conn.lock().execute(
+            "DELETE FROM worker_best_shares WHERE worker NOT IN (
+               SELECT worker FROM worker_best_shares
+               ORDER BY best_share_difficulty DESC LIMIT ?1
+             )",
+            params![keep as i64],
+        ) {
+            Ok(0) => {}
+            Ok(n) => info!("Pruned {n} stale worker_best_shares rows (cap {keep})"),
+            Err(e) => warn!("Failed to prune worker_best_shares: {e}"),
+        }
     }
 
     fn load_values(
@@ -504,6 +534,63 @@ impl PoolStats {
         }
     }
 
+    /// Evict offline workers idle past `IDLE_WORKER_EVICT_SECS` from the
+    /// in-memory maps, and bound `worker_best_shares` (memory + SQLite) to the
+    /// top `MAX_WORKER_BEST_SHARES` by difficulty. Called from the background
+    /// pruner task. A reconnecting evicted worker is recreated on authorize;
+    /// only its session counters (accepted/rejected this boot) reset.
+    pub fn prune_idle_workers(&self) {
+        let cutoff = Self::now_secs().saturating_sub(IDLE_WORKER_EVICT_SECS);
+
+        let stale: Vec<String> = self
+            .worker_states
+            .iter()
+            .filter(|e| {
+                let s = e.value();
+                if s.online {
+                    return false;
+                }
+                let last_submit = self
+                    .worker_last_submit_ts
+                    .get(e.key())
+                    .map(|v| *v.value())
+                    .unwrap_or(s.last_submit_ts);
+                last_submit.max(s.connected_ts) < cutoff
+            })
+            .map(|e| e.key().clone())
+            .collect();
+
+        for w in &stale {
+            self.worker_states.remove(w);
+            self.worker_hashrates_60s.remove(w);
+            self.worker_hashrates_10m.remove(w);
+            self.worker_hashrates_3h.remove(w);
+            self.worker_hashrates_24h.remove(w);
+            self.worker_protocol.remove(w);
+            self.worker_last_submit_ts.remove(w);
+        }
+        if !stale.is_empty() {
+            info!("Evicted {} idle offline workers from stats", stale.len());
+        }
+
+        // Best shares survive eviction (the dashboard still lists all-time
+        // bests), bounded by count so they can't grow without limit.
+        if self.worker_best_shares.len() > MAX_WORKER_BEST_SHARES {
+            let mut all: Vec<(String, u64)> = self
+                .worker_best_shares
+                .iter()
+                .map(|e| (e.key().clone(), *e.value()))
+                .collect();
+            all.sort_unstable_by_key(|e| std::cmp::Reverse(e.1));
+            for (w, _) in all.drain(MAX_WORKER_BEST_SHARES..) {
+                self.worker_best_shares.remove(&w);
+            }
+            if let Some(store) = &self.store {
+                store.prune_worker_best_shares(MAX_WORKER_BEST_SHARES);
+            }
+        }
+    }
+
     pub fn record_hashrate_snapshot(&self) {
         if let Some(store) = &self.store {
             let ts = Self::now_secs();
@@ -782,6 +869,50 @@ mod tests {
 
         let stats = PoolStats::new_with_store(Some(db_path.clone()));
         assert_eq!(stats.snapshot().best_share_difficulty, 1_500_000);
+
+        std::fs::remove_file(db_path).ok();
+    }
+
+    #[test]
+    fn prune_evicts_idle_offline_workers_but_not_online_or_recent() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("online", 1_000);
+        stats.mark_worker_online("idle", 1_000);
+        stats.mark_worker_offline("idle");
+        stats.mark_worker_online("recent", 1_000);
+        stats.mark_worker_offline("recent");
+
+        // Age "idle" past the TTL; "recent" went offline just now.
+        stats.worker_states.get_mut("idle").unwrap().connected_ts =
+            PoolStats::now_secs() - IDLE_WORKER_EVICT_SECS - 60;
+
+        stats.prune_idle_workers();
+
+        assert!(stats.worker_states.get("online").is_some());
+        assert!(stats.worker_states.get("recent").is_some());
+        assert!(stats.worker_states.get("idle").is_none());
+    }
+
+    #[test]
+    fn worker_best_shares_bounded_in_memory_and_on_disk() {
+        let db_path = make_temp_db();
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            for i in 0..MAX_WORKER_BEST_SHARES + 100 {
+                stats.worker_share_accepted(&format!("w{i}"), i as u64 + 1);
+            }
+            stats.prune_idle_workers();
+            assert_eq!(stats.worker_best_shares.len(), MAX_WORKER_BEST_SHARES);
+            // Highest difficulties survive.
+            assert!(stats
+                .worker_best_shares
+                .get(&format!("w{}", MAX_WORKER_BEST_SHARES + 99))
+                .is_some());
+            assert!(stats.worker_best_shares.get("w0").is_none());
+        }
+        // Reopen: boot-time prune + load stay within the cap.
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        assert!(stats.worker_best_shares.len() <= MAX_WORKER_BEST_SHARES);
 
         std::fs::remove_file(db_path).ok();
     }
