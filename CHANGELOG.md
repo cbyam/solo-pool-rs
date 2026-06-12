@@ -25,6 +25,15 @@ everything else bumps the **patch** version.
   the chain (coinbase paying the configured address). The previous round-trip
   unit test only checked that the output changed; it now asserts the recovered
   header bytes equal the block's true internal prev-hash.
+- BIP34 coinbase height encoding now matches Bitcoin Core's
+  `CScript() << nHeight` for all heights: `OP_0` for 0 and `OP_1..OP_16` for
+  heights 1–16, instead of always using the data-push form. The pool only ever
+  emits these small-height encodings when mining the first 16 blocks of a fresh
+  regtest / signet chain, where the old encoding was rejected with
+  `bad-cb-height`; post-BIP34 mainnet heights are all >16 and were unaffected.
+  Found while rehearsing the block-submission path on regtest.
+
+## [0.4.1] - 2026-06-11
 
 ### Added
 - Config: every value can now be overridden by an environment variable named
