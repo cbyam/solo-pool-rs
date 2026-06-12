@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-11
+
 ### Added
 - Config: every value can now be overridden by an environment variable named
   `SOLO_POOL_<SECTION>__<KEY>` (double underscore between section and key),
@@ -178,7 +180,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.0...v0.3.1
