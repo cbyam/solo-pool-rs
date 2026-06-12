@@ -7,21 +7,15 @@ underflow panic). Line references are as of that review and may drift.
 
 ## High — pre-auth DoS hardening
 
-- [ ] **Cap attacker-controlled worker-name growth.** Worker names are
-  length-validated but unbounded in *cardinality*: `mining.authorize` is not
-  rate-limited, every distinct name permanently inserts into six stats maps and
-  mints never-freed Prometheus label series, and `update_worker_hashrate` does
-  an O(n) sum per inbound message (cost grows quadratically). Accepted shares
-  for new names also add never-pruned `worker_best_shares` SQLite rows reloaded
-  into RAM at boot. Fix set: cap authorizations per session, TTL-evict offline
-  workers from the in-memory maps, rate-limit non-submit messages with the
-  existing token bucket, set `PrometheusBuilder::idle_timeout`, prune stale
-  SQLite rows. (`src/network/session.rs`, `src/stats.rs`, `src/metrics/mod.rs`)
-- [ ] **Dedicated handshake timeout for protocol auto-detect.** The first-byte
-  peek reuses `idle_timeout_secs` (300 s), so a silent connection pins one of
-  the 256 global slots for 5 minutes; ~7 IPs at 8 conns/min can lock out all
-  miners. Use a short 5–10 s deadline for the peek only.
-  (`src/network/server.rs`, spawn block)
+- [x] **Cap attacker-controlled worker-name growth.** Fixed: per-session cap on
+  distinct authorized identities (`max_authorizations_per_session`, default 8),
+  token bucket extended to all inbound messages, 24 h TTL eviction of offline
+  workers from the in-memory maps, `PrometheusBuilder::idle_timeout` (24 h),
+  and `worker_best_shares` bounded to the top 512 rows (pruned at boot +
+  periodically).
+- [x] **Dedicated handshake timeout for protocol auto-detect.** Fixed with a
+  10 s pre-auth deadline covering the first-byte peek, the SV2 Noise handshake,
+  and both session loops until a worker authorizes / a channel opens.
 
 ## Medium
 
@@ -45,9 +39,10 @@ underflow panic). Line references are as of that review and may drift.
 - [ ] Monotonic guard on pool best-share/best-hashrate SQLite `UPDATE`s
   (`WHERE ?1 > ...`), matching the per-worker variant; also make the
   best-hashrate in-memory update a CAS. (`src/stats.rs`)
-- [ ] Fix ghost-online accounting: repeated `mining.authorize` increments
+- [x] Fix ghost-online accounting: repeated `mining.authorize` increments
   `active_sessions` per call but disconnect decrements once, for the last name
-  only. (`src/network/session.rs`, `src/stats.rs`)
+  only. (Fixed alongside the authorization cap: same-name re-auth is a no-op,
+  switching names releases the previous one.)
 - [ ] Hot-path cleanups: recompute hashrate windows only on accepted shares
   (today: 4 full deque scans per inbound message); move per-share hex/format
   allocations inside `debug!` so they're skipped when disabled; reuse a scratch
@@ -55,8 +50,7 @@ underflow panic). Line references are as of that review and may drift.
 
 ## Planned features
 
-- [ ] **v0.4.0: non-root Docker image** (upgrade-breaking; deliberately deferred
-  from v0.3.1).
+- [x] **v0.4.0: non-root Docker image** (shipped in v0.4.0, 2026-06-11).
 - [ ] **SV2 identity pinning:** optional persistent Noise authority keypair via
   config instead of the per-process ephemeral key (deferred in the
   `protocol/sv2/noise.rs` docstring; today no miner verifies pool identity).

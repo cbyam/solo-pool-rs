@@ -170,10 +170,11 @@ pub async fn run(
     info!("SV2 miner connected: {peer}");
 
     // ── Noise handshake (pool = responder) ───────────────────────────────────
-    // Bounded so a peer cannot hold the connection open mid-handshake (the
-    // session-loop idle timeout only starts once we reach transport mode).
+    // Bounded by the short handshake deadline so a peer cannot hold the
+    // connection (and its bounded global slot) open mid-handshake — the
+    // session-loop idle timeout only starts once we reach transport mode.
     let mut stream = stream;
-    let handshake_timeout = Duration::from_secs(config.pool.idle_timeout_secs);
+    let handshake_timeout = Duration::from_secs(crate::network::server::HANDSHAKE_TIMEOUT_SECS);
     let state = match tokio::time::timeout(
         handshake_timeout,
         noise::responder_handshake(&mut stream),
@@ -233,11 +234,19 @@ pub async fn run(
     }
 
     let idle_timeout = Duration::from_secs(config.pool.idle_timeout_secs);
+    let preauth_timeout = Duration::from_secs(crate::network::server::HANDSHAKE_TIMEOUT_SECS);
 
     loop {
+        // Until the channel opens (worker identified), hold the connection to
+        // the short handshake deadline — mirrors the SV1 pre-auth timeout.
+        let read_timeout = if session.channel_open {
+            idle_timeout
+        } else {
+            preauth_timeout
+        };
         tokio::select! {
             // ── Inbound (decrypted) SV2 message ─────────────────────────────
-            inbound = tokio::time::timeout(idle_timeout, inbound_rx.recv()) => {
+            inbound = tokio::time::timeout(read_timeout, inbound_rx.recv()) => {
                 let (msg_type, mut payload) = match inbound {
                     Err(_) => { warn!("SV2 miner {peer} idle timeout — disconnecting"); break; }
                     Ok(None) => { debug!("SV2 {peer} reader closed"); break; }
@@ -351,17 +360,21 @@ async fn handle_message(
     engine: &Arc<TemplateEngine>,
     ban_list: &Arc<BanList>,
 ) -> Flow {
+    // One token per inbound frame, not just submits: setup/open-channel floods
+    // are as cheap to send as shares and feed the same per-message stats work,
+    // so they share the same bucket (mirrors the SV1 dispatch).
+    if !session.guard.share_rate.try_consume() {
+        metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
+        ban_list.ban(session.peer.ip(), "message rate exceeded");
+        return Flow::Disconnect("rate limited".into());
+    }
+
     match msg_type {
         MESSAGE_TYPE_SETUP_CONNECTION => handle_setup_connection(session, writer, payload).await,
         MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL => {
             handle_open_extended(session, writer, payload).await
         }
         MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED => {
-            if !session.guard.share_rate.try_consume() {
-                metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
-                ban_list.ban(session.peer.ip(), "share rate exceeded");
-                return Flow::Disconnect("rate limited".into());
-            }
             handle_submit(session, writer, payload, engine).await
         }
         other => {
@@ -423,6 +436,18 @@ async fn handle_open_extended(
         return Flow::Disconnect(format!("invalid user_identity: {e}"));
     }
 
+    // Only a *new* identity counts against the cap or touches the stats maps
+    // (mirrors the SV1 authorize path).
+    let is_new_identity = session.worker.as_deref() != Some(open.user_identity.as_str());
+    if is_new_identity {
+        if !session.guard.record_new_authorization() {
+            return Flow::Disconnect("too many worker identities".into());
+        }
+        if let Some(prev) = session.worker.take() {
+            session.stats.mark_worker_offline(&prev);
+        }
+    }
+
     // Grant the device its requested extranonce out of the coinbase's reserved
     // total; the remaining bytes become the pool prefix. This is independent of
     // the SV1 split, so SV1 miners (e.g. the Avalon Nano) keep their smaller
@@ -474,12 +499,14 @@ async fn handle_open_extended(
         target = open.max_target;
     }
 
-    session
-        .stats
-        .mark_worker_online(&open.user_identity, session.difficulty);
-    session
-        .stats
-        .set_worker_protocol(&open.user_identity, "sv2");
+    if is_new_identity {
+        session
+            .stats
+            .mark_worker_online(&open.user_identity, session.difficulty);
+        session
+            .stats
+            .set_worker_protocol(&open.user_identity, "sv2");
+    }
     info!(peer = %session.peer, worker = %open.user_identity, channel_id, "SV2 extended channel opened");
 
     match messages::open_extended_success(
