@@ -37,6 +37,32 @@ everything else bumps the **patch** version.
   persisted per browser. The hashrate chart re-skins from the active theme's
   CSS variables without a server round trip.
 
+## [0.4.2] - 2026-06-12
+
+### Fixed
+- **Critical: every found block was rejected by the node with
+  `prev-blk-not-found`.** The coinbase/`mining.notify` prev-hash conversion
+  applied a per-4-byte-word swap that `build_header` then undid, leaving the
+  block header's `hashPrevBlock` in Bitcoin Core's *display* byte order instead
+  of internal order. The header still produced valid proof-of-work, and share
+  validation reconstructs the same header, so the bug was invisible at the
+  share level — but no node would accept the assembled block, so a real
+  block-find would have been archived to disk yet **rejected by the network and
+  lost**. `stratum_prev_hash` now reverses the full 32 bytes (display →
+  internal) before the per-word swap, yielding the canonical Stratum format;
+  `build_header` recovers the correct internal bytes. Verified end to end on
+  regtest: the pool now finds a block, submits it, and the node accepts it onto
+  the chain (coinbase paying the configured address). The previous round-trip
+  unit test only checked that the output changed; it now asserts the recovered
+  header bytes equal the block's true internal prev-hash.
+- BIP34 coinbase height encoding now matches Bitcoin Core's
+  `CScript() << nHeight` for all heights: `OP_0` for 0 and `OP_1..OP_16` for
+  heights 1–16, instead of always using the data-push form. The pool only ever
+  emits these small-height encodings when mining the first 16 blocks of a fresh
+  regtest / signet chain, where the old encoding was rejected with
+  `bad-cb-height`; post-BIP34 mainnet heights are all >16 and were unaffected.
+  Found while rehearsing the block-submission path on regtest.
+
 ## [0.4.1] - 2026-06-11
 
 ### Added
@@ -208,7 +234,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.1...v0.3.2
