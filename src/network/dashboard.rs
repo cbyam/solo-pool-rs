@@ -388,11 +388,13 @@ body {
 .brand .mark { color: var(--accent); font-size: 1.05rem; }
 .brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; }
 nav { display: flex; flex-direction: column; gap: 2px; }
-nav a {
+nav a, nav .nav-btn {
   color: var(--muted); text-decoration: none; font-size: 0.8rem; font-weight: 500;
   padding: 0.42rem 0.6rem; border-radius: 5px; border-left: 2px solid transparent;
+  font-family: inherit; text-align: left; background: none; border-top: none;
+  border-right: none; border-bottom: none; cursor: pointer; width: 100%;
 }
-nav a:hover { color: var(--text); background: var(--surface2); }
+nav a:hover, nav .nav-btn:hover { color: var(--text); background: var(--surface2); }
 nav a.active { color: var(--text); background: var(--surface2); border-left-color: var(--accent); }
 .rail-foot {
   margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem;
@@ -503,6 +505,31 @@ tr:last-child td { border-bottom: none; }
   color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
 }
 
+/* ── Settings modal ── */
+#settings-modal {
+  width: min(640px, calc(100vw - 2rem)); border: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface); color: var(--text);
+  padding: 1.3rem 1.5rem; box-shadow: 0 24px 60px rgba(0,0,0,0.45);
+}
+#settings-modal::backdrop { background: rgba(0,0,0,0.55); backdrop-filter: blur(2px); }
+.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.modal-x {
+  font: inherit; font-size: 1.3rem; line-height: 1; cursor: pointer; color: var(--muted);
+  background: none; border: none; padding: 0 0.2rem;
+}
+.modal-x:hover { color: var(--text); }
+.modal-actions { display: flex; align-items: center; margin-top: 0.4rem; }
+
+/* Rail "mining paused" pill — keeps the safety state visible while Settings
+   lives in a modal. */
+#paused-pill {
+  display: none; align-items: center; gap: 0.35rem; cursor: pointer;
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
+  padding: 0.3rem 0.5rem; background: none; font-family: inherit; text-align: left;
+}
+#paused-pill.show { display: inline-flex; }
+
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
   .shell { flex-direction: column; }
@@ -527,13 +554,14 @@ tr:last-child td { border-bottom: none; }
 <aside class="rail">
   <div class="brand"><span class="mark">&#9889;</span><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
   <nav id="rail-nav">
-    <a href="#overview" class="active">Overview</a>
-    <a href="#workers">Workers</a>
-    <a href="#network">Network</a>
-    <a href="#settings">Settings</a>
+    <a href="#overview" data-section="overview" class="active">Overview</a>
+    <a href="#workers" data-section="workers">Workers</a>
+    <a href="#network" data-section="network">Network</a>
+    <button type="button" class="nav-btn" id="open-settings">Settings</button>
     <a href="/metrics">Raw metrics &#8599;</a>
   </nav>
   <div class="rail-foot">
+    <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
     <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
     <span class="hide-sm"><span class="dot"></span>Block <span id="rail-height">&mdash;</span></span>
     <span id="server-uptime" title="How long this pool process has been running">Uptime &mdash;</span>
@@ -668,34 +696,37 @@ tr:last-child td { border-bottom: none; }
   </div>
 </section>
 
-<section id="settings">
-  <div class="sec-title">Settings</div>
-  <div class="panel" style="max-width:660px;">
-    <form id="settings-form">
-      <div class="field">
-        <label for="set-address">Payout address &mdash; 100% of every block reward goes here</label>
-        <input id="set-address" type="text" spellcheck="false" autocomplete="off" placeholder="bc1q&hellip;">
-      </div>
-      <div class="field">
-        <label for="set-network">Network &mdash; detected from the connected node</label>
-        <input id="set-network" type="text" disabled>
-      </div>
+<dialog id="settings-modal">
+  <div class="modal-head">
+    <span class="sec-title" style="margin:0;">Settings</span>
+    <button type="button" class="modal-x" id="close-settings" aria-label="Close">&times;</button>
+  </div>
+  <form id="settings-form">
+    <div class="field">
+      <label for="set-address">Payout address &mdash; 100% of every block reward goes here</label>
+      <input id="set-address" type="text" spellcheck="false" autocomplete="off" placeholder="bc1q&hellip;">
+    </div>
+    <div class="field">
+      <label for="set-network">Network &mdash; detected from the connected node</label>
+      <input id="set-network" type="text" disabled>
+    </div>
+    <div class="modal-actions">
       <button id="settings-save" type="submit">Save</button>
       <span id="settings-msg"></span>
-    </form>
-    <div id="settings-paused" class="paused-banner" hidden>
-      Mining is paused: the payout address is not valid for the node&rsquo;s network.
-      No jobs are built until a valid address is saved.
     </div>
-    <p class="settings-note">
-      Saving validates the address against the node&rsquo;s network, then broadcasts
-      a clean job so connected miners switch payout immediately. The network is
-      read from the Bitcoin node itself and cannot be selected here &mdash; to mine
-      a different chain, connect the pool to a node on that chain.
-      <span id="settings-persist-note"></span>
-    </p>
+  </form>
+  <div id="settings-paused" class="paused-banner" hidden>
+    Mining is paused: the payout address is not valid for the node&rsquo;s network.
+    No jobs are built until a valid address is saved.
   </div>
-</section>
+  <p class="settings-note">
+    Saving validates the address against the node&rsquo;s network, then broadcasts
+    a clean job so connected miners switch payout immediately. The network is
+    read from the Bitcoin node itself and cannot be selected here &mdash; to mine
+    a different chain, connect the pool to a node on that chain.
+    <span id="settings-persist-note"></span>
+  </p>
+</dialog>
 
 </main>
 </div>
@@ -1044,6 +1075,7 @@ async function loadSettings() {
     document.getElementById('set-network').value = s.network;
     updateNetBadge(s.network);
     document.getElementById('settings-paused').hidden = s.address_valid;
+    document.getElementById('paused-pill').classList.toggle('show', !s.address_valid);
     const note = document.getElementById('settings-persist-note');
     if (!s.editable) {
       document.getElementById('set-address').disabled = true;
@@ -1079,6 +1111,7 @@ document.getElementById('settings-form').addEventListener('submit', async ev => 
         : 'Applied (not persisted: no stats DB) — new jobs pay this address.';
       msg.style.color = 'var(--ok)';
       document.getElementById('settings-paused').hidden = true;
+      document.getElementById('paused-pill').classList.remove('show');
     } else {
       msg.textContent = body.error || ('Save failed (HTTP ' + resp.status + ')');
       msg.style.color = 'var(--bad)';
@@ -1092,19 +1125,35 @@ document.getElementById('settings-form').addEventListener('submit', async ev => 
 });
 
 // ── Scroll spy for the rail nav ──────────────────────────────────────────────
-(function navSpy() {
-  const links = Array.from(document.querySelectorAll('#rail-nav a[href^="#"]'));
-  const byId = Object.fromEntries(links.map(a => [a.getAttribute('href').slice(1), a]));
-  const observer = new IntersectionObserver(entries => {
-    for (const e of entries) {
-      if (e.isIntersecting && byId[e.target.id]) {
-        links.forEach(a => a.classList.remove('active'));
-        byId[e.target.id].classList.add('active');
-      }
-    }
-  }, { rootMargin: '-20% 0px -70% 0px' });
-  document.querySelectorAll('main section[id]').forEach(s => observer.observe(s));
-})();
+// Position-based: the active link is the last section whose top has scrolled
+// above a threshold near the top of the viewport. Robust for short sections and
+// the final section (which an IntersectionObserver band can miss).
+const navLinks = Array.from(document.querySelectorAll('#rail-nav a[data-section]'));
+function updateActiveNav() {
+  let current = navLinks[0];
+  for (const link of navLinks) {
+    const sec = document.getElementById(link.dataset.section);
+    if (sec && sec.getBoundingClientRect().top <= 140) current = link;
+  }
+  navLinks.forEach(l => l.classList.toggle('active', l === current));
+}
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+window.addEventListener('resize', updateActiveNav);
+// Immediate feedback on click (before the smooth-scroll settles).
+navLinks.forEach(l => l.addEventListener('click', () => {
+  navLinks.forEach(x => x.classList.remove('active'));
+  l.classList.add('active');
+}));
+updateActiveNav();
+
+// ── Settings modal ───────────────────────────────────────────────────────────
+const settingsModal = document.getElementById('settings-modal');
+function openSettings() { loadSettings(); settingsModal.showModal(); }
+document.getElementById('open-settings').addEventListener('click', openSettings);
+document.getElementById('paused-pill').addEventListener('click', openSettings);
+document.getElementById('close-settings').addEventListener('click', () => settingsModal.close());
+// Click on the backdrop (outside the dialog content) closes it.
+settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
 
 attachTimeframeSelector();
 loadChart(DEFAULT_WINDOW);
