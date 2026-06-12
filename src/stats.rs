@@ -581,7 +581,7 @@ impl PoolStats {
                 .iter()
                 .map(|e| (e.key().clone(), *e.value()))
                 .collect();
-            all.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            all.sort_unstable_by_key(|e| std::cmp::Reverse(e.1));
             for (w, _) in all.drain(MAX_WORKER_BEST_SHARES..) {
                 self.worker_best_shares.remove(&w);
             }
