@@ -18,7 +18,9 @@ tokio = { version = "1", features = ["full"] }
 # ── Bitcoin primitives ─────────────────────────────────────────────────────────
 bitcoin = { version = "0.32", features = ["rand-std"] }
 hex = "0.4"
-sha2 = "0.10"
+# `compress` exposes compress256 (hardware SHA-NI) for the e2e miner's hot loop;
+# it only adds a function to sha2's API, so the shipped binary is unaffected.
+sha2 = { version = "0.10", features = ["compress"] }
 
 # ── Bitcoin Core RPC (supports cookie auth) ────────────────────────────────────
 bitcoincore-rpc = "0.19"
