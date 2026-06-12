@@ -28,12 +28,12 @@ coinbase_address = "bc1qyouraddresshere"
 # Tag embedded in the coinbase scriptSig (max ~20 bytes)
 coinbase_tag = "/solo-pool-rs/"
 
-# Network the payout address is validated against and shown as a dashboard
-# badge: "mainnet" | "testnet" | "signet" | "regtest". Informational — the
-# Bitcoin node this pool connects to decides the actual chain. Both the
-# address and this value can be changed at runtime from the dashboard's
-# Settings page (persisted in the stats DB, overriding this file).
-network = "mainnet"
+# Optional safety assertion. The pool always detects the actual network from
+# the connected node (getblockchaininfo) and refuses to build jobs unless the
+# payout address is valid for that chain. Setting this additionally makes
+# boot fail fast if the node reports a different chain — catching a config
+# pointed at the wrong node. "mainnet" | "testnet" | "signet" | "regtest".
+# network = "mainnet"
 
 # Initial share difficulty assigned to new miners.
 # Vardiff will adjust from here. Set near the expected steady-state value

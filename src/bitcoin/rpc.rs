@@ -108,6 +108,22 @@ impl RpcClient {
         f(&guard.client)
     }
 
+    /// The chain the connected node is on, per `getblockchaininfo`:
+    /// "main" | "test" | "signet" | "regtest". Queried once at boot — it is
+    /// the source of truth for payout-address network validation.
+    pub fn chain(&self) -> Result<String, PoolError> {
+        let info: Value =
+            self.call_with_refresh(|c| c.call("getblockchaininfo", &[]).map_err(PoolError::Rpc))?;
+        info.get("chain")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                PoolError::Other(anyhow::anyhow!(
+                    "getblockchaininfo response missing 'chain'"
+                ))
+            })
+    }
+
     pub fn get_block_template(&self) -> Result<GbtResult, PoolError> {
         let result: Value = self.call_with_refresh(|c| {
             let request = json!({
