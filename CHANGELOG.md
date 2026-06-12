@@ -9,6 +9,19 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Config: every value can now be overridden by an environment variable named
+  `SOLO_POOL_<SECTION>__<KEY>` (double underscore between section and key),
+  e.g. `SOLO_POOL_BITCOIN_RPC__URL`. Overrides are typed after the key in the
+  config file (load fails loudly on a type mismatch); for keys absent from the
+  file, booleans/numbers are inferred and surrounding double quotes force a
+  string. Designed for container platforms (Umbrel, Start9, Compose) that
+  configure apps through the environment.
+- Packaging: the GHCR image is now multi-arch — `linux/amd64` + `linux/arm64`
+  (each built on a native runner and merged into one manifest list), so the
+  pool runs on Raspberry Pi–class hosts and arm64 servers. Release tarballs
+  now include an `aarch64-unknown-linux-gnu` build alongside x86_64.
+
 ## [0.4.0] - 2026-06-11
 
 ### Changed

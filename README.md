@@ -169,6 +169,18 @@ poll_fallback = true                       # falls back if ZMQ unreachable
 
 See [`config.toml.example`](config.toml.example) for the fully annotated reference.
 
+Every value can also be overridden by an environment variable named
+`SOLO_POOL_<SECTION>__<KEY>` (double underscore between section and key), so
+container platforms can inject deployment-specific settings without editing
+the file:
+
+```bash
+SOLO_POOL_POOL__COINBASE_ADDRESS=bc1q...        # [pool] coinbase_address
+SOLO_POOL_BITCOIN_RPC__URL=http://10.0.0.5:8332 # [bitcoin_rpc] url
+SOLO_POOL_BITCOIN_RPC__USER=umbrel              # [bitcoin_rpc] user
+SOLO_POOL_SV2__ENABLED=false                    # [sv2] enabled
+```
+
 ---
 
 ## Pointing your miners at the pool
