@@ -569,8 +569,22 @@ fn div_be_u256_by_u64(value: &[u8; 32], divisor: u64) -> [u8; 32] {
     out
 }
 
-/// Reverse byte order within each 4-byte word of the previous block hash.
-/// Bitcoin Core returns hashes in internal byte order; Stratum wants word-swapped.
+/// Convert `getblocktemplate`'s `previousblockhash` into Stratum
+/// `mining.notify` prev-hash format.
+///
+/// Core returns the hash in **display** (big-endian) order — the same string
+/// `getblockhash` prints. A block header's `hashPrevBlock` field, by contrast,
+/// holds the hash in **internal** byte order (the full byte-reverse of the
+/// display string). The canonical Stratum prev-hash is that internal hash with
+/// each 4-byte word byte-swapped; the miner (and our [`build_header`]) recover
+/// the internal bytes by swapping each word back.
+///
+/// So the conversion is two steps: full 32-byte reverse (display → internal),
+/// then a per-word swap. Doing only the per-word swap — as an earlier version
+/// did — cancels against `build_header`'s swap and leaves the header carrying
+/// the *display*-order hash, which no node recognizes (`prev-blk-not-found`),
+/// silently invalidating every block this pool finds. Share validation never
+/// caught it because it reconstructs the same header and only checks PoW.
 pub fn stratum_prev_hash(core_hex: &str) -> Result<String, PoolError> {
     let mut bytes = hex::decode(core_hex)
         .map_err(|_| PoolError::Other(anyhow::anyhow!("Invalid prev_hash hex")))?;
@@ -579,8 +593,9 @@ pub fn stratum_prev_hash(core_hex: &str) -> Result<String, PoolError> {
             "prev_hash must be 32 bytes"
         )));
     }
+    bytes.reverse(); // display (big-endian) → internal byte order
     for chunk in bytes.chunks_mut(4) {
-        chunk.reverse();
+        chunk.reverse(); // internal → Stratum per-word swap
     }
     Ok(hex::encode(bytes))
 }
@@ -623,11 +638,38 @@ mod tests {
     }
 
     #[test]
-    fn test_stratum_prev_hash_roundtrip() {
-        let original = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
-        let swapped = stratum_prev_hash(original).unwrap();
-        assert_eq!(swapped.len(), 64); // still 32 bytes
-        assert_ne!(swapped, original); // should differ
+    fn test_stratum_prev_hash_yields_correct_header_internal_bytes() {
+        // Ground truth: the regtest genesis. `getblockhash 0` prints the
+        // DISPLAY hash; a block header's hashPrevBlock must hold the INTERNAL
+        // bytes = the full byte-reverse of the display string.
+        let display = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
+        let mut internal = hex::decode(display).unwrap();
+        internal.reverse();
+
+        // stratum_prev_hash() is what we put on the wire in mining.notify.
+        let stratum = hex::decode(stratum_prev_hash(display).unwrap()).unwrap();
+
+        // build_header() recovers the header field by swapping each 4-byte word.
+        // Replicate that exact step here; the result MUST equal the internal
+        // bytes, or the node rejects the block with prev-blk-not-found.
+        let mut recovered = stratum.clone();
+        for chunk in recovered.chunks_mut(4) {
+            chunk.reverse();
+        }
+        assert_eq!(
+            recovered, internal,
+            "header hashPrevBlock must equal the genesis internal byte order"
+        );
+        // And the wire value must NOT be the naive per-word swap of display
+        // (the old bug), which would round-trip back to display order.
+        let mut naive = hex::decode(display).unwrap();
+        for chunk in naive.chunks_mut(4) {
+            chunk.reverse();
+        }
+        assert_ne!(
+            stratum, naive,
+            "regression: prev-hash reverted to the buggy transform"
+        );
     }
 
     #[test]

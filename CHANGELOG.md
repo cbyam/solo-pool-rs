@@ -9,7 +9,22 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-06-11
+### Fixed
+- **Critical: every found block was rejected by the node with
+  `prev-blk-not-found`.** The coinbase/`mining.notify` prev-hash conversion
+  applied a per-4-byte-word swap that `build_header` then undid, leaving the
+  block header's `hashPrevBlock` in Bitcoin Core's *display* byte order instead
+  of internal order. The header still produced valid proof-of-work, and share
+  validation reconstructs the same header, so the bug was invisible at the
+  share level — but no node would accept the assembled block, so a real
+  block-find would have been archived to disk yet **rejected by the network and
+  lost**. `stratum_prev_hash` now reverses the full 32 bytes (display →
+  internal) before the per-word swap, yielding the canonical Stratum format;
+  `build_header` recovers the correct internal bytes. Verified end to end on
+  regtest: the pool now finds a block, submits it, and the node accepts it onto
+  the chain (coinbase paying the configured address). The previous round-trip
+  unit test only checked that the output changed; it now asserts the recovered
+  header bytes equal the block's true internal prev-hash.
 
 ### Added
 - Config: every value can now be overridden by an environment variable named
