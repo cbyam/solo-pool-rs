@@ -7,7 +7,7 @@
 ///   GET /favicon.ico → embedded site icon
 ///   GET /stats       → JSON snapshot of PoolStats
 ///   GET /metrics  → Prometheus text (via PrometheusHandle::render)
-use crate::stats::PoolStats;
+use crate::{mining::engine::TemplateEngine, settings::RuntimeSettings, stats::PoolStats};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -38,13 +38,23 @@ use tracing::{info, warn};
 pub struct DashState {
     pub stats: Arc<PoolStats>,
     pub prometheus: Option<PrometheusHandle>,
+    pub settings: Arc<RuntimeSettings>,
+    pub engine: Arc<TemplateEngine>,
+    pub allow_settings: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Startup
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<PrometheusHandle>) {
+pub async fn start(
+    addr: &str,
+    stats: Arc<PoolStats>,
+    prometheus: Option<PrometheusHandle>,
+    settings: Arc<RuntimeSettings>,
+    engine: Arc<TemplateEngine>,
+    allow_settings: bool,
+) {
     if addr.is_empty() {
         return;
     }
@@ -57,13 +67,20 @@ pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<Prometh
         }
     };
 
-    let state = DashState { stats, prometheus };
+    let state = DashState {
+        stats,
+        prometheus,
+        settings,
+        engine,
+        allow_settings,
+    };
     let app = Router::new()
         .route("/", get(dashboard_html))
         .route("/favicon.ico", get(favicon))
         .route("/stats", get(stats_json))
         .route("/history", get(history_json))
         .route("/chart", get(chart_json))
+        .route("/api/settings", get(settings_get).post(settings_post))
         .route("/metrics", get(metrics_text))
         .with_state(state);
 
@@ -141,6 +158,74 @@ async fn history_json(
         .map(|(ts, hps)| HistoryPoint { ts, hps })
         .collect();
     Json(points)
+}
+
+// ── Runtime settings (payout address / network) ──────────────────────────────
+
+#[derive(Serialize)]
+struct SettingsView {
+    coinbase_address: String,
+    network: String,
+    networks: &'static [&'static str],
+    /// Whether a stats DB backs the settings (changes survive restarts).
+    persisted: bool,
+    /// Whether changes are allowed ([metrics] allow_runtime_settings).
+    editable: bool,
+}
+
+async fn settings_get(State(state): State<DashState>) -> Json<SettingsView> {
+    Json(SettingsView {
+        coinbase_address: state.settings.coinbase_address(),
+        network: state.settings.network(),
+        networks: &crate::settings::NETWORKS,
+        persisted: state.stats.has_store(),
+        editable: state.allow_settings,
+    })
+}
+
+#[derive(Deserialize)]
+struct SettingsUpdate {
+    coinbase_address: String,
+    network: String,
+}
+
+async fn settings_post(
+    State(state): State<DashState>,
+    Json(req): Json<SettingsUpdate>,
+) -> Response {
+    if !state.allow_settings {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "runtime settings are disabled ([metrics] allow_runtime_settings = false)"
+            })),
+        )
+            .into_response();
+    }
+
+    let address = req.coinbase_address.trim();
+    if let Err(e) = state.settings.update(address, &req.network) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    let persisted = state.stats.save_setting("coinbase_address", address)
+        && state.stats.save_setting("network", &req.network);
+
+    info!(
+        address = %address,
+        network = %req.network,
+        persisted,
+        "Payout settings changed via dashboard — broadcasting clean job"
+    );
+
+    // New clean job so connected miners switch to the new payout immediately.
+    state.engine.force_refresh().await;
+
+    Json(serde_json::json!({ "ok": true, "persisted": persisted })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -387,6 +472,32 @@ tr:last-child td { border-bottom: none; }
 @keyframes blockFlash { 0% { background: var(--ok); } 100% { background: transparent; } }
 #v-height.block-new { animation: blockFlash 0.8s ease-out; }
 
+/* ── Settings form / network badge ── */
+#net-badge {
+  font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent); border-radius: 4px;
+  padding: 0.1rem 0.35rem; margin-left: 0.5rem; align-self: center;
+}
+.field { margin-bottom: 0.95rem; }
+.field label {
+  display: block; font-size: 0.62rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.11em; color: var(--muted); margin-bottom: 0.35rem;
+}
+.field input, .field select {
+  font: inherit; font-size: 0.85rem; color: var(--text); background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 0.45rem 0.6rem;
+  width: 100%; max-width: 520px; font-variant-numeric: tabular-nums;
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+#settings-save {
+  font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+  color: var(--bg); background: var(--accent); border: none; border-radius: 5px;
+  padding: 0.45rem 1.1rem;
+}
+#settings-save:disabled { opacity: 0.45; cursor: not-allowed; }
+#settings-msg { font-size: 0.76rem; margin-left: 0.8rem; }
+.settings-note { font-size: 0.72rem; color: var(--muted); margin-top: 0.9rem; line-height: 1.5; }
+
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
   .shell { flex-direction: column; }
@@ -409,11 +520,12 @@ tr:last-child td { border-bottom: none; }
 <div class="shell">
 
 <aside class="rail">
-  <div class="brand"><span class="mark">&#9889;</span><span class="name">solo-pool-rs</span></div>
+  <div class="brand"><span class="mark">&#9889;</span><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
   <nav id="rail-nav">
     <a href="#overview" class="active">Overview</a>
     <a href="#workers">Workers</a>
     <a href="#network">Network</a>
+    <a href="#settings">Settings</a>
     <a href="/metrics">Raw metrics &#8599;</a>
   </nav>
   <div class="rail-foot">
@@ -548,6 +660,31 @@ tr:last-child td { border-bottom: none; }
       <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC: &mdash;</div>
       <div class="sub">Difficulty (raw): <span id="v-network-difficulty">&mdash;</span></div>
     </div>
+  </div>
+</section>
+
+<section id="settings">
+  <div class="sec-title">Settings</div>
+  <div class="panel" style="max-width:660px;">
+    <form id="settings-form">
+      <div class="field">
+        <label for="set-address">Payout address &mdash; 100% of every block reward goes here</label>
+        <input id="set-address" type="text" spellcheck="false" autocomplete="off" placeholder="bc1q&hellip;">
+      </div>
+      <div class="field">
+        <label for="set-network">Network</label>
+        <select id="set-network"></select>
+      </div>
+      <button id="settings-save" type="submit">Save</button>
+      <span id="settings-msg"></span>
+    </form>
+    <p class="settings-note">
+      Saving validates the address against the selected network, then broadcasts a
+      clean job so connected miners switch payout immediately. The network selector
+      controls address validation and the badge only &mdash; the Bitcoin node this
+      pool connects to decides the actual chain.
+      <span id="settings-persist-note"></span>
+    </p>
   </div>
 </section>
 
@@ -878,6 +1015,76 @@ async function fetchBtcPrice() {
   } catch (_) {}
 }
 
+// ── Settings page ────────────────────────────────────────────────────────────
+function updateNetBadge(network) {
+  const badge = document.getElementById('net-badge');
+  if (network && network !== 'mainnet') {
+    badge.textContent = network;
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
+async function loadSettings() {
+  try {
+    const resp = await fetch('/api/settings');
+    if (!resp.ok) return;
+    const s = await resp.json();
+    document.getElementById('set-address').value = s.coinbase_address;
+    const sel = document.getElementById('set-network');
+    sel.innerHTML = s.networks.map(n =>
+      `<option value="${n}"${n === s.network ? ' selected' : ''}>${n}</option>`).join('');
+    updateNetBadge(s.network);
+    const note = document.getElementById('settings-persist-note');
+    if (!s.editable) {
+      document.getElementById('set-address').disabled = true;
+      sel.disabled = true;
+      document.getElementById('settings-save').disabled = true;
+      note.textContent = 'Editing is disabled ([metrics] allow_runtime_settings = false).';
+    } else if (!s.persisted) {
+      note.textContent = 'No stats database is configured, so changes apply until the next restart only.';
+    }
+  } catch (e) {
+    console.error('Settings fetch error:', e);
+  }
+}
+
+document.getElementById('settings-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const msg = document.getElementById('settings-msg');
+  const btn = document.getElementById('settings-save');
+  btn.disabled = true;
+  msg.textContent = 'Saving…';
+  msg.style.color = 'var(--muted)';
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coinbase_address: document.getElementById('set-address').value.trim(),
+        network: document.getElementById('set-network').value,
+      }),
+    });
+    const body = await resp.json();
+    if (resp.ok && body.ok) {
+      msg.textContent = body.persisted
+        ? 'Saved — new jobs pay this address.'
+        : 'Applied (not persisted: no stats DB) — new jobs pay this address.';
+      msg.style.color = 'var(--ok)';
+      updateNetBadge(document.getElementById('set-network').value);
+    } else {
+      msg.textContent = body.error || ('Save failed (HTTP ' + resp.status + ')');
+      msg.style.color = 'var(--bad)';
+    }
+  } catch (e) {
+    msg.textContent = 'Save failed: ' + e;
+    msg.style.color = 'var(--bad)';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ── Scroll spy for the rail nav ──────────────────────────────────────────────
 (function navSpy() {
   const links = Array.from(document.querySelectorAll('#rail-nav a[href^="#"]'));
@@ -896,6 +1103,7 @@ async function fetchBtcPrice() {
 attachTimeframeSelector();
 loadChart(DEFAULT_WINDOW);
 refresh();
+loadSettings();
 fetchBtcPrice();
 setInterval(refresh, 10000);
 setInterval(() => loadChart(selectedWindow), 60000);

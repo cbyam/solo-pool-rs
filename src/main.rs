@@ -16,6 +16,7 @@ mod mining;
 mod network;
 mod protocol;
 mod security;
+mod settings;
 mod stats;
 
 use crate::{
@@ -58,12 +59,15 @@ async fn main() -> Result<()> {
     // ── Pool stats (HTTP dashboard snapshot + in-memory state)
     // Supports optional SQLite persistence for all-time best values.
     let stats = PoolStats::new_with_store(config.metrics.stats_db_path.clone());
-    network::dashboard::start(
-        &config.metrics.prometheus_addr,
-        stats.clone(),
-        prometheus_handle,
-    )
-    .await;
+
+    // ── Runtime settings (payout address / network) ───────────────────────────
+    // Config seeds the values; a previous dashboard save (persisted in the
+    // stats DB) overrides the config.
+    let runtime_settings = settings::RuntimeSettings::from_config(&config.pool);
+    runtime_settings.apply_persisted(
+        stats.load_setting("coinbase_address"),
+        stats.load_setting("network"),
+    );
 
     // ── Bitcoin RPC ───────────────────────────────────────────────────────────
     let rpc =
@@ -105,13 +109,25 @@ async fn main() -> Result<()> {
     let new_block_rx = zmq::start(&config.zmq, rpc.clone()).await;
 
     // ── Template engine ───────────────────────────────────────────────────────
-    let engine = TemplateEngine::new(rpc.clone(), config.pool.clone());
+    let engine = TemplateEngine::new(rpc.clone(), config.pool.clone(), runtime_settings.clone());
 
     // Spawn the template refresh loop
     {
         let engine = engine.clone();
         tokio::spawn(engine.run(new_block_rx));
     }
+
+    // ── Dashboard (after the engine exists: the Settings page triggers a
+    //    clean-job refresh through it) ──────────────────────────────────────────
+    network::dashboard::start(
+        &config.metrics.prometheus_addr,
+        stats.clone(),
+        prometheus_handle,
+        runtime_settings,
+        engine.clone(),
+        config.metrics.allow_runtime_settings,
+    )
+    .await;
 
     // ── Security ──────────────────────────────────────────────────────────────
     let ban_list = BanList::new(config.security.ban_duration_secs);
