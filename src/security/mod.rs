@@ -228,6 +228,8 @@ pub struct SessionGuard {
     pub invalid_shares: InvalidShareCounter,
     pub max_message_bytes: usize,
     pub max_worker_name_len: usize,
+    authorizations: u32,
+    max_authorizations: u32,
 }
 
 impl SessionGuard {
@@ -237,7 +239,27 @@ impl SessionGuard {
             invalid_shares: InvalidShareCounter::new(cfg.max_invalid_shares),
             max_message_bytes: cfg.max_message_bytes,
             max_worker_name_len: cfg.max_worker_name_len,
+            authorizations: 0,
+            max_authorizations: cfg.max_authorizations_per_session,
         }
+    }
+
+    /// Record one more *distinct* worker identity authorized on this session.
+    /// Returns `false` once the configured cap is exceeded — the caller should
+    /// disconnect. A cap of 0 disables the limit.
+    pub fn record_new_authorization(&mut self) -> bool {
+        if self.max_authorizations == 0 {
+            return true;
+        }
+        self.authorizations += 1;
+        if self.authorizations > self.max_authorizations {
+            warn!(
+                "Session exceeded max distinct worker identities ({})",
+                self.max_authorizations
+            );
+            return false;
+        }
+        true
     }
 
     /// Enforce message size limit. Returns Err if too large.
@@ -279,6 +301,40 @@ mod tests {
         assert!(validate_worker_name("bad name", 128).is_err());
         assert!(validate_worker_name("bad\tname", 128).is_err());
         assert!(validate_worker_name("bad\0name", 128).is_err());
+    }
+
+    #[test]
+    fn authorization_cap_allows_up_to_max_then_rejects() {
+        let cfg = SecurityConfig {
+            max_connections_per_ip: 5,
+            max_shares_per_sec: 500,
+            ban_duration_secs: 0,
+            max_invalid_shares: 5,
+            max_message_bytes: 4096,
+            max_worker_name_len: 128,
+            max_authorizations_per_session: 2,
+        };
+        let mut guard = SessionGuard::new(&cfg);
+        assert!(guard.record_new_authorization());
+        assert!(guard.record_new_authorization());
+        assert!(!guard.record_new_authorization());
+    }
+
+    #[test]
+    fn authorization_cap_zero_disables_limit() {
+        let cfg = SecurityConfig {
+            max_connections_per_ip: 5,
+            max_shares_per_sec: 500,
+            ban_duration_secs: 0,
+            max_invalid_shares: 5,
+            max_message_bytes: 4096,
+            max_worker_name_len: 128,
+            max_authorizations_per_session: 0,
+        };
+        let mut guard = SessionGuard::new(&cfg);
+        for _ in 0..1000 {
+            assert!(guard.record_new_authorization());
+        }
     }
 
     #[test]

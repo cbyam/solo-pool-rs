@@ -21,6 +21,13 @@ use std::sync::{
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
+/// Deadline for a new connection to make protocol progress before it has
+/// authorized a worker: the protocol auto-detect peek here, the SV2 Noise
+/// handshake, and each pre-auth message in both session loops. Separate from
+/// (and much shorter than) the per-session idle timeout, so silent connections
+/// cannot pin the bounded global connection slots.
+pub(crate) const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+
 pub async fn run(
     config: Arc<Config>,
     engine: Arc<TemplateEngine>,
@@ -41,16 +48,18 @@ pub async fn run(
     let active_count = Arc::new(AtomicUsize::new(0));
     let max_connections = config.pool.max_connections;
 
-    // Background ban-list + rate-limiter pruner
+    // Background ban-list + rate-limiter + idle-worker pruner
     {
         let bl = ban_list.clone();
         let rl = conn_limiter.clone();
+        let st = stats.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
             loop {
                 interval.tick().await;
                 bl.prune();
                 rl.prune();
+                st.prune_idle_workers();
             }
         });
     }
@@ -124,8 +133,12 @@ pub async fn run(
             // SV1 is JSON ('{'); SV2 frames start with a binary extension_type
             // (0x00 for the standard mining protocol's SetupConnection).
             // Force the protocol-detect byte to arrive promptly so a peer cannot
-            // hold the connection (and its slot) open by sending nothing.
-            let handshake_timeout = tokio::time::Duration::from_secs(config.pool.idle_timeout_secs);
+            // hold the connection (and its slot) open by sending nothing. This
+            // deadline is deliberately much shorter than idle_timeout_secs:
+            // every real miner sends its first message immediately on connect,
+            // and a silent connection pinning a global slot for the full idle
+            // timeout (default 300 s) lets a handful of IPs exhaust all slots.
+            let handshake_timeout = tokio::time::Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
             let mut first = [0u8; 1];
             let peek = tokio::time::timeout(handshake_timeout, stream.peek(&mut first)).await;
             let is_sv1 = match peek {

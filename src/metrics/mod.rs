@@ -7,14 +7,26 @@
 /// managed by network::dashboard, not here.
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_util::MetricKindMask;
 use tracing::{info, warn};
+
+/// Drop metric series untouched for this long. Worker-labeled series are minted
+/// from untrusted names, so without an idle timeout each distinct name leaks a
+/// permanent label set in the exporter. 24 h matches the stats-map eviction.
+const METRIC_IDLE_TIMEOUT_SECS: u64 = 86_400;
 
 pub fn init(addr: &str) -> Option<PrometheusHandle> {
     if addr.is_empty() {
         info!("Prometheus metrics disabled (empty prometheus_addr)");
         return None;
     }
-    match PrometheusBuilder::new().install_recorder() {
+    match PrometheusBuilder::new()
+        .idle_timeout(
+            MetricKindMask::ALL,
+            Some(std::time::Duration::from_secs(METRIC_IDLE_TIMEOUT_SECS)),
+        )
+        .install_recorder()
+    {
         Ok(handle) => Some(handle),
         Err(e) => {
             warn!("Failed to install Prometheus recorder: {e}");
