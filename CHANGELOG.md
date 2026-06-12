@@ -9,6 +9,25 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Dashboard: **Settings page** — the payout address and expected network
+  ("mainnet" / "testnet" / "signet" / "regtest") can now be changed at runtime
+  from the dashboard. Changes are validated (address must parse and belong to
+  the selected network), persisted in the stats SQLite (overriding config.toml
+  at next boot), and applied immediately via a forced clean-job broadcast so
+  connected miners switch payout without waiting for the next block. New
+  config keys: `pool.network` (default "mainnet"; informational — the node
+  decides the actual chain) and `metrics.allow_runtime_settings` (default
+  true; set false on an untrusted LAN, or front the dashboard with an
+  authenticating proxy).
+- Dashboard: redesigned **console layout** — fixed left rail with scroll-spy
+  navigation and status footer, hero hashrate zone with block odds, hairline
+  KPI strip, and a non-mainnet network badge. Two color themes — carbon
+  (near-black, amber accent; default) and Swiss light (porcelain, cobalt
+  accent) — toggleable from the rail, seeded from the OS preference, and
+  persisted per browser. The hashrate chart re-skins from the active theme's
+  CSS variables without a server round trip.
+
 ## [0.4.1] - 2026-06-11
 
 ### Added

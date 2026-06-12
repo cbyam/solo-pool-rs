@@ -66,6 +66,14 @@ impl StatsStore {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS settings (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL
+             )",
+            [],
+        )?;
+
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -73,6 +81,31 @@ impl StatsStore {
         // previous run is trimmed before load_values pulls it into RAM.
         store.prune_worker_best_shares(MAX_WORKER_BEST_SHARES);
         Ok(store)
+    }
+
+    fn get_setting(&self, key: &str) -> Option<String> {
+        self.conn
+            .lock()
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+    }
+
+    fn set_setting(&self, key: &str, value: &str) -> bool {
+        match self.conn.lock().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        ) {
+            Ok(_) => true,
+            Err(e) => {
+                warn!("Failed to persist setting {key}: {e}");
+                false
+            }
+        }
     }
 
     /// Keep only the `keep` highest-difficulty rows in `worker_best_shares`.
@@ -589,6 +622,25 @@ impl PoolStats {
                 store.prune_worker_best_shares(MAX_WORKER_BEST_SHARES);
             }
         }
+    }
+
+    /// Read a persisted runtime setting (dashboard Settings page).
+    pub fn load_setting(&self, key: &str) -> Option<String> {
+        self.store.as_ref().and_then(|s| s.get_setting(key))
+    }
+
+    /// Persist a runtime setting. Returns false when no stats DB is configured
+    /// (the value still applies in memory but won't survive a restart).
+    pub fn save_setting(&self, key: &str, value: &str) -> bool {
+        self.store
+            .as_ref()
+            .map(|s| s.set_setting(key, value))
+            .unwrap_or(false)
+    }
+
+    /// Whether a SQLite store backs this instance (settings persistence).
+    pub fn has_store(&self) -> bool {
+        self.store.is_some()
     }
 
     pub fn record_hashrate_snapshot(&self) {
