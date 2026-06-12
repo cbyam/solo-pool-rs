@@ -30,7 +30,7 @@ struct AddressState {
 }
 
 pub struct RuntimeSettings {
-    /// "mainnet" | "testnet" | "signet" | "regtest" — node-derived, immutable.
+    /// "mainnet" | "testnet" | "testnet4" | "signet" | "regtest" — node-derived, immutable.
     network: String,
     state: RwLock<AddressState>,
 }
@@ -50,6 +50,7 @@ impl RuntimeSettings {
         let network = match node_chain {
             "main" => "mainnet",
             "test" => "testnet",
+            "testnet4" => "testnet4",
             "signet" => "signet",
             "regtest" => "regtest",
             other => anyhow::bail!("node reports unrecognized chain \"{other}\""),
@@ -130,7 +131,7 @@ impl RuntimeSettings {
         self.state.read().valid
     }
 
-    /// Node-derived network name: "mainnet" | "testnet" | "signet" | "regtest".
+    /// Node-derived network name: "mainnet" | "testnet" | "testnet4" | "signet" | "regtest".
     pub fn network(&self) -> &str {
         &self.network
     }
@@ -141,6 +142,7 @@ fn validate(address: &str, network: &str) -> Result<(), String> {
     let net = match network {
         "mainnet" => Network::Bitcoin,
         "testnet" => Network::Testnet,
+        "testnet4" => Network::Testnet4,
         "signet" => Network::Signet,
         "regtest" => Network::Regtest,
         other => return Err(format!("unknown network \"{other}\"")),
@@ -233,6 +235,18 @@ mod tests {
         let testnet = addr_for(Network::Testnet);
         let s = RuntimeSettings::new(&pool_cfg(&testnet, None), "signet").unwrap();
         assert!(s.address_valid());
+    }
+
+    #[test]
+    fn testnet4_chain_is_recognized() {
+        // getblockchaininfo reports "testnet4" (not "test") on testnet4 nodes;
+        // tb1 addresses are valid there (shared HRP).
+        let testnet = addr_for(Network::Testnet);
+        let s = RuntimeSettings::new(&pool_cfg(&testnet, None), "testnet4").unwrap();
+        assert_eq!(s.network(), "testnet4");
+        assert!(s.address_valid());
+        // Mainnet address still rejected.
+        assert!(s.update(&addr_for(Network::Bitcoin)).is_err());
     }
 
     #[test]

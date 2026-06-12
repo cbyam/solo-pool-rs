@@ -32,7 +32,7 @@ coinbase_tag = "/solo-pool-rs/"
 # the connected node (getblockchaininfo) and refuses to build jobs unless the
 # payout address is valid for that chain. Setting this additionally makes
 # boot fail fast if the node reports a different chain — catching a config
-# pointed at the wrong node. "mainnet" | "testnet" | "signet" | "regtest".
+# pointed at the wrong node. "mainnet" | "testnet" | "testnet4" | "signet" | "regtest".
 # network = "mainnet"
 
 # Initial share difficulty assigned to new miners.
