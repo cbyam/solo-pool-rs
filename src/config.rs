@@ -219,9 +219,100 @@ impl Config {
 pub fn load(path: &str) -> Result<Config> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("Opening config file: {path}"))?;
-    let config: Config = toml::from_str(&raw).context("Parsing config TOML")?;
+    let mut value: toml::Value = toml::from_str(&raw).context("Parsing config TOML")?;
+    apply_env_overrides(&mut value, std::env::vars())?;
+    let config: Config = value.try_into().context("Interpreting config")?;
     config.validate()?;
     Ok(config)
+}
+
+/// Environment-variable prefix for config overrides.
+const ENV_PREFIX: &str = "SOLO_POOL_";
+
+/// Apply `SOLO_POOL_<SECTION>__<KEY>=value` environment overrides onto the
+/// parsed TOML before it is deserialized into [`Config`]. The double
+/// underscore separates section from key (both contain single underscores),
+/// e.g. `SOLO_POOL_BITCOIN_RPC__URL` → `[bitcoin_rpc] url`.
+///
+/// Container platforms (Umbrel, Start9, plain Compose) configure apps through
+/// environment variables; this lets a stock config file ship in the image with
+/// the deployment-specific values injected at runtime.
+///
+/// Typing: when the key exists in the file, the override is parsed as that
+/// value's type (and load fails loudly if it cannot be). When the key is
+/// absent, `true`/`false` become booleans and numbers become numbers — wrap
+/// the value in double quotes to force a string (e.g. an all-numeric RPC
+/// password).
+fn apply_env_overrides(
+    value: &mut toml::Value,
+    vars: impl Iterator<Item = (String, String)>,
+) -> Result<()> {
+    let root = value
+        .as_table_mut()
+        .context("Config root is not a TOML table")?;
+
+    for (name, raw) in vars {
+        let Some(rest) = name.strip_prefix(ENV_PREFIX) else {
+            continue;
+        };
+        let Some((section, key)) = rest.split_once("__") else {
+            anyhow::bail!(
+                "{name}: expected {ENV_PREFIX}<SECTION>__<KEY> \
+                 (double underscore between section and key)"
+            );
+        };
+        let (section, key) = (section.to_ascii_lowercase(), key.to_ascii_lowercase());
+        if section.is_empty() || key.is_empty() {
+            anyhow::bail!("{name}: empty section or key");
+        }
+
+        let table = root
+            .entry(section.clone())
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .with_context(|| format!("[{section}] is not a table"))?;
+
+        let parse_err =
+            || format!("{name}: value does not parse as the type of {section}.{key} in the file");
+        let parsed = match table.get(&key) {
+            Some(toml::Value::Integer(_)) => {
+                toml::Value::Integer(raw.parse().with_context(parse_err)?)
+            }
+            Some(toml::Value::Float(_)) => toml::Value::Float(raw.parse().with_context(parse_err)?),
+            Some(toml::Value::Boolean(_)) => {
+                toml::Value::Boolean(raw.parse().with_context(parse_err)?)
+            }
+            Some(toml::Value::String(_)) => toml::Value::String(raw),
+            Some(_) => anyhow::bail!("{name}: cannot override non-scalar {section}.{key}"),
+            None => infer_toml_scalar(raw),
+        };
+        // Names only — values may be credentials.
+        tracing::info!("Config override from environment: {section}.{key}");
+        table.insert(key, parsed);
+    }
+    Ok(())
+}
+
+/// Best-effort scalar typing for keys not present in the config file.
+/// Surrounding double quotes force a string.
+fn infer_toml_scalar(raw: String) -> toml::Value {
+    if let Some(quoted) = raw
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .filter(|_| raw.len() >= 2)
+    {
+        return toml::Value::String(quoted.to_string());
+    }
+    if raw == "true" || raw == "false" {
+        return toml::Value::Boolean(raw == "true");
+    }
+    if let Ok(i) = raw.parse::<i64>() {
+        return toml::Value::Integer(i);
+    }
+    if let Ok(f) = raw.parse::<f64>() {
+        return toml::Value::Float(f);
+    }
+    toml::Value::String(raw)
 }
 
 /// Expand a leading `~` to the home directory.
@@ -232,4 +323,88 @@ fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_env_overrides;
+
+    // Fixtures pass vars directly instead of mutating the process environment,
+    // so tests stay parallel-safe.
+    fn apply(toml_src: &str, vars: &[(&str, &str)]) -> anyhow::Result<toml::Value> {
+        let mut value: toml::Value = toml::from_str(toml_src).unwrap();
+        apply_env_overrides(
+            &mut value,
+            vars.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+        )?;
+        Ok(value)
+    }
+
+    #[test]
+    fn overrides_use_the_type_of_the_existing_key() {
+        let v = apply(
+            "[pool]\nlisten_addr = \"0.0.0.0:3333\"\ninitial_difficulty = 512\n[sv2]\nenabled = true",
+            &[
+                ("SOLO_POOL_POOL__LISTEN_ADDR", "0.0.0.0:3335"),
+                ("SOLO_POOL_POOL__INITIAL_DIFFICULTY", "1024"),
+                ("SOLO_POOL_SV2__ENABLED", "false"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(v["pool"]["listen_addr"].as_str().unwrap(), "0.0.0.0:3335");
+        assert_eq!(v["pool"]["initial_difficulty"].as_integer().unwrap(), 1024);
+        assert!(!v["sv2"]["enabled"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn unparseable_override_for_typed_key_fails_loudly() {
+        let err = apply(
+            "[pool]\ninitial_difficulty = 512",
+            &[("SOLO_POOL_POOL__INITIAL_DIFFICULTY", "not-a-number")],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pool.initial_difficulty"));
+    }
+
+    #[test]
+    fn absent_keys_and_sections_are_created_with_inferred_types() {
+        let v = apply(
+            "[bitcoin_rpc]\nurl = \"http://127.0.0.1:8332\"",
+            &[
+                ("SOLO_POOL_BITCOIN_RPC__USER", "umbrel"),
+                ("SOLO_POOL_SV2__ENABLED", "false"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(v["bitcoin_rpc"]["user"].as_str().unwrap(), "umbrel");
+        assert!(!v["sv2"]["enabled"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn quotes_force_string_for_numeric_looking_absent_values() {
+        let v = apply(
+            "[bitcoin_rpc]\nurl = \"http://127.0.0.1:8332\"",
+            &[
+                ("SOLO_POOL_BITCOIN_RPC__PASSWORD", "\"123456\""),
+                ("SOLO_POOL_BITCOIN_RPC__TIMEOUT_SECS", "30"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(v["bitcoin_rpc"]["password"].as_str().unwrap(), "123456");
+        assert_eq!(v["bitcoin_rpc"]["timeout_secs"].as_integer().unwrap(), 30);
+    }
+
+    #[test]
+    fn unrelated_and_malformed_prefixed_vars() {
+        // Unrelated vars are ignored entirely.
+        let v = apply("[pool]\nlisten_addr = \"a\"", &[("PATH", "/usr/bin")]).unwrap();
+        assert_eq!(v["pool"]["listen_addr"].as_str().unwrap(), "a");
+        // Prefixed vars without the section/key separator are an error, not
+        // silently dropped — a typo should not boot with stale config.
+        assert!(apply(
+            "[pool]\nlisten_addr = \"a\"",
+            &[("SOLO_POOL_LISTEN_ADDR", "b")]
+        )
+        .is_err());
+    }
 }
