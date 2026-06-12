@@ -507,7 +507,11 @@ tr:last-child td { border-bottom: none; }
 
 /* ── Settings modal ── */
 #settings-modal {
-  width: min(640px, calc(100vw - 2rem)); border: 1px solid var(--border);
+  /* Pin to the viewport center — the UA default doesn't reliably vertically
+     center a modal <dialog> across browsers. */
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0;
+  width: min(640px, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto;
+  border: 1px solid var(--border);
   border-radius: 10px; background: var(--surface); color: var(--text);
   padding: 1.3rem 1.5rem; box-shadow: 0 24px 60px rgba(0,0,0,0.45);
 }
