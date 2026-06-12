@@ -40,20 +40,17 @@ pub struct PoolConfig {
     /// resolve against the service working directory, like `stats_db_path`.
     #[serde(default = "default_found_block_dir")]
     pub found_block_dir: String,
-    /// Network the payout address is validated against ("mainnet", "testnet",
-    /// "signet", "regtest") and shown as a dashboard badge. Informational —
-    /// the node the pool connects to decides the actual chain. Changeable at
-    /// runtime from the dashboard Settings page.
-    #[serde(default = "default_network")]
-    pub network: String,
+    /// Optional safety assertion. The pool always detects the actual network
+    /// from the connected node (`getblockchaininfo`) and validates the payout
+    /// address against it. When this is set ("mainnet" | "testnet" | "signet"
+    /// | "regtest"), boot additionally fails fast if the node reports a
+    /// different chain — catching a config pointed at the wrong node.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 fn default_found_block_dir() -> String {
     "found-blocks".into()
-}
-
-fn default_network() -> String {
-    "mainnet".into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

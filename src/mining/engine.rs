@@ -167,11 +167,24 @@ impl TemplateEngine {
 
     /// Fetch a fresh GBT and push it out to all connected sessions.
     async fn refresh(&self, clean_jobs: bool) {
+        // Hard safety gate: never build a job unless the payout address
+        // validates against the node's chain. A wrong-network address would
+        // still produce a *valid* coinbase script (the script encodes no
+        // network), silently mining to a script the operator may not control.
+        let Some(coinbase_address) = self.settings.valid_coinbase_address() else {
+            warn!(
+                network = %self.settings.network(),
+                "Mining paused: no valid payout address for the node's network — \
+                 set one in the dashboard Settings page"
+            );
+            return;
+        };
+
         match self.rpc.get_block_template() {
             Ok(gbt) => {
                 match template::build_job(
                     &gbt,
-                    &self.settings.coinbase_address(),
+                    &coinbase_address,
                     &self.pool_cfg.coinbase_tag,
                     self.pool_cfg.extranonce1_size,
                     self.pool_cfg.extranonce2_size,

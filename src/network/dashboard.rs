@@ -165,8 +165,11 @@ async fn history_json(
 #[derive(Serialize)]
 struct SettingsView {
     coinbase_address: String,
+    /// Node-derived network ("mainnet" | "testnet" | "signet" | "regtest").
     network: String,
-    networks: &'static [&'static str],
+    /// Whether the address validates against the node's network. Mining is
+    /// paused while false.
+    address_valid: bool,
     /// Whether a stats DB backs the settings (changes survive restarts).
     persisted: bool,
     /// Whether changes are allowed ([metrics] allow_runtime_settings).
@@ -176,8 +179,8 @@ struct SettingsView {
 async fn settings_get(State(state): State<DashState>) -> Json<SettingsView> {
     Json(SettingsView {
         coinbase_address: state.settings.coinbase_address(),
-        network: state.settings.network(),
-        networks: &crate::settings::NETWORKS,
+        network: state.settings.network().to_string(),
+        address_valid: state.settings.address_valid(),
         persisted: state.stats.has_store(),
         editable: state.allow_settings,
     })
@@ -186,7 +189,6 @@ async fn settings_get(State(state): State<DashState>) -> Json<SettingsView> {
 #[derive(Deserialize)]
 struct SettingsUpdate {
     coinbase_address: String,
-    network: String,
 }
 
 async fn settings_post(
@@ -204,7 +206,7 @@ async fn settings_post(
     }
 
     let address = req.coinbase_address.trim();
-    if let Err(e) = state.settings.update(address, &req.network) {
+    if let Err(e) = state.settings.update(address) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({ "error": e })),
@@ -212,14 +214,13 @@ async fn settings_post(
             .into_response();
     }
 
-    let persisted = state.stats.save_setting("coinbase_address", address)
-        && state.stats.save_setting("network", &req.network);
+    let persisted = state.stats.save_setting("coinbase_address", address);
 
     info!(
         address = %address,
-        network = %req.network,
+        network = %state.settings.network(),
         persisted,
-        "Payout settings changed via dashboard — broadcasting clean job"
+        "Payout address changed via dashboard — broadcasting clean job"
     );
 
     // New clean job so connected miners switch to the new payout immediately.
@@ -497,6 +498,10 @@ tr:last-child td { border-bottom: none; }
 #settings-save:disabled { opacity: 0.45; cursor: not-allowed; }
 #settings-msg { font-size: 0.76rem; margin-left: 0.8rem; }
 .settings-note { font-size: 0.72rem; color: var(--muted); margin-top: 0.9rem; line-height: 1.5; }
+.paused-banner {
+  margin-top: 0.9rem; padding: 0.6rem 0.8rem; font-size: 0.78rem; font-weight: 600;
+  color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
+}
 
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
@@ -672,17 +677,21 @@ tr:last-child td { border-bottom: none; }
         <input id="set-address" type="text" spellcheck="false" autocomplete="off" placeholder="bc1q&hellip;">
       </div>
       <div class="field">
-        <label for="set-network">Network</label>
-        <select id="set-network"></select>
+        <label for="set-network">Network &mdash; detected from the connected node</label>
+        <input id="set-network" type="text" disabled>
       </div>
       <button id="settings-save" type="submit">Save</button>
       <span id="settings-msg"></span>
     </form>
+    <div id="settings-paused" class="paused-banner" hidden>
+      Mining is paused: the payout address is not valid for the node&rsquo;s network.
+      No jobs are built until a valid address is saved.
+    </div>
     <p class="settings-note">
-      Saving validates the address against the selected network, then broadcasts a
-      clean job so connected miners switch payout immediately. The network selector
-      controls address validation and the badge only &mdash; the Bitcoin node this
-      pool connects to decides the actual chain.
+      Saving validates the address against the node&rsquo;s network, then broadcasts
+      a clean job so connected miners switch payout immediately. The network is
+      read from the Bitcoin node itself and cannot be selected here &mdash; to mine
+      a different chain, connect the pool to a node on that chain.
       <span id="settings-persist-note"></span>
     </p>
   </div>
@@ -1032,14 +1041,12 @@ async function loadSettings() {
     if (!resp.ok) return;
     const s = await resp.json();
     document.getElementById('set-address').value = s.coinbase_address;
-    const sel = document.getElementById('set-network');
-    sel.innerHTML = s.networks.map(n =>
-      `<option value="${n}"${n === s.network ? ' selected' : ''}>${n}</option>`).join('');
+    document.getElementById('set-network').value = s.network;
     updateNetBadge(s.network);
+    document.getElementById('settings-paused').hidden = s.address_valid;
     const note = document.getElementById('settings-persist-note');
     if (!s.editable) {
       document.getElementById('set-address').disabled = true;
-      sel.disabled = true;
       document.getElementById('settings-save').disabled = true;
       note.textContent = 'Editing is disabled ([metrics] allow_runtime_settings = false).';
     } else if (!s.persisted) {
@@ -1063,7 +1070,6 @@ document.getElementById('settings-form').addEventListener('submit', async ev => 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         coinbase_address: document.getElementById('set-address').value.trim(),
-        network: document.getElementById('set-network').value,
       }),
     });
     const body = await resp.json();
@@ -1072,7 +1078,7 @@ document.getElementById('settings-form').addEventListener('submit', async ev => 
         ? 'Saved — new jobs pay this address.'
         : 'Applied (not persisted: no stats DB) — new jobs pay this address.';
       msg.style.color = 'var(--ok)';
-      updateNetBadge(document.getElementById('set-network').value);
+      document.getElementById('settings-paused').hidden = true;
     } else {
       msg.textContent = body.error || ('Save failed (HTTP ' + resp.status + ')');
       msg.style.color = 'var(--bad)';
