@@ -158,12 +158,22 @@ pub async fn run(
     }
 
     let idle_timeout = tokio::time::Duration::from_secs(config.pool.idle_timeout_secs);
+    let preauth_timeout =
+        tokio::time::Duration::from_secs(crate::network::server::HANDSHAKE_TIMEOUT_SECS);
 
     loop {
+        // Until a worker authorizes, hold the connection to the short handshake
+        // deadline — real miners subscribe/authorize immediately, and a stalled
+        // pre-auth connection pins one of the bounded global slots.
+        let read_timeout = if session.authorized {
+            idle_timeout
+        } else {
+            preauth_timeout
+        };
         tokio::select! {
             // ── Inbound message from miner ──────────────────────────────────
             line_result = tokio::time::timeout(
-                idle_timeout,
+                read_timeout,
                 read_line_bounded(&mut reader, &mut line_buf, session.guard.max_message_bytes),
             ) => {
                 match line_result {
@@ -398,6 +408,15 @@ async fn handle_line(
     engine: &Arc<TemplateEngine>,
     ban_list: &Arc<BanList>,
 ) -> HandleResult {
+    // One token per inbound message, not just submits: authorize/configure/
+    // subscribe floods are as cheap to send as shares and feed the same
+    // per-message stats work, so they share the same bucket.
+    if !session.guard.share_rate.try_consume() {
+        metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
+        ban_list.ban(session.peer.ip(), "message rate exceeded");
+        return HandleResult::Disconnect("rate limited".into());
+    }
+
     let req = match StratumRequest::parse(line) {
         Ok(r) => r,
         Err(e) => {
@@ -420,14 +439,7 @@ async fn handle_line(
         ClientMessage::Configure(params) => handle_configure(session, &req, params),
         ClientMessage::Subscribe(params) => handle_subscribe(session, &req, params),
         ClientMessage::Authorize(params) => handle_authorize(session, &req, params, engine).await,
-        ClientMessage::Submit(params) => {
-            if !session.guard.share_rate.try_consume() {
-                metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
-                ban_list.ban(session.peer.ip(), "share rate exceeded");
-                return HandleResult::Disconnect("rate limited".into());
-            }
-            handle_submit(session, &req, params, engine).await
-        }
+        ClientMessage::Submit(params) => handle_submit(session, &req, params, engine).await,
         ClientMessage::Unknown(method) => {
             debug!("Unknown method from {}: {method}", session.peer);
             HandleResult::Messages(vec![ResponseBuilder::err(
@@ -530,12 +542,23 @@ async fn handle_authorize(
         return HandleResult::Messages(vec![ResponseBuilder::err(&req.id, e.to_stratum_error())]);
     }
 
+    // Only a *new* identity counts against the cap or touches the stats maps;
+    // re-authorizing the same name (some firmware does on reconnect-in-place)
+    // must not inflate active_sessions or the authorization count.
+    if session.worker.as_deref() != Some(params.worker.as_str()) {
+        if !session.guard.record_new_authorization() {
+            return HandleResult::Disconnect("too many worker identities".into());
+        }
+        if let Some(prev) = session.worker.take() {
+            session.stats.mark_worker_offline(&prev);
+        }
+        session
+            .stats
+            .mark_worker_online(&params.worker, session.difficulty);
+        session.stats.set_worker_protocol(&params.worker, "sv1");
+    }
     session.authorized = true;
     session.worker = Some(params.worker.clone());
-    session
-        .stats
-        .mark_worker_online(&params.worker, session.difficulty);
-    session.stats.set_worker_protocol(&params.worker, "sv1");
 
     info!(
         peer = %session.peer,

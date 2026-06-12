@@ -164,10 +164,21 @@ pub struct SecurityConfig {
     /// names. Defaults to 128 (fits a bech32m address + `.worker` suffix).
     #[serde(default = "default_max_worker_name_len")]
     pub max_worker_name_len: usize,
+    /// Maximum number of *distinct* worker identities one connection may
+    /// authorize (SV1 `mining.authorize` / SV2 `OpenExtendedMiningChannel`).
+    /// Each distinct name creates entries in the global stats maps and mints
+    /// Prometheus label series, so an unbounded count lets a single connection
+    /// grow them without limit. Real miners authorize once. Defaults to 8.
+    #[serde(default = "default_max_authorizations_per_session")]
+    pub max_authorizations_per_session: u32,
 }
 
 fn default_max_worker_name_len() -> usize {
     128
+}
+
+fn default_max_authorizations_per_session() -> u32 {
+    8
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

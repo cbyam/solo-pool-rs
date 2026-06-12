@@ -144,6 +144,13 @@ max_message_bytes = 4096
 # untrusted names. 128 fits a bech32m payout address plus a `.worker` suffix.
 max_worker_name_len = 128
 
+# Maximum number of DISTINCT worker identities one connection may authorize
+# (SV1 mining.authorize / SV2 OpenExtendedMiningChannel). Each distinct name
+# creates per-worker stats entries and Prometheus label series, so this bounds
+# how much a single connection can grow them. Real miners authorize once.
+# 0 = disabled.
+max_authorizations_per_session = 8
+
 [metrics]
 # Prometheus metrics HTTP endpoint (empty string to disable)
 prometheus_addr = "0.0.0.0:9090"
