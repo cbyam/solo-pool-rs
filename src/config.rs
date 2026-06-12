@@ -42,8 +42,8 @@ pub struct PoolConfig {
     pub found_block_dir: String,
     /// Optional safety assertion. The pool always detects the actual network
     /// from the connected node (`getblockchaininfo`) and validates the payout
-    /// address against it. When this is set ("mainnet" | "testnet" | "signet"
-    /// | "regtest"), boot additionally fails fast if the node reports a
+    /// address against it. When this is set ("mainnet" | "testnet" | "testnet4" |
+    /// "signet" | "regtest"), boot additionally fails fast if the node reports a
     /// different chain — catching a config pointed at the wrong node.
     #[serde(default)]
     pub network: Option<String>,
