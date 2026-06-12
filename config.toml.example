@@ -5,6 +5,18 @@
 #   # edit coinbase_address and bitcoin_rpc settings, then:
 #   cargo build --release
 #   ./target/release/solo-pool-rs config.toml
+#
+# Every value can be overridden by an environment variable named
+# SOLO_POOL_<SECTION>__<KEY> (double underscore between section and key) —
+# useful for container platforms that configure apps through env vars:
+#
+#   SOLO_POOL_POOL__COINBASE_ADDRESS=bc1q...     # [pool] coinbase_address
+#   SOLO_POOL_BITCOIN_RPC__URL=http://10.0.0.5:8332
+#   SOLO_POOL_SV2__ENABLED=false
+#
+# Overrides are parsed as the type the key has in this file. For keys absent
+# from the file, true/false and numbers are typed as such — wrap the value in
+# double quotes to force a string (e.g. an all-numeric RPC password).
 
 [pool]
 # Address and port miners connect to
