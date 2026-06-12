@@ -326,10 +326,27 @@ fn build_coinbase(
     Ok((final_bytes, offset))
 }
 
-/// Encode block height as a minimal CScript push for BIP34.
+/// Encode the block height for the BIP34 coinbase scriptSig, matching Bitcoin
+/// Core's `CScript() << nHeight` exactly — consensus rejects (`bad-cb-height`)
+/// anything else.
+///
+/// Core's `push_int64` has three cases, and consensus validation does a strict
+/// prefix match against them:
+/// - height 0 → `OP_0` (single byte 0x00)
+/// - height 1..=16 → `OP_1..OP_16` (single byte 0x51..0x60)
+/// - height >= 17 → minimal `CScriptNum` data push (a `len` byte then the
+///   little-endian bytes, with a 0x00 sign byte appended when the top bit is set)
+///
+/// Post-BIP34 mainnet heights are all far above 16, so only the data-push case
+/// ever runs there — which is why an earlier version that *always* used the
+/// data-push form worked on mainnet but produced `bad-cb-height` when mining the
+/// first 16 blocks of a fresh regtest / signet chain.
 fn encode_bip34_height(height: u64) -> Vec<u8> {
     if height == 0 {
-        return vec![0x01, 0x00];
+        return vec![0x00]; // OP_0
+    }
+    if height <= 16 {
+        return vec![0x50 + height as u8]; // OP_1 (0x51) ..= OP_16 (0x60)
     }
     let mut n = height;
     let mut bytes = Vec::new();
@@ -615,13 +632,21 @@ mod tests {
 
     #[test]
     fn test_bip34_height_encoding() {
-        // Height 0 → 0x01 0x00
-        assert_eq!(encode_bip34_height(0), vec![0x01, 0x00]);
-        // Height 1 → 0x01 0x01
-        assert_eq!(encode_bip34_height(1), vec![0x01, 0x01]);
-        // Height 128 → needs 2 bytes (sign-bit extension)
-        let h128 = encode_bip34_height(128);
-        assert_eq!(h128.len(), 3); // len byte + 0x80 + 0x00
+        // Must match Bitcoin Core's `CScript() << nHeight` exactly, or the
+        // block is rejected with bad-cb-height.
+        // 0 → OP_0
+        assert_eq!(encode_bip34_height(0), vec![0x00]);
+        // 1..=16 → OP_1..OP_16 (0x51..0x60), single byte
+        assert_eq!(encode_bip34_height(1), vec![0x51]);
+        assert_eq!(encode_bip34_height(16), vec![0x60]);
+        // 17 is the first data-push height: push 1 byte 0x11
+        assert_eq!(encode_bip34_height(17), vec![0x01, 0x11]);
+        // 127 fits in one byte without sign extension
+        assert_eq!(encode_bip34_height(127), vec![0x01, 0x7f]);
+        // 128 needs a 0x00 sign byte so the top bit isn't read as negative
+        assert_eq!(encode_bip34_height(128), vec![0x02, 0x80, 0x00]);
+        // A realistic post-BIP34 mainnet height: 0x0DBBA0 = 900_000
+        assert_eq!(encode_bip34_height(900_000), vec![0x03, 0xa0, 0xbb, 0x0d]);
     }
 
     #[test]
