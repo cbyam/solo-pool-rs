@@ -77,6 +77,8 @@ pub async fn start(
     let app = Router::new()
         .route("/", get(dashboard_html))
         .route("/favicon.ico", get(favicon))
+        .route("/logo-dark.svg", get(logo_dark))
+        .route("/logo-light.svg", get(logo_light))
         .route("/stats", get(stats_json))
         .route("/history", get(history_json))
         .route("/chart", get(chart_json))
@@ -109,6 +111,42 @@ async fn favicon() -> impl IntoResponse {
         include_bytes!("favicon.ico").as_slice(),
     )
 }
+
+async fn logo_dark() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        LOGO_DARK_SVG,
+    )
+}
+
+async fn logo_light() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        LOGO_LIGHT_SVG,
+    )
+}
+
+// Brand mark: a Bitcoin "block" (isometric cube) crossed by a miner's pickaxe.
+// Two theme-tuned variants — the orange block is shared, only the badge tile and
+// the steel of the pickaxe change so the mark reads on each theme's rail.
+//   carbon: dark tile, light-steel pick.  light: porcelain tile, slate pick.
+const LOGO_DARK_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="solo-pool-rs">
+<rect x="3" y="3" width="58" height="58" rx="13" fill="#1a1a1f" stroke="#232328" stroke-width="1.5"/>
+<polygon points="32,29 48,37.5 32,46 16,37.5" fill="#f7931a"/>
+<polygon points="16,37.5 32,46 32,58 16,49.5" fill="#b8650a"/>
+<polygon points="32,46 48,37.5 48,49.5 32,58" fill="#d97b10"/>
+<path d="M33 19 L31 42" fill="none" stroke="#9aa0ac" stroke-width="5.5" stroke-linecap="round"/>
+<path d="M13 30 Q20 17 33 16 Q47 17 55 30 Q47 23 33 23 Q20 23 13 30 Z" fill="#cdd2db"/>
+</svg>"##;
+
+const LOGO_LIGHT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="solo-pool-rs">
+<rect x="3" y="3" width="58" height="58" rx="13" fill="#f4f4f5" stroke="#e4e4e7" stroke-width="1.5"/>
+<polygon points="32,29 48,37.5 32,46 16,37.5" fill="#f7931a"/>
+<polygon points="16,37.5 32,46 32,58 16,49.5" fill="#b8650a"/>
+<polygon points="32,46 48,37.5 48,49.5 32,58" fill="#d97b10"/>
+<path d="M33 19 L31 42" fill="none" stroke="#3f4651" stroke-width="5.5" stroke-linecap="round"/>
+<path d="M13 30 Q20 17 33 16 Q47 17 55 30 Q47 23 33 23 Q20 23 13 30 Z" fill="#555b66"/>
+</svg>"##;
 
 async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsSnapshot> {
     Json(state.stats.snapshot())
@@ -384,8 +422,8 @@ body {
   padding: 1.2rem 0.85rem; background: var(--surface);
   border-right: 1px solid var(--border);
 }
-.brand { display: flex; align-items: baseline; gap: 0.45rem; padding: 0 0.6rem; }
-.brand .mark { color: var(--accent); font-size: 1.05rem; }
+.brand { display: flex; align-items: center; gap: 0.5rem; padding: 0 0.6rem; }
+.brand img.mark { height: 1.9rem; width: auto; border-radius: 5px; display: block; }
 .brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a, nav .nav-btn {
@@ -407,7 +445,7 @@ nav a.active { color: var(--text); background: var(--surface2); border-left-colo
   padding: 0.3rem 0.6rem;
 }
 #theme-toggle:hover { color: var(--text); border-color: var(--muted); }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 0.4rem; }
+.rail-led { margin-right: 0.4rem; }
 .rail-foot a { color: var(--muted); text-decoration: none; }
 .rail-foot a:hover { color: var(--text); }
 
@@ -472,6 +510,11 @@ th {
 td { padding: 0.5rem 0.55rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 tr:last-child td { border-bottom: none; }
 .empty-row { color: var(--muted); text-align: center; padding: 1.2rem; font-size: 0.84rem; }
+/* Worker status LED — green when online, grey when offline. */
+.led { width: 9px; height: 9px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+.led-on { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.led-off { background: var(--muted); opacity: 0.45; }
+.col-led { text-align: center; }
 @keyframes blockFlash { 0% { background: var(--ok); } 100% { background: transparent; } }
 #v-height.block-new { animation: blockFlash 0.8s ease-out; }
 
@@ -556,7 +599,7 @@ tr:last-child td { border-bottom: none; }
 <div class="shell">
 
 <aside class="rail">
-  <div class="brand"><span class="mark">&#9889;</span><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
+  <div class="brand"><img id="brand-logo" class="mark" src="/logo-dark.svg" alt="solo-pool-rs logo" width="64" height="64"><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
   <nav id="rail-nav">
     <a href="#overview" data-section="overview" class="active">Overview</a>
     <a href="#workers" data-section="workers">Workers</a>
@@ -567,7 +610,7 @@ tr:last-child td { border-bottom: none; }
   <div class="rail-foot">
     <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
     <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
-    <span class="hide-sm"><span class="dot"></span>Block <span id="rail-height">&mdash;</span></span>
+    <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
     <span id="server-uptime" title="How long this pool process has been running">Uptime &mdash;</span>
     <span id="last-updated" class="hide-sm">Loading&hellip;</span>
     <span class="hide-sm">v"##,
@@ -653,8 +696,8 @@ tr:last-child td { border-bottom: none; }
     <thead>
       <tr>
         <th>Worker</th>
+        <th class="col-led">Status</th>
         <th>Mode</th>
-        <th>Status</th>
         <th>Vardiff</th>
         <th>Hashrate (1m)</th>
         <th>Hashrate (3h)</th>
@@ -695,7 +738,6 @@ tr:last-child td { border-bottom: none; }
     <div class="kpi">
       <div class="label">Market</div>
       <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC: &mdash;</div>
-      <div class="sub">Difficulty (raw): <span id="v-network-difficulty">&mdash;</span></div>
     </div>
   </div>
 </section>
@@ -743,6 +785,8 @@ function applyTheme(t) {
   if (t === 'light') document.documentElement.dataset.theme = 'light';
   else delete document.documentElement.dataset.theme;
   try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+  const logo = document.getElementById('brand-logo');
+  if (logo) logo.src = t === 'light' ? '/logo-light.svg' : '/logo-dark.svg';
 }
 (function initTheme() {
   let t = null;
@@ -759,6 +803,25 @@ function cssVar(name) {
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
 let lastBlockHeight = 0;
+// Timestamp (ms) of the last successful /stats refresh. Drives the rail
+// connectivity LED: green while updates are landing, grey once they go stale.
+let lastStatsOk = 0;
+
+function updateConnLed() {
+  const led = document.getElementById('conn-led');
+  if (!led) return;
+  const ageMs = lastStatsOk ? Date.now() - lastStatsOk : Infinity;
+  // Refresh runs every 10s; tolerate one missed beat before flagging stale.
+  if (ageMs < 25000) {
+    led.classList.add('led-on'); led.classList.remove('led-off');
+    led.title = 'Live — updated ' + Math.round(ageMs / 1000) + 's ago';
+  } else {
+    led.classList.add('led-off'); led.classList.remove('led-on');
+    led.title = lastStatsOk
+      ? 'Connection lost — no update for ' + Math.round(ageMs / 1000) + 's'
+      : 'Connecting…';
+  }
+}
 
 const myChart = echarts.init(document.getElementById('hashrate-chart'), null, { renderer: 'canvas' });
 window.addEventListener('resize', () => myChart.resize());
@@ -924,7 +987,6 @@ async function refresh() {
     document.getElementById('v-last-block-time').textContent = fmtTimestamp(d.last_block_ts);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
-    document.getElementById('v-network-difficulty').textContent = d.network_difficulty.toFixed(4);
     document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';
 
     // Network section (human-readable hashrate + difficulty + next-adjustment ETA)
@@ -972,8 +1034,8 @@ async function refresh() {
           const mode = (w.protocol || 'sv1').toUpperCase();
           return `<tr>
             <td>${escHtml(workerName)}</td>
+            <td class="col-led"><span class="led ${w.online ? 'led-on' : 'led-off'}" title="${w.online ? 'Online' : 'Offline'}"></span></td>
             <td>${mode}</td>
-            <td class="${w.online ? 'ok' : 'bad'}">${w.online ? 'Online' : 'Offline'}</td>
             <td>${fmtDiff(w.current_vardiff)}</td>
             <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
@@ -989,9 +1051,11 @@ async function refresh() {
     }
 
     document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+    lastStatsOk = Date.now();
   } catch (e) {
     console.error('Dashboard refresh error:', e);
   }
+  updateConnLed();
 }
 
 function fmtOdds(p) {
@@ -1161,10 +1225,14 @@ settingsModal.addEventListener('click', e => { if (e.target === settingsModal) s
 
 attachTimeframeSelector();
 loadChart(DEFAULT_WINDOW);
+updateConnLed();
 refresh();
 loadSettings();
 fetchBtcPrice();
 setInterval(refresh, 10000);
+// Re-evaluate the connectivity LED between refreshes so it goes stale on its
+// own even if refresh() stops landing (server down, tab throttled, etc.).
+setInterval(updateConnLed, 5000);
 setInterval(() => loadChart(selectedWindow), 60000);
 setInterval(fetchBtcPrice, 60000);
 </script>
