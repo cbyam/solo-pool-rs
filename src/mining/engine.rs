@@ -10,6 +10,7 @@ use crate::{
     bitcoin::{rpc::RpcClient, template, zmq::NewBlockReceiver},
     config::PoolConfig,
     error::PoolError,
+    settings::RuntimeSettings,
 };
 use std::{
     collections::VecDeque,
@@ -76,6 +77,9 @@ pub struct JobEntry {
 pub struct TemplateEngine {
     rpc: Arc<RpcClient>,
     pool_cfg: PoolConfig,
+    /// Runtime-mutable settings (payout address); read on every refresh so a
+    /// dashboard-driven change applies to the next job built.
+    settings: Arc<RuntimeSettings>,
 
     /// Current best job (Arc so sessions can hold a cheap reference)
     current_job: RwLock<Option<Arc<template::StratumJob>>>,
@@ -88,15 +92,27 @@ pub struct TemplateEngine {
 }
 
 impl TemplateEngine {
-    pub fn new(rpc: Arc<RpcClient>, pool_cfg: PoolConfig) -> Arc<Self> {
+    pub fn new(
+        rpc: Arc<RpcClient>,
+        pool_cfg: PoolConfig,
+        settings: Arc<RuntimeSettings>,
+    ) -> Arc<Self> {
         let (job_tx, _) = broadcast::channel(JOB_BROADCAST_CAP);
         Arc::new(Self {
             rpc,
             pool_cfg,
+            settings,
             current_job: RwLock::new(None),
             job_history: RwLock::new(VecDeque::with_capacity(JOB_HISTORY_DEPTH)),
             job_tx,
         })
+    }
+
+    /// Build and broadcast a fresh clean job immediately — used after a
+    /// settings change so miners switch to the new payout address without
+    /// waiting for the next block or ntime tick.
+    pub async fn force_refresh(&self) {
+        self.refresh(true).await;
     }
 
     /// Subscribe to new-job broadcasts. Call this when a miner session connects.
@@ -151,11 +167,24 @@ impl TemplateEngine {
 
     /// Fetch a fresh GBT and push it out to all connected sessions.
     async fn refresh(&self, clean_jobs: bool) {
+        // Hard safety gate: never build a job unless the payout address
+        // validates against the node's chain. A wrong-network address would
+        // still produce a *valid* coinbase script (the script encodes no
+        // network), silently mining to a script the operator may not control.
+        let Some(coinbase_address) = self.settings.valid_coinbase_address() else {
+            warn!(
+                network = %self.settings.network(),
+                "Mining paused: no valid payout address for the node's network — \
+                 set one in the dashboard Settings page"
+            );
+            return;
+        };
+
         match self.rpc.get_block_template() {
             Ok(gbt) => {
                 match template::build_job(
                     &gbt,
-                    &self.pool_cfg.coinbase_address,
+                    &coinbase_address,
                     &self.pool_cfg.coinbase_tag,
                     self.pool_cfg.extranonce1_size,
                     self.pool_cfg.extranonce2_size,

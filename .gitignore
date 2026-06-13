@@ -2,6 +2,7 @@ target/
 config.toml
 *.cookie
 *.log
+*.log.*
 .vscode/
 .claude/
 .cursor/

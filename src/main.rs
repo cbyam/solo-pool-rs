@@ -16,6 +16,7 @@ mod mining;
 mod network;
 mod protocol;
 mod security;
+mod settings;
 mod stats;
 
 use crate::{
@@ -58,16 +59,21 @@ async fn main() -> Result<()> {
     // ── Pool stats (HTTP dashboard snapshot + in-memory state)
     // Supports optional SQLite persistence for all-time best values.
     let stats = PoolStats::new_with_store(config.metrics.stats_db_path.clone());
-    network::dashboard::start(
-        &config.metrics.prometheus_addr,
-        stats.clone(),
-        prometheus_handle,
-    )
-    .await;
 
     // ── Bitcoin RPC ───────────────────────────────────────────────────────────
     let rpc =
         Arc::new(RpcClient::new(&config.bitcoin_rpc).context("Connecting to Bitcoin Knots RPC")?);
+
+    // ── Runtime settings (payout address; network detected from the node) ────
+    // The node's chain is the source of truth: the payout address must
+    // validate against it before any job is built. A previous dashboard save
+    // (persisted in the stats DB) overrides the config address.
+    let node_chain = rpc
+        .chain()
+        .context("Querying node chain (getblockchaininfo)")?;
+    info!(chain = %node_chain, "Connected node chain detected");
+    let runtime_settings = settings::RuntimeSettings::new(&config.pool, &node_chain)?;
+    runtime_settings.apply_persisted(stats.load_setting("coinbase_address"));
 
     // ── Hashrate history recorder (every 10 minutes) ─────────────────────────
     {
@@ -105,13 +111,25 @@ async fn main() -> Result<()> {
     let new_block_rx = zmq::start(&config.zmq, rpc.clone()).await;
 
     // ── Template engine ───────────────────────────────────────────────────────
-    let engine = TemplateEngine::new(rpc.clone(), config.pool.clone());
+    let engine = TemplateEngine::new(rpc.clone(), config.pool.clone(), runtime_settings.clone());
 
     // Spawn the template refresh loop
     {
         let engine = engine.clone();
         tokio::spawn(engine.run(new_block_rx));
     }
+
+    // ── Dashboard (after the engine exists: the Settings page triggers a
+    //    clean-job refresh through it) ──────────────────────────────────────────
+    network::dashboard::start(
+        &config.metrics.prometheus_addr,
+        stats.clone(),
+        prometheus_handle,
+        runtime_settings,
+        engine.clone(),
+        config.metrics.allow_runtime_settings,
+    )
+    .await;
 
     // ── Security ──────────────────────────────────────────────────────────────
     let ban_list = BanList::new(config.security.ban_duration_secs);

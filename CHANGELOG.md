@@ -9,6 +9,34 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Dashboard: **Settings page** — the payout address can now be changed at
+  runtime from the dashboard. The network is **detected from the connected
+  node** (`getblockchaininfo`) and shown read-only; a change is validated
+  (the address must parse and belong to the node's chain), persisted in the
+  stats SQLite (overriding config.toml at next boot), and applied immediately
+  via a forced clean-job broadcast so connected miners switch payout without
+  waiting for the next block. New config keys: `pool.network` (optional
+  assertion — boot fails fast if set and the node reports a different chain)
+  and `metrics.allow_runtime_settings` (default true; set false on an
+  untrusted LAN, or front the dashboard with an authenticating proxy).
+
+### Security
+- Mining is **paused unless the payout address validates against the node's
+  chain**. A wrong-network address (e.g. a `tb1…` testnet address while the
+  node is on mainnet) still encodes a perfectly valid coinbase script, so the
+  pool would previously have mined to a script the operator may not control;
+  now no job is built until a valid address is saved (the pool still boots and
+  the dashboard stays reachable to fix it — which also gives container
+  platforms a clean first-run flow with a placeholder address).
+- Dashboard: redesigned **console layout** — fixed left rail with scroll-spy
+  navigation and status footer, hero hashrate zone with block odds, hairline
+  KPI strip, and a non-mainnet network badge. Two color themes — carbon
+  (near-black, amber accent; default) and Swiss light (porcelain, cobalt
+  accent) — toggleable from the rail, seeded from the OS preference, and
+  persisted per browser. The hashrate chart re-skins from the active theme's
+  CSS variables without a server round trip.
+
 ## [0.4.2] - 2026-06-12
 
 ### Fixed
