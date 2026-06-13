@@ -3,11 +3,11 @@
 /// Visual HTTP dashboard served on the configured prometheus_addr.
 ///
 /// Routes:
-///   GET /            → HTML dashboard (Chart.js, auto-refreshes every 10 s)
+///   GET /            → HTML dashboard (ECharts, auto-refreshes every 10 s)
 ///   GET /favicon.ico → embedded site icon
 ///   GET /stats       → JSON snapshot of PoolStats
 ///   GET /metrics  → Prometheus text (via PrometheusHandle::render)
-use crate::stats::PoolStats;
+use crate::{mining::engine::TemplateEngine, settings::RuntimeSettings, stats::PoolStats};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -38,13 +38,23 @@ use tracing::{info, warn};
 pub struct DashState {
     pub stats: Arc<PoolStats>,
     pub prometheus: Option<PrometheusHandle>,
+    pub settings: Arc<RuntimeSettings>,
+    pub engine: Arc<TemplateEngine>,
+    pub allow_settings: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Startup
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<PrometheusHandle>) {
+pub async fn start(
+    addr: &str,
+    stats: Arc<PoolStats>,
+    prometheus: Option<PrometheusHandle>,
+    settings: Arc<RuntimeSettings>,
+    engine: Arc<TemplateEngine>,
+    allow_settings: bool,
+) {
     if addr.is_empty() {
         return;
     }
@@ -57,13 +67,22 @@ pub async fn start(addr: &str, stats: Arc<PoolStats>, prometheus: Option<Prometh
         }
     };
 
-    let state = DashState { stats, prometheus };
+    let state = DashState {
+        stats,
+        prometheus,
+        settings,
+        engine,
+        allow_settings,
+    };
     let app = Router::new()
         .route("/", get(dashboard_html))
         .route("/favicon.ico", get(favicon))
+        .route("/logo-dark.svg", get(logo_dark))
+        .route("/logo-light.svg", get(logo_light))
         .route("/stats", get(stats_json))
         .route("/history", get(history_json))
         .route("/chart", get(chart_json))
+        .route("/api/settings", get(settings_get).post(settings_post))
         .route("/metrics", get(metrics_text))
         .with_state(state);
 
@@ -92,6 +111,42 @@ async fn favicon() -> impl IntoResponse {
         include_bytes!("favicon.ico").as_slice(),
     )
 }
+
+async fn logo_dark() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        LOGO_DARK_SVG,
+    )
+}
+
+async fn logo_light() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        LOGO_LIGHT_SVG,
+    )
+}
+
+// Brand mark: a Bitcoin "block" (isometric cube) crossed by a miner's pickaxe.
+// Two theme-tuned variants — the orange block is shared, only the badge tile and
+// the steel of the pickaxe change so the mark reads on each theme's rail.
+//   carbon: dark tile, light-steel pick.  light: porcelain tile, slate pick.
+const LOGO_DARK_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="solo-pool-rs">
+<rect x="3" y="3" width="58" height="58" rx="13" fill="#1a1a1f" stroke="#232328" stroke-width="1.5"/>
+<polygon points="32,29 48,37.5 32,46 16,37.5" fill="#f7931a"/>
+<polygon points="16,37.5 32,46 32,58 16,49.5" fill="#b8650a"/>
+<polygon points="32,46 48,37.5 48,49.5 32,58" fill="#d97b10"/>
+<path d="M33 19 L31 42" fill="none" stroke="#9aa0ac" stroke-width="5.5" stroke-linecap="round"/>
+<path d="M13 30 Q20 17 33 16 Q47 17 55 30 Q47 23 33 23 Q20 23 13 30 Z" fill="#cdd2db"/>
+</svg>"##;
+
+const LOGO_LIGHT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="solo-pool-rs">
+<rect x="3" y="3" width="58" height="58" rx="13" fill="#f4f4f5" stroke="#e4e4e7" stroke-width="1.5"/>
+<polygon points="32,29 48,37.5 32,46 16,37.5" fill="#f7931a"/>
+<polygon points="16,37.5 32,46 32,58 16,49.5" fill="#b8650a"/>
+<polygon points="32,46 48,37.5 48,49.5 32,58" fill="#d97b10"/>
+<path d="M33 19 L31 42" fill="none" stroke="#3f4651" stroke-width="5.5" stroke-linecap="round"/>
+<path d="M13 30 Q20 17 33 16 Q47 17 55 30 Q47 23 33 23 Q20 23 13 30 Z" fill="#555b66"/>
+</svg>"##;
 
 async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsSnapshot> {
     Json(state.stats.snapshot())
@@ -143,11 +198,84 @@ async fn history_json(
     Json(points)
 }
 
+// ── Runtime settings (payout address / network) ──────────────────────────────
+
+#[derive(Serialize)]
+struct SettingsView {
+    coinbase_address: String,
+    /// Node-derived network ("mainnet" | "testnet" | "signet" | "regtest").
+    network: String,
+    /// Whether the address validates against the node's network. Mining is
+    /// paused while false.
+    address_valid: bool,
+    /// Whether a stats DB backs the settings (changes survive restarts).
+    persisted: bool,
+    /// Whether changes are allowed ([metrics] allow_runtime_settings).
+    editable: bool,
+}
+
+async fn settings_get(State(state): State<DashState>) -> Json<SettingsView> {
+    Json(SettingsView {
+        coinbase_address: state.settings.coinbase_address(),
+        network: state.settings.network().to_string(),
+        address_valid: state.settings.address_valid(),
+        persisted: state.stats.has_store(),
+        editable: state.allow_settings,
+    })
+}
+
+#[derive(Deserialize)]
+struct SettingsUpdate {
+    coinbase_address: String,
+}
+
+async fn settings_post(
+    State(state): State<DashState>,
+    Json(req): Json<SettingsUpdate>,
+) -> Response {
+    if !state.allow_settings {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "runtime settings are disabled ([metrics] allow_runtime_settings = false)"
+            })),
+        )
+            .into_response();
+    }
+
+    let address = req.coinbase_address.trim();
+    if let Err(e) = state.settings.update(address) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    let persisted = state.stats.save_setting("coinbase_address", address);
+
+    info!(
+        address = %address,
+        network = %state.settings.network(),
+        persisted,
+        "Payout address changed via dashboard — broadcasting clean job"
+    );
+
+    // New clean job so connected miners switch to the new payout immediately.
+    state.engine.force_refresh().await;
+
+    Json(serde_json::json!({ "ok": true, "persisted": persisted })).into_response()
+}
+
 #[derive(Deserialize)]
 struct ChartParams {
     window: Option<String>,
 }
 
+// Chart colors here are placeholders: the dashboard JS re-skins every color
+// (line, area, axes, grid, tooltip) from the active theme's CSS variables in
+// loadChart(), so the light/dark toggle restyles the chart without a server
+// round-trip carrying theme state.
 async fn chart_json(
     State(state): State<DashState>,
     Query(params): Query<ChartParams>,
@@ -192,12 +320,7 @@ async fn chart_json(
 
     let chart = Chart::new()
         .background_color(Color::Value("transparent".to_string()))
-        .tooltip(
-            Tooltip::new()
-                .trigger(Trigger::Axis)
-                .background_color(Color::Value("#1e293b".to_string()))
-                .border_color(Color::Value("#334155".to_string())),
-        )
+        .tooltip(Tooltip::new().trigger(Trigger::Axis))
         .grid(
             Grid::new()
                 .left(CompositeValue::from("60px"))
@@ -210,41 +333,23 @@ async fn chart_json(
             Axis::new()
                 .type_(AxisType::Time)
                 .boundary_gap(BoundaryGap::CategoryAxis(false))
-                .split_line(SplitLine::new().line_style(
-                    LineStyle::new().color(Color::Value("rgba(51,65,85,0.4)".to_string())),
-                ))
-                .axis_label(
-                    AxisLabel::new()
-                        .color(Color::Value("#64748b".to_string()))
-                        .font_size(10.0),
-                ),
+                .split_line(SplitLine::new().line_style(LineStyle::new()))
+                .axis_label(AxisLabel::new().font_size(10.0)),
         )
         .y_axis(
             Axis::new()
                 .type_(AxisType::Value)
                 .min(CompositeValue::from(0))
-                .split_line(SplitLine::new().line_style(
-                    LineStyle::new().color(Color::Value("rgba(51,65,85,0.4)".to_string())),
-                ))
-                .axis_label(
-                    AxisLabel::new()
-                        .color(Color::Value("#64748b".to_string()))
-                        .font_size(10.0),
-                ),
+                .split_line(SplitLine::new().line_style(LineStyle::new()))
+                .axis_label(AxisLabel::new().font_size(10.0)),
         )
         .series(
             Line::new()
                 .data(data)
                 .show_symbol(false)
                 .smooth(Smoothness::from(0.35f64))
-                .line_style(
-                    LineStyle::new()
-                        .color(Color::Value("#38bdf8".to_string()))
-                        .width(1.0),
-                )
-                .area_style(
-                    AreaStyle::new().color(Color::Value("rgba(56,189,248,0.08)".to_string())),
-                ),
+                .line_style(LineStyle::new().width(1.5))
+                .area_style(AreaStyle::new()),
         );
 
     let body = serde_json::to_string(&chart).unwrap_or_else(|_| "{}".to_string());
@@ -258,11 +363,17 @@ async fn chart_json(
 // Dashboard HTML
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The build version is baked into the footer at compile time from
+// Console layout: fixed left rail (nav + status) with the content in sections.
+// Two themes via CSS custom properties on <html data-theme="...">:
+//   carbon (default dark) — near-black neutrals, single amber accent
+//   light                 — porcelain/Swiss, single cobalt accent
+// The choice persists in localStorage and seeds from prefers-color-scheme.
+//
+// The build version is baked into the rail footer at compile time from
 // CARGO_PKG_VERSION (sourced from Cargo.toml), so it can never drift from the
 // crate version. `concat!` keeps the whole page a single `&'static str`.
 const DASHBOARD_HTML: &str = concat!(
-    r#"<!DOCTYPE html>
+    r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -272,182 +383,321 @@ const DASHBOARD_HTML: &str = concat!(
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 <style>
 :root {
-  --bg: #0f172a;
-  --card: #1e293b;
-  --border: #334155;
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --accent: #38bdf8;
-  --green: #4ade80;
-  --red: #f87171;
+  --bg: #0a0a0b;
+  --surface: #131316;
+  --surface2: #1a1a1f;
+  --border: #232328;
+  --text: #ededef;
+  --muted: #8b8b93;
+  --accent: #f7931a;
+  --ok: #3ecf8e;
+  --bad: #f0564a;
+  --grid: rgba(255,255,255,0.06);
+}
+:root[data-theme="light"] {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface2: #f4f4f5;
+  --border: #e4e4e7;
+  --text: #111113;
+  --muted: #71717a;
+  --accent: #2456e6;
+  --ok: #16a34a;
+  --bad: #dc2626;
+  --grid: rgba(0,0,0,0.07);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding: 1.5rem; min-height: 100vh; }
-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; gap: 0.5rem; }
-h1 { font-size: 1.4rem; font-weight: 700; color: var(--accent); letter-spacing: -0.02em; text-align: left; margin: 0; }
-.header-controls { display: flex; gap: 1rem; align-items: center; }
-#last-updated { font-size: 0.72rem; color: var(--muted); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.9rem; margin-bottom: 1.25rem; }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.2rem; }
-.card-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.35rem; }
-.card-value { font-size: 1.55rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
-.green { color: var(--green); }
-.red   { color: var(--red); }
-.accent { color: var(--accent); }
-.panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.2rem; margin-bottom: 1.25rem; }
-.panel-title { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 1rem; }
-#hashrate-chart { height: 240px; width: 100%; }
-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-th { text-align: left; color: var(--muted); font-weight: 500; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
-td { padding: 0.45rem 0.5rem; border-bottom: 1px solid rgba(51,65,85,0.4); }
-tr:last-child td { border-bottom: none; }
-.online { color: var(--green); }
-.offline { color: var(--red); }
-.empty-row { color: var(--muted); text-align: center; padding: 1.2rem; font-size: 0.875rem; }
-@keyframes blockFlash {
-  0% { background: var(--green); }
-  100% { background: transparent; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--text); min-height: 100vh;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
 }
+.shell { display: flex; min-height: 100vh; }
+
+/* ── Left rail ── */
+.rail {
+  width: 208px; flex: none; position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column; gap: 1.4rem;
+  padding: 1.2rem 0.85rem; background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 0.5rem; padding: 0 0.6rem; }
+.brand img.mark { height: 1.9rem; width: auto; border-radius: 5px; display: block; }
+.brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; }
+nav { display: flex; flex-direction: column; gap: 2px; }
+nav a, nav .nav-btn {
+  color: var(--muted); text-decoration: none; font-size: 0.8rem; font-weight: 500;
+  padding: 0.42rem 0.6rem; border-radius: 5px; border-left: 2px solid transparent;
+  font-family: inherit; text-align: left; background: none; border-top: none;
+  border-right: none; border-bottom: none; cursor: pointer; width: 100%;
+}
+nav a:hover, nav .nav-btn:hover { color: var(--text); background: var(--surface2); }
+nav a.active { color: var(--text); background: var(--surface2); border-left-color: var(--accent); }
+.rail-foot {
+  margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem;
+  font-size: 0.7rem; color: var(--muted); padding: 0 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+#theme-toggle {
+  align-self: flex-start; cursor: pointer; font: inherit; color: var(--muted);
+  background: none; border: 1px solid var(--border); border-radius: 5px;
+  padding: 0.3rem 0.6rem;
+}
+#theme-toggle:hover { color: var(--text); border-color: var(--muted); }
+.rail-led { margin-right: 0.4rem; }
+.rail-foot a { color: var(--muted); text-decoration: none; }
+.rail-foot a:hover { color: var(--text); }
+
+/* ── Main column ── */
+main { flex: 1; min-width: 0; max-width: 1240px; padding: 1.7rem 2.1rem 2.5rem; }
+section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
+.sec-title {
+  font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.13em; color: var(--muted); margin-bottom: 0.9rem;
+}
+
+/* ── Hero ── */
+.hero {
+  display: flex; flex-wrap: wrap; gap: 1.6rem 2.4rem; align-items: stretch;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 1.4rem 1.7rem; margin-bottom: 1.4rem;
+}
+.hero .label, .kpi .label {
+  font-size: 0.62rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.11em; color: var(--muted); margin-bottom: 0.4rem;
+}
+.hero-value {
+  font-size: 3.1rem; font-weight: 740; line-height: 1.04; letter-spacing: -0.045em;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.hero-sub { display: flex; gap: 1.2rem; margin-top: 0.5rem; font-size: 0.76rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hero-side {
+  margin-left: auto; display: flex; flex-direction: column; justify-content: center;
+  gap: 0.32rem; padding-left: 2.2rem; border-left: 1px solid var(--border);
+  font-size: 0.78rem; font-variant-numeric: tabular-nums;
+}
+.hero-side .label { margin-bottom: 0.2rem; }
+
+/* ── KPI strip ── */
+.kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 1.1rem 1.5rem; margin-bottom: 1.4rem;
+}
+.kpi { border-left: 1px solid var(--border); padding-left: 0.9rem; min-width: 0; }
+.kpi .val { font-size: 1.06rem; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.kpi .sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; font-variant-numeric: tabular-nums; }
+.kpi .sub.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ok  { color: var(--ok); }
+.bad { color: var(--bad); }
+.accent { color: var(--accent); }
+
+/* ── Panels / chart / table ── */
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.15rem 1.3rem; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.7rem; }
+.panel-title { font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.13em; color: var(--muted); }
+#timeframe-select {
+  font: inherit; font-size: 0.72rem; color: var(--text); background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 0.22rem 0.45rem;
+}
+#hashrate-chart { height: 260px; width: 100%; }
+table { width: 100%; border-collapse: collapse; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+th {
+  text-align: left; color: var(--muted); font-weight: 500; padding: 0.34rem 0.55rem;
+  border-bottom: 1px solid var(--border); font-size: 0.66rem;
+  text-transform: uppercase; letter-spacing: 0.09em; white-space: nowrap;
+}
+td { padding: 0.5rem 0.55rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+.empty-row { color: var(--muted); text-align: center; padding: 1.2rem; font-size: 0.84rem; }
+/* Worker status LED — green when online, grey when offline. */
+.led { width: 9px; height: 9px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+.led-on { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.led-off { background: var(--muted); opacity: 0.45; }
+.col-led { text-align: center; }
+@keyframes blockFlash { 0% { background: var(--ok); } 100% { background: transparent; } }
 #v-height.block-new { animation: blockFlash 0.8s ease-out; }
+
+/* ── Settings form / network badge ── */
+#net-badge {
+  font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent); border-radius: 4px;
+  padding: 0.1rem 0.35rem; margin-left: 0.5rem; align-self: center;
+}
+.field { margin-bottom: 0.95rem; }
+.field label {
+  display: block; font-size: 0.62rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.11em; color: var(--muted); margin-bottom: 0.35rem;
+}
+.field input, .field select {
+  font: inherit; font-size: 0.85rem; color: var(--text); background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 0.45rem 0.6rem;
+  width: 100%; max-width: 520px; font-variant-numeric: tabular-nums;
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+#settings-save {
+  font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+  color: var(--bg); background: var(--accent); border: none; border-radius: 5px;
+  padding: 0.45rem 1.1rem;
+}
+#settings-save:disabled { opacity: 0.45; cursor: not-allowed; }
+#settings-msg { font-size: 0.76rem; margin-left: 0.8rem; }
+.settings-note { font-size: 0.72rem; color: var(--muted); margin-top: 0.9rem; line-height: 1.5; }
+.paused-banner {
+  margin-top: 0.9rem; padding: 0.6rem 0.8rem; font-size: 0.78rem; font-weight: 600;
+  color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
+}
+
+/* ── Settings modal ── */
+#settings-modal {
+  /* Pin to the viewport center — the UA default doesn't reliably vertically
+     center a modal <dialog> across browsers. */
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0;
+  width: min(640px, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface); color: var(--text);
+  padding: 1.3rem 1.5rem; box-shadow: 0 24px 60px rgba(0,0,0,0.45);
+}
+#settings-modal::backdrop { background: rgba(0,0,0,0.55); backdrop-filter: blur(2px); }
+.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.modal-x {
+  font: inherit; font-size: 1.3rem; line-height: 1; cursor: pointer; color: var(--muted);
+  background: none; border: none; padding: 0 0.2rem;
+}
+.modal-x:hover { color: var(--text); }
+.modal-actions { display: flex; align-items: center; margin-top: 0.4rem; }
+
+/* Rail "mining paused" pill — keeps the safety state visible while Settings
+   lives in a modal. */
+#paused-pill {
+  display: none; align-items: center; gap: 0.35rem; cursor: pointer;
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
+  padding: 0.3rem 0.5rem; background: none; font-family: inherit; text-align: left;
+}
+#paused-pill.show { display: inline-flex; }
+
+/* ── Narrow screens: rail becomes a top bar ── */
+@media (max-width: 880px) {
+  .shell { flex-direction: column; }
+  .rail {
+    width: 100%; height: auto; position: static; flex-direction: row;
+    align-items: center; gap: 0.9rem; padding: 0.7rem 1rem;
+    border-right: none; border-bottom: 1px solid var(--border);
+  }
+  nav { flex-direction: row; }
+  nav a { border-left: none; border-bottom: 2px solid transparent; border-radius: 5px 5px 0 0; }
+  nav a.active { border-left-color: transparent; border-bottom-color: var(--accent); }
+  .rail-foot { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; gap: 0.8rem; }
+  .rail-foot .hide-sm { display: none; }
+  main { padding: 1.2rem 1rem 2rem; }
+  .hero-side { margin-left: 0; padding-left: 0; border-left: none; }
+}
 </style>
 </head>
 <body>
-<header>
-  <h1>&#9729; solo-pool-rs</h1>
-  <div class="header-controls">
-    <a href="/metrics" style="color: var(--accent); font-size: 0.75rem; text-decoration: none;">Raw metrics</a>
-    <span id="server-uptime" style="font-size: 0.72rem; color: var(--muted);" title="How long this pool process has been running">Uptime: &mdash;</span>
-    <span id="last-updated">Loading&hellip;</span>
-  </div>
-</header>
+<div class="shell">
 
-<div class="cards" style="display:none;">
-  <div class="card">
-    <div class="card-label">Total Hashrate</div>
-    <div class="card-value accent" id="v-hashrate">&mdash;</div>
+<aside class="rail">
+  <div class="brand"><img id="brand-logo" class="mark" src="/logo-dark.svg" alt="solo-pool-rs logo" width="64" height="64"><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
+  <nav id="rail-nav">
+    <a href="#overview" data-section="overview" class="active">Overview</a>
+    <a href="#workers" data-section="workers">Workers</a>
+    <a href="#network" data-section="network">Network</a>
+    <button type="button" class="nav-btn" id="open-settings">Settings</button>
+    <a href="/metrics">Raw metrics &#8599;</a>
+  </nav>
+  <div class="rail-foot">
+    <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
+    <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
+    <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
+    <span id="server-uptime" title="How long this pool process has been running">Uptime &mdash;</span>
+    <span id="last-updated" class="hide-sm">Loading&hellip;</span>
+    <span class="hide-sm">v"##,
+    env!("CARGO_PKG_VERSION"),
+    r##" &middot; <a href="https://github.com/cbyam/solo-pool-rs">source</a></span>
   </div>
-  <div class="card">
-    <div class="card-label">Accepted Shares</div>
-    <div class="card-value green" id="v-accepted">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Rejected Shares</div>
-    <div class="card-value red" id="v-rejected">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Connected Miners</div>
-    <div class="card-value" id="v-miners">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Block Height</div>
-    <div class="card-value" id="v-height-hidden" title="legacy hidden block">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Last Block Worker</div>
-    <div class="card-value" id="v-last-block-worker">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Last Block Hash</div>
-    <div class="card-value" id="v-last-block-hash">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Last Block Time</div>
-    <div class="card-value" id="v-last-block-time">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Best Hashrate (Since boot)</div>
-    <div class="card-value accent" id="v-session-best-hashrate">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Best Hashrate (All-time)</div>
-    <div class="card-value accent" id="v-best-hashrate">&mdash;</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Best Share (All-time)</div>
-    <div class="card-value" id="v-best-share">—</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Best Share (Session)</div>
-    <div class="card-value" id="v-session-best-share">—</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Network Difficulty</div>
-    <div class="card-value" id="v-network-difficulty">—</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Best ≥ Network</div>
-    <div class="card-value accent" id="v-best-over-network">—</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Uptime</div>
-    <div class="card-value" id="v-uptime">&mdash;</div>
-  </div>
-</div>
-<!-- new panels layout -->
-<div class="cards">
-  <div class="card">
-    <div class="card-label">Total Reported Hashrate</div>
-    <div class="card-value accent" id="v-reported-current" title="Current pool hash from worker rate">—</div>
-    <div class="card-value" id="v-reported-3h" style="font-size:0.8rem; font-weight:500;" title="3-hour moving average">3h avg: —</div>
-    <div class="card-value" id="v-reported-24h" style="font-size:0.8rem; font-weight:500;" title="24-hour moving average">24h avg: —</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Active Workers</div>
-    <div class="card-value" id="v-workers-online" style="font-size:0.8rem; font-weight:500;">Online: —</div>
-    <div class="card-value" id="v-workers-offline" style="font-size:0.8rem; font-weight:500;">Offline: —</div>
-    <div class="card-value" id="v-workers-degraded" style="font-size:0.8rem; font-weight:500;">Degraded: —</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Reject / Stale</div>
-    <div class="card-value red" id="v-reject-rate" style="font-size:0.8rem; font-weight:500;">Reject: —</div>
-    <div class="card-value" id="v-stale-rate" style="font-size:0.8rem; font-weight:500;">Stale: —</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Network</div>
-    <div class="card-value accent" id="v-net-hashrate" title="Current network hashrate">—</div>
-    <div class="card-value" id="v-net-diff" style="font-size:0.8rem; font-weight:500;" title="Current network difficulty">Diff: —</div>
-    <div class="card-value" id="v-net-next-adj" style="font-size:0.8rem; font-weight:500; color:var(--muted);" title="Estimated time until the next difficulty adjustment (2016-block epochs, ~10 min/block)">Next adj: —</div>
-    <div class="card-value" id="v-net-adj-pct" style="font-size:0.8rem; font-weight:500; color:var(--muted);" title="Estimated difficulty change at the next retarget, from actual block timestamps in the current 2016-block epoch. Clamped to the protocol's [-75%, +300%] range.">Est. move: —</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Block Height</div>
-    <div class="card-value" id="v-height" title="Height of current best chain tip">—</div>
-    <div class="card-value" id="v-block-transaction-count" style="font-size:0.8rem; font-weight:500;">Txs: —</div>
-    <div class="card-value" id="v-block-reward" style="font-size:0.8rem; font-weight:500;">Reward: —</div>
-    <div class="card-value" id="v-btc-price" style="font-size:0.8rem; font-weight:500; color:var(--muted);">BTC: —</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Probability</div>
-    <div class="card-value" id="v-prob-daily" style="font-size:0.8rem; font-weight:500;">Daily: —</div>
-    <div class="card-value" id="v-prob-monthly" style="font-size:0.8rem; font-weight:500;">Monthly: —</div>
-    <div class="card-value" id="v-prob-yearly" style="font-size:0.8rem; font-weight:500;">Yearly: —</div>
-    <div class="card-value" id="v-prob-powerball" style="font-size:0.8rem; font-weight:500; color:var(--muted);">vs Powerball: —</div>
-  </div>
-</div>
-<div class="panel">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
-    <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes" style="cursor:help; font-size:0.7rem; color:var(--muted); border:1px solid var(--muted); border-radius:50%; padding:0 0.3rem; vertical-align:middle;">?</span></div>
-    <label style="font-size:0.72rem; color:var(--muted);">Window:
-      <select id="timeframe-select" style="margin-left:0.4rem; font-size:0.72rem; padding:0.2rem 0.4rem;">
-        <option value="36h" selected>36h</option>
-        <option value="1w">1w</option>
-        <option value="1m">1m</option>
-        <option value="6m">6m</option>
-        <option value="all">all</option>
-      </select>
-    </label>
-  </div>
-  <div id="hashrate-chart"></div>
-</div>
+</aside>
 
-<div class="panel">
-  <div class="panel-title">Workers</div>
+<main>
+
+<section id="overview">
+  <div class="hero">
+    <div>
+      <div class="label">Pool hashrate &middot; 10m</div>
+      <div class="hero-value" id="v-reported-current">&mdash;</div>
+      <div class="hero-sub"><span id="v-reported-3h">3h avg: &mdash;</span><span id="v-reported-24h">24h avg: &mdash;</span></div>
+    </div>
+    <div class="hero-side">
+      <div class="label">Block odds</div>
+      <span id="v-prob-daily">Daily: &mdash;</span>
+      <span id="v-prob-monthly">Monthly: &mdash;</span>
+      <span id="v-prob-yearly">Yearly: &mdash;</span>
+      <span id="v-prob-powerball" style="color:var(--muted);">vs Powerball: &mdash;</span>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">Miners</div>
+      <div class="val" id="v-miners">&mdash;</div>
+      <div class="sub"><span id="v-workers-online">Online: &mdash;</span> &middot; <span id="v-workers-degraded">Degraded: &mdash;</span></div>
+      <div class="sub" id="v-workers-offline">Offline: &mdash;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Rejects</div>
+      <div class="val" id="v-reject-rate">&mdash;</div>
+      <div class="sub" id="v-stale-rate">Stale: &mdash;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Best share</div>
+      <div class="val accent" id="v-best-share">&mdash;</div>
+      <div class="sub">session: <span id="v-session-best-share">&mdash;</span> &middot; <span id="v-best-over-network" title="Has the all-time best share met current network difficulty?">&mdash;</span> vs net</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Best hashrate</div>
+      <div class="val" id="v-best-hashrate">&mdash;</div>
+      <div class="sub">session: <span id="v-session-best-hashrate">&mdash;</span></div>
+    </div>
+    <div class="kpi">
+      <div class="label">Pool uptime</div>
+      <div class="val" id="v-uptime">&mdash;</div>
+      <div class="sub">found blocks survive restarts</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Last block found</div>
+      <div class="val" id="v-last-block-worker">&mdash;</div>
+      <div class="sub" id="v-last-block-time">&mdash;</div>
+      <div class="sub trunc" id="v-last-block-hash" title="Hash of the last block this pool found">&mdash;</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes" style="cursor:help;">&#9432;</span></div>
+      <label style="font-size:0.72rem; color:var(--muted);">Window
+        <select id="timeframe-select">
+          <option value="36h" selected>36h</option>
+          <option value="1w">1w</option>
+          <option value="1m">1m</option>
+          <option value="6m">6m</option>
+          <option value="all">all</option>
+        </select>
+      </label>
+    </div>
+    <div id="hashrate-chart"></div>
+  </div>
+</section>
+
+<section id="workers">
+  <div class="sec-title">Workers</div>
+  <div class="panel">
   <table>
     <thead>
       <tr>
         <th>Worker</th>
+        <th class="col-led">Status</th>
         <th>Mode</th>
-        <th>Status</th>
         <th>Vardiff</th>
         <th>Hashrate (1m)</th>
         <th>Hashrate (3h)</th>
@@ -460,18 +710,128 @@ tr:last-child td { border-bottom: none; }
       </tr>
     </thead>
     <tbody id="workers-tbody">
-      <tr><td colspan="12" class="empty-row">Loading workers…</td></tr>
+      <tr><td colspan="12" class="empty-row">Loading workers&hellip;</td></tr>
     </tbody>
   </table>
+  </div>
+</section>
+
+<section id="network">
+  <div class="sec-title">Network</div>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">Network hashrate</div>
+      <div class="val" id="v-net-hashrate">&mdash;</div>
+      <div class="sub" id="v-net-diff">Diff: &mdash;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Next adjustment</div>
+      <div class="val" id="v-net-next-adj" style="font-size:0.92rem;" title="Estimated time until the next difficulty adjustment (2016-block epochs, ~10 min/block)">&mdash;</div>
+      <div class="sub" id="v-net-adj-pct" title="Estimated difficulty change at the next retarget, from actual block timestamps in the current 2016-block epoch. Clamped to the protocol's [-75%, +300%] range.">Est. move: &mdash;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Chain tip</div>
+      <div class="val" id="v-height" title="Height of current best chain tip">&mdash;</div>
+      <div class="sub"><span id="v-block-transaction-count">Txs: &mdash;</span></div>
+      <div class="sub" id="v-block-reward">Reward: &mdash;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Market</div>
+      <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC: &mdash;</div>
+    </div>
+  </div>
+</section>
+
+<dialog id="settings-modal">
+  <div class="modal-head">
+    <span class="sec-title" style="margin:0;">Settings</span>
+    <button type="button" class="modal-x" id="close-settings" aria-label="Close">&times;</button>
+  </div>
+  <form id="settings-form">
+    <div class="field">
+      <label for="set-address">Payout address &mdash; 100% of every block reward goes here</label>
+      <input id="set-address" type="text" spellcheck="false" autocomplete="off" placeholder="bc1q&hellip;">
+    </div>
+    <div class="field">
+      <label for="set-network">Network &mdash; detected from the connected node</label>
+      <input id="set-network" type="text" disabled>
+    </div>
+    <div class="modal-actions">
+      <button id="settings-save" type="submit">Save</button>
+      <span id="settings-msg"></span>
+    </div>
+  </form>
+  <div id="settings-paused" class="paused-banner" hidden>
+    Mining is paused: the payout address is not valid for the node&rsquo;s network.
+    No jobs are built until a valid address is saved.
+  </div>
+  <p class="settings-note">
+    Saving validates the address against the node&rsquo;s network, then broadcasts
+    a clean job so connected miners switch payout immediately. The network is
+    read from the Bitcoin node itself and cannot be selected here &mdash; to mine
+    a different chain, connect the pool to a node on that chain.
+    <span id="settings-persist-note"></span>
+  </p>
+</dialog>
+
+</main>
+</div>
 
 <script>
+// ── Theme ────────────────────────────────────────────────────────────────────
+const THEME_KEY = 'solo-pool-theme';
+function currentTheme() { return document.documentElement.dataset.theme === 'light' ? 'light' : 'carbon'; }
+function applyTheme(t) {
+  if (t === 'light') document.documentElement.dataset.theme = 'light';
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+  const logo = document.getElementById('brand-logo');
+  if (logo) logo.src = t === 'light' ? '/logo-light.svg' : '/logo-dark.svg';
+}
+(function initTheme() {
+  let t = null;
+  try { t = localStorage.getItem(THEME_KEY); } catch (_) {}
+  if (t !== 'light' && t !== 'carbon') {
+    t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'carbon';
+  }
+  applyTheme(t);
+})();
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
 let lastBlockHeight = 0;
+// Timestamp (ms) of the last successful /stats refresh. Drives the rail
+// connectivity LED: green while updates are landing, grey once they go stale.
+let lastStatsOk = 0;
+
+function updateConnLed() {
+  const led = document.getElementById('conn-led');
+  if (!led) return;
+  const ageMs = lastStatsOk ? Date.now() - lastStatsOk : Infinity;
+  // Refresh runs every 10s; tolerate one missed beat before flagging stale.
+  if (ageMs < 25000) {
+    led.classList.add('led-on'); led.classList.remove('led-off');
+    led.title = 'Live — updated ' + Math.round(ageMs / 1000) + 's ago';
+  } else {
+    led.classList.add('led-off'); led.classList.remove('led-on');
+    led.title = lastStatsOk
+      ? 'Connection lost — no update for ' + Math.round(ageMs / 1000) + 's'
+      : 'Connecting…';
+  }
+}
 
 const myChart = echarts.init(document.getElementById('hashrate-chart'), null, { renderer: 'canvas' });
 window.addEventListener('resize', () => myChart.resize());
 
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  applyTheme(currentTheme() === 'light' ? 'carbon' : 'light');
+  loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
+});
+
+// ── Formatters ───────────────────────────────────────────────────────────────
 function fmtHr(hps, short) {
   if (hps >= 1e21) return (hps / 1e21).toFixed(2) + (short ? ' Z'  : ' ZH/s');
   if (hps >= 1e18) return (hps / 1e18).toFixed(2) + (short ? ' E'  : ' EH/s');
@@ -512,7 +872,7 @@ function fmtAdjustmentPct(pct) {
   }
   const sign = pct >= 0 ? '+' : '';
   // Difficulty up = harder for miners (red), down = easier (green).
-  const color = pct > 0.05 ? 'var(--red)' : (pct < -0.05 ? 'var(--green)' : 'var(--muted)');
+  const color = pct > 0.05 ? 'var(--bad)' : (pct < -0.05 ? 'var(--ok)' : 'var(--muted)');
   return { text: sign + pct.toFixed(2) + '%', color };
 }
 
@@ -532,32 +892,52 @@ function fmtTimestamp(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+// ── Chart ────────────────────────────────────────────────────────────────────
 async function loadChart(window) {
   try {
     const resp = await fetch('/chart?window=' + window);
     if (!resp.ok) return;
     const options = await resp.json();
-    // Patch in JS formatter callbacks that cannot be serialised from Rust.
+    // Skin the server-built option object from the active theme's CSS vars,
+    // and patch in JS formatter callbacks that cannot be serialised from Rust.
+    const accent = cssVar('--accent'), muted = cssVar('--muted'),
+          grid = cssVar('--grid'), surface = cssVar('--surface2'),
+          border = cssVar('--border'), text = cssVar('--text');
     const yAxis = Array.isArray(options.yAxis) ? options.yAxis[0] : options.yAxis;
-    if (yAxis) yAxis.axisLabel = Object.assign(yAxis.axisLabel || {}, { formatter: v => fmtHr(v, true) });
+    if (yAxis) {
+      yAxis.axisLabel = Object.assign(yAxis.axisLabel || {}, { color: muted, formatter: v => fmtHr(v, true) });
+      yAxis.splitLine = { lineStyle: { color: grid } };
+    }
     const xAxis = Array.isArray(options.xAxis) ? options.xAxis[0] : options.xAxis;
-    if (xAxis) xAxis.axisLabel = Object.assign(xAxis.axisLabel || {}, {
-      formatter: v => {
-        const d = new Date(v);
-        if (d.getHours() === 0 && d.getMinutes() === 0) {
-          return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    if (xAxis) {
+      xAxis.splitLine = { lineStyle: { color: grid } };
+      xAxis.axisLabel = Object.assign(xAxis.axisLabel || {}, {
+        color: muted,
+        formatter: v => {
+          const d = new Date(v);
+          if (d.getHours() === 0 && d.getMinutes() === 0) {
+            return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+          }
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
         }
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-      }
-    });
+      });
+    }
+    const series = Array.isArray(options.series) ? options.series[0] : options.series;
+    if (series) {
+      series.lineStyle = Object.assign(series.lineStyle || {}, { color: accent });
+      series.areaStyle = { color: accent + '17' }; // ~9% alpha hex suffix
+    }
     if (options.tooltip) {
+      options.tooltip.backgroundColor = surface;
+      options.tooltip.borderColor = border;
+      options.tooltip.textStyle = { color: text, fontSize: 12 };
       options.tooltip.formatter = params => {
         if (!params || !params.length) return '';
         const pt = params[0];
         const ts = Array.isArray(pt.value) ? pt.value[0] : pt.value;
         const hps = Array.isArray(pt.value) ? pt.value[1] : 0;
         const date = new Date(ts).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        return date + '<br/><span style="color:#38bdf8">Hashrate (10m)</span>: ' + fmtHr(hps, false);
+        return date + '<br/><span style="color:' + accent + '">Hashrate (10m)</span>: ' + fmtHr(hps, false);
       };
     }
     myChart.setOption(options, true);
@@ -566,6 +946,7 @@ async function loadChart(window) {
   }
 }
 
+// ── Stats refresh ────────────────────────────────────────────────────────────
 async function refresh() {
   try {
     const resp = await fetch('/stats');
@@ -582,8 +963,8 @@ async function refresh() {
     updateProbability(d.total_hashrate_10m || 0, d.network_hashrate_hps || 0);
 
     document.getElementById('v-miners').textContent = d.connected_miners;
-    
-    // Flash green on new block height
+
+    // Flash on new block height
     if (d.current_height !== lastBlockHeight) {
       const heightEl = document.getElementById('v-height');
       heightEl.classList.remove('block-new');
@@ -593,6 +974,7 @@ async function refresh() {
       lastBlockHeight = d.current_height;
     }
     document.getElementById('v-height').textContent = d.current_height.toLocaleString();
+    document.getElementById('rail-height').textContent = d.current_height.toLocaleString();
     if (d.current_block_transaction_count != null) {
       document.getElementById('v-block-transaction-count').textContent = 'Txs: ' + d.current_block_transaction_count.toLocaleString();
     }
@@ -605,13 +987,12 @@ async function refresh() {
     document.getElementById('v-last-block-time').textContent = fmtTimestamp(d.last_block_ts);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
-    document.getElementById('v-network-difficulty').textContent = d.network_difficulty.toFixed(4);
     document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';
 
-    // Network card (human-readable hashrate + difficulty + next-adjustment ETA)
+    // Network section (human-readable hashrate + difficulty + next-adjustment ETA)
     document.getElementById('v-net-hashrate').textContent = fmtHr(d.network_hashrate_hps || 0, false);
     document.getElementById('v-net-diff').textContent = 'Diff: ' + fmtDiff(d.network_difficulty || 0);
-    document.getElementById('v-net-next-adj').textContent = 'Next adj: ' + fmtNextAdjustment(d.current_height || 0);
+    document.getElementById('v-net-next-adj').textContent = fmtNextAdjustment(d.current_height || 0);
     const adj = fmtAdjustmentPct(d.est_difficulty_change_pct);
     const adjEl = document.getElementById('v-net-adj-pct');
     adjEl.textContent = 'Est. move: ' + adj.text;
@@ -619,14 +1000,14 @@ async function refresh() {
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('v-uptime').textContent = fmtUptime(d.uptime_secs);
-    document.getElementById('server-uptime').textContent = 'Uptime: ' + fmtUptime(d.uptime_secs);
+    document.getElementById('server-uptime').textContent = 'Uptime ' + fmtUptime(d.uptime_secs);
 
     const total = d.shares_accepted + d.shares_rejected;
     const rejectPct = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';
     const staleTotal = Array.isArray(d.worker_states) ? d.worker_states.reduce((sum, w) => sum + (w.shares_stale || 0), 0) : 0;
     const stalePct = total > 0 ? (staleTotal / total * 100).toFixed(1) : '0.0';
 
-    document.getElementById('v-reject-rate').textContent = `Reject: ${d.shares_rejected.toLocaleString()} (${rejectPct}%)`;
+    document.getElementById('v-reject-rate').textContent = `${d.shares_rejected.toLocaleString()} (${rejectPct}%)`;
     document.getElementById('v-stale-rate').textContent = `Stale: ${staleTotal.toLocaleString()} (${stalePct}%)`;
 
     const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
@@ -653,8 +1034,8 @@ async function refresh() {
           const mode = (w.protocol || 'sv1').toUpperCase();
           return `<tr>
             <td>${escHtml(workerName)}</td>
+            <td class="col-led"><span class="led ${w.online ? 'led-on' : 'led-off'}" title="${w.online ? 'Online' : 'Offline'}"></span></td>
             <td>${mode}</td>
-            <td class="${w.online ? 'online' : 'offline'}">${w.online ? 'Online' : 'Offline'}</td>
             <td>${fmtDiff(w.current_vardiff)}</td>
             <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
@@ -670,9 +1051,11 @@ async function refresh() {
     }
 
     document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+    lastStatsOk = Date.now();
   } catch (e) {
     console.error('Dashboard refresh error:', e);
   }
+  updateConnLed();
 }
 
 function fmtOdds(p) {
@@ -683,7 +1066,6 @@ function fmtOdds(p) {
   if (inv >= 1e3)  return '1 in ' + (inv / 1e3).toFixed(1) + 'K';
   return '1 in ' + inv.toLocaleString();
 }
-
 
 function updateProbability(ourHps, netHps) {
   const el = id => document.getElementById(id);
@@ -741,19 +1123,152 @@ async function fetchBtcPrice() {
   } catch (_) {}
 }
 
+// ── Settings page ────────────────────────────────────────────────────────────
+function updateNetBadge(network) {
+  const badge = document.getElementById('net-badge');
+  if (network && network !== 'mainnet') {
+    badge.textContent = network;
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
+async function loadSettings() {
+  try {
+    const resp = await fetch('/api/settings');
+    if (!resp.ok) return;
+    const s = await resp.json();
+    document.getElementById('set-address').value = s.coinbase_address;
+    document.getElementById('set-network').value = s.network;
+    updateNetBadge(s.network);
+    document.getElementById('settings-paused').hidden = s.address_valid;
+    document.getElementById('paused-pill').classList.toggle('show', !s.address_valid);
+    const note = document.getElementById('settings-persist-note');
+    if (!s.editable) {
+      document.getElementById('set-address').disabled = true;
+      document.getElementById('settings-save').disabled = true;
+      note.textContent = 'Editing is disabled ([metrics] allow_runtime_settings = false).';
+    } else if (!s.persisted) {
+      note.textContent = 'No stats database is configured, so changes apply until the next restart only.';
+    }
+  } catch (e) {
+    console.error('Settings fetch error:', e);
+  }
+}
+
+document.getElementById('settings-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const msg = document.getElementById('settings-msg');
+  const btn = document.getElementById('settings-save');
+  btn.disabled = true;
+  msg.textContent = 'Saving…';
+  msg.style.color = 'var(--muted)';
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coinbase_address: document.getElementById('set-address').value.trim(),
+      }),
+    });
+    const body = await resp.json();
+    if (resp.ok && body.ok) {
+      msg.textContent = body.persisted
+        ? 'Saved — new jobs pay this address.'
+        : 'Applied (not persisted: no stats DB) — new jobs pay this address.';
+      msg.style.color = 'var(--ok)';
+      document.getElementById('settings-paused').hidden = true;
+      document.getElementById('paused-pill').classList.remove('show');
+    } else {
+      msg.textContent = body.error || ('Save failed (HTTP ' + resp.status + ')');
+      msg.style.color = 'var(--bad)';
+    }
+  } catch (e) {
+    msg.textContent = 'Save failed: ' + e;
+    msg.style.color = 'var(--bad)';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Scroll spy for the rail nav ──────────────────────────────────────────────
+// Position-based: the active link is the last section whose top has scrolled
+// above a threshold near the top of the viewport. Robust for short sections and
+// the final section (which an IntersectionObserver band can miss).
+const navLinks = Array.from(document.querySelectorAll('#rail-nav a[data-section]'));
+function updateActiveNav() {
+  let current = navLinks[0];
+  for (const link of navLinks) {
+    const sec = document.getElementById(link.dataset.section);
+    if (sec && sec.getBoundingClientRect().top <= 140) current = link;
+  }
+  navLinks.forEach(l => l.classList.toggle('active', l === current));
+}
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+window.addEventListener('resize', updateActiveNav);
+// Immediate feedback on click (before the smooth-scroll settles).
+navLinks.forEach(l => l.addEventListener('click', () => {
+  navLinks.forEach(x => x.classList.remove('active'));
+  l.classList.add('active');
+}));
+updateActiveNav();
+
+// ── Settings modal ───────────────────────────────────────────────────────────
+const settingsModal = document.getElementById('settings-modal');
+function openSettings() { loadSettings(); settingsModal.showModal(); }
+document.getElementById('open-settings').addEventListener('click', openSettings);
+document.getElementById('paused-pill').addEventListener('click', openSettings);
+document.getElementById('close-settings').addEventListener('click', () => settingsModal.close());
+// Click on the backdrop (outside the dialog content) closes it.
+settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
+
 attachTimeframeSelector();
 loadChart(DEFAULT_WINDOW);
+updateConnLed();
 refresh();
+loadSettings();
 fetchBtcPrice();
 setInterval(refresh, 10000);
+// Re-evaluate the connectivity LED between refreshes so it goes stale on its
+// own even if refresh() stops landing (server down, tab throttled, etc.).
+setInterval(updateConnLed, 5000);
 setInterval(() => loadChart(selectedWindow), 60000);
 setInterval(fetchBtcPrice, 60000);
 </script>
-<footer style="margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);text-align:center;font-size:0.7rem;color:var(--muted);">
-  solo-pool-rs v"#,
-    env!("CARGO_PKG_VERSION"),
-    r#" &middot; <a href="https://github.com/cbyam/solo-pool-rs" style="color:var(--muted);text-decoration:none;">source</a>
-</footer>
 </body>
-</html>"#
+</html>"##
 );
+
+#[cfg(test)]
+mod tests {
+    use super::DASHBOARD_HTML;
+    use std::collections::HashSet;
+
+    /// Every element id the embedded JS looks up must exist in the markup —
+    /// a missing one throws inside refresh() and kills the whole update loop.
+    #[test]
+    fn all_ids_referenced_by_js_exist_in_markup() {
+        let mut wanted = HashSet::new();
+        // Direct lookups, plus updateProbability's `el('…')` helper shorthand.
+        for pat in ["getElementById('", "el('"] {
+            for (idx, _) in DASHBOARD_HTML.match_indices(pat) {
+                let rest = &DASHBOARD_HTML[idx + pat.len()..];
+                if let Some(end) = rest.find('\'') {
+                    wanted.insert(&rest[..end]);
+                }
+            }
+        }
+        // Sanity: the scrape itself worked.
+        assert!(wanted.len() > 20, "id scrape found too few: {wanted:?}");
+
+        let missing: Vec<&&str> = wanted
+            .iter()
+            .filter(|id| !DASHBOARD_HTML.contains(&format!("id=\"{id}\"")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "ids referenced by JS but absent from markup: {missing:?}"
+        );
+    }
+}

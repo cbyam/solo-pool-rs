@@ -40,6 +40,13 @@ pub struct PoolConfig {
     /// resolve against the service working directory, like `stats_db_path`.
     #[serde(default = "default_found_block_dir")]
     pub found_block_dir: String,
+    /// Optional safety assertion. The pool always detects the actual network
+    /// from the connected node (`getblockchaininfo`) and validates the payout
+    /// address against it. When this is set ("mainnet" | "testnet" | "testnet4" |
+    /// "signet" | "regtest"), boot additionally fails fast if the node reports a
+    /// different chain — catching a config pointed at the wrong node.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 fn default_found_block_dir() -> String {
@@ -191,6 +198,16 @@ pub struct MetricsConfig {
     /// Optional SQLite path to persist all-time stats between restarts.
     /// If omitted or empty, persistence is disabled.
     pub stats_db_path: Option<String>,
+    /// Allow changing the payout address / network from the dashboard
+    /// Settings page. The dashboard has no authentication of its own, so on
+    /// an untrusted LAN either disable this or front the dashboard with an
+    /// authenticating proxy (Umbrel's app_proxy does this automatically).
+    #[serde(default = "default_allow_runtime_settings")]
+    pub allow_runtime_settings: bool,
+}
+
+fn default_allow_runtime_settings() -> bool {
+    true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

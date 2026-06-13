@@ -28,6 +28,13 @@ coinbase_address = "bc1qyouraddresshere"
 # Tag embedded in the coinbase scriptSig (max ~20 bytes)
 coinbase_tag = "/solo-pool-rs/"
 
+# Optional safety assertion. The pool always detects the actual network from
+# the connected node (getblockchaininfo) and refuses to build jobs unless the
+# payout address is valid for that chain. Setting this additionally makes
+# boot fail fast if the node reports a different chain — catching a config
+# pointed at the wrong node. "mainnet" | "testnet" | "testnet4" | "signet" | "regtest".
+# network = "mainnet"
+
 # Initial share difficulty assigned to new miners.
 # Vardiff will adjust from here. Set near the expected steady-state value
 # for your hardware to avoid excessive rejects on first connect.
@@ -156,8 +163,15 @@ max_authorizations_per_session = 8
 prometheus_addr = "0.0.0.0:9090"
 
 # Optional SQLite file for persisting all-time best stats across restarts.
+# Also stores dashboard-saved settings (payout address / network).
 # Leave empty or omit to disable.
 stats_db_path = "pool_stats.sqlite"
+
+# Allow changing the payout address / network from the dashboard Settings
+# page. The dashboard has no authentication of its own: on an untrusted LAN
+# either set this to false or front the dashboard with an authenticating
+# proxy (Umbrel's app_proxy does this automatically).
+allow_runtime_settings = true
 
 [logging]
 # Log level: trace | debug | info | warn | error
