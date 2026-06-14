@@ -391,6 +391,7 @@ const DASHBOARD_HTML: &str = concat!(
   --muted: #8b8b93;
   --accent: #f7931a;
   --ok: #3ecf8e;
+  --warn: #e3b341;
   --bad: #f0564a;
   --grid: rgba(255,255,255,0.06);
 }
@@ -403,6 +404,7 @@ const DASHBOARD_HTML: &str = concat!(
   --muted: #71717a;
   --accent: #2456e6;
   --ok: #16a34a;
+  --warn: #ca8a04;
   --bad: #dc2626;
   --grid: rgba(0,0,0,0.07);
 }
@@ -513,6 +515,7 @@ tr:last-child td { border-bottom: none; }
 /* Worker status LED — green when online, grey when offline. */
 .led { width: 9px; height: 9px; border-radius: 50%; display: inline-block; vertical-align: middle; }
 .led-on { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.led-warn { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
 .led-off { background: var(--muted); opacity: 0.45; }
 .col-led { text-align: center; }
 @keyframes blockFlash { 0% { background: var(--ok); } 100% { background: transparent; } }
@@ -803,6 +806,19 @@ function cssVar(name) {
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
 let lastBlockHeight = 0;
+// A worker that's online but hasn't landed an accepted share in this long is
+// "degraded" — drives both the KPI count and the per-worker yellow status LED.
+const DEGRADED_SECS = 120;
+
+// Classify a worker's status LED: grey (offline) > yellow (online but degraded)
+// > green (healthy). The reason rides in the tooltip, not the colour.
+function workerLed(w, nowSec) {
+  if (!w.online) return { cls: 'led-off', title: 'Offline' };
+  if (w.last_submit_ts > 0 && nowSec - w.last_submit_ts > DEGRADED_SECS) {
+    return { cls: 'led-warn', title: 'Degraded — no accepted share in ' + fmtUptime(nowSec - w.last_submit_ts) };
+  }
+  return { cls: 'led-on', title: 'Online' };
+}
 // Timestamp (ms) of the last successful /stats refresh. Drives the rail
 // connectivity LED: green while updates are landing, grey once they go stale.
 let lastStatsOk = 0;
@@ -1013,7 +1029,7 @@ async function refresh() {
     const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
     const onlineCount = workers.filter(w => w.online).length;
     const offlineCount = workers.filter(w => !w.online).length;
-    const degradedCount = workers.filter(w => w.online && w.last_submit_ts > 0 && Math.floor(Date.now() / 1000) - w.last_submit_ts > 120).length;
+    const degradedCount = workers.filter(w => w.online && w.last_submit_ts > 0 && Math.floor(Date.now() / 1000) - w.last_submit_ts > DEGRADED_SECS).length;
 
     document.getElementById('v-workers-online').textContent = 'Online: ' + onlineCount;
     document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;
@@ -1032,9 +1048,10 @@ async function refresh() {
           const lastShareAgo = w.last_submit_ts > 0 ? fmtUptime(nowSec - w.last_submit_ts) : '—';
           const uptime = w.connected_ts > 0 ? fmtUptime(nowSec - w.connected_ts) : '—';
           const mode = (w.protocol || 'sv1').toUpperCase();
+          const led = workerLed(w, nowSec);
           return `<tr>
             <td>${escHtml(workerName)}</td>
-            <td class="col-led"><span class="led ${w.online ? 'led-on' : 'led-off'}" title="${w.online ? 'Online' : 'Offline'}"></span></td>
+            <td class="col-led"><span class="led ${led.cls}" title="${led.title}"></span></td>
             <td>${mode}</td>
             <td>${fmtDiff(w.current_vardiff)}</td>
             <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
