@@ -54,6 +54,17 @@ underflow panic). Line references are as of that review and may drift.
 - [ ] **SV2 identity pinning:** optional persistent Noise authority keypair via
   config instead of the per-process ephemeral key (deferred in the
   `protocol/sv2/noise.rs` docstring; today no miner verifies pool identity).
+- [ ] **SV1-over-TLS (`stratum+ssl://`).** SV2 is Noise-encrypted but the SV1
+  path is still plaintext — credentials/work travel in the clear on untrusted
+  LANs/WANs. Add an optional TLS listener (config-supplied cert/key, hot-reload
+  on SIGHUP) so legacy ASICs can connect encrypted without a stunnel sidecar.
+  Keep it on a separate port from the auto-detect listener (TLS ClientHello vs.
+  the SV1/SV2 first-byte peek don't co-exist cleanly on one socket).
+- [ ] **Multi-node Bitcoin RPC failover.** Today a single `bitcoin_rpc.url`; if
+  that node restarts (see the near-daily needrestart sweep) or crashes, template
+  refresh stalls until it returns. Accept a list of node endpoints and fail over
+  on connect error / RPC error / stale tip, preferring the highest-tip healthy
+  node. Stays within the single-binary, zero-ops thesis (no external HA layer).
 - [ ] Dependency refresh when convenient: `rusqlite` 0.29 and
   `metrics-exporter-prometheus` 0.15 are a few majors behind (no advisories,
   just aging).
