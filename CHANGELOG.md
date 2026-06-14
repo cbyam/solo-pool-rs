@@ -9,17 +9,41 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-14
+
 ### Added
 - Dashboard: **Settings page** — the payout address can now be changed at
   runtime from the dashboard. The network is **detected from the connected
-  node** (`getblockchaininfo`) and shown read-only; a change is validated
-  (the address must parse and belong to the node's chain), persisted in the
-  stats SQLite (overriding config.toml at next boot), and applied immediately
-  via a forced clean-job broadcast so connected miners switch payout without
-  waiting for the next block. New config keys: `pool.network` (optional
-  assertion — boot fails fast if set and the node reports a different chain)
-  and `metrics.allow_runtime_settings` (default true; set false on an
-  untrusted LAN, or front the dashboard with an authenticating proxy).
+  node** (`getblockchaininfo`, including testnet4) and shown read-only; a change
+  is validated (the address must parse and belong to the node's chain),
+  persisted in the stats SQLite (overriding config.toml at next boot), and
+  applied immediately via a forced clean-job broadcast so connected miners
+  switch payout without waiting for the next block. New config keys:
+  `pool.network` (optional assertion — boot fails fast if set and the node
+  reports a different chain) and `metrics.allow_runtime_settings` (default true;
+  set false on an untrusted LAN, or front the dashboard with an authenticating
+  proxy).
+- Dashboard: redesigned **console layout** — fixed left rail with scroll-spy
+  navigation and status footer, hero hashrate zone with block odds, hairline
+  KPI strip, and a non-mainnet network badge. Two color themes — carbon
+  (near-black, amber accent; default) and Swiss light (porcelain, cobalt
+  accent) — toggleable from the rail, seeded from the OS preference, and
+  persisted per browser. The hashrate chart re-skins from the active theme's
+  CSS variables without a server round trip. Settings opens in a centered modal.
+- Dashboard: **theme-aware brand logo** — a pickaxe-and-Bitcoin-block SVG mark
+  with dark and light variants that follow the active theme (replacing the
+  earlier glyph).
+- Dashboard: **per-worker status LEDs** — an online (green) / offline (grey)
+  indicator replaces the Online/Offline text, with a third **degraded (amber)**
+  state when a worker is connected but hasn't landed an accepted share in over
+  two minutes (the same signal as the "degraded" KPI). The status column is
+  centered and the worker columns are reordered to Worker · Status · Mode.
+- Dashboard: **rail connectivity LED** — green while `/stats` refreshes are
+  landing, grey when they stall, so a frozen dashboard is visible at a glance.
+
+### Changed
+- Dashboard: the Market card drops the redundant raw-difficulty readout (the
+  same value is already shown on the Network card).
 
 ### Security
 - Mining is **paused unless the payout address validates against the node's
@@ -29,13 +53,14 @@ everything else bumps the **patch** version.
   now no job is built until a valid address is saved (the pool still boots and
   the dashboard stays reachable to fix it — which also gives container
   platforms a clean first-run flow with a placeholder address).
-- Dashboard: redesigned **console layout** — fixed left rail with scroll-spy
-  navigation and status footer, hero hashrate zone with block odds, hairline
-  KPI strip, and a non-mainnet network badge. Two color themes — carbon
-  (near-black, amber accent; default) and Swiss light (porcelain, cobalt
-  accent) — toggleable from the rail, seeded from the OS preference, and
-  persisted per browser. The hashrate chart re-skins from the active theme's
-  CSS variables without a server round trip.
+- Stratum: the miner-disconnect metric's `reason` label is now a bounded value
+  instead of the raw parser error, which embedded attacker-controlled bytes
+  (including line/column). Malformed input could otherwise mint unbounded
+  Prometheus time series — a metrics-bloat / amplification vector.
+
+### Fixed
+- Stratum: blank / whitespace-only lines (a common firmware keepalive) are now
+  ignored instead of being parsed as empty JSON and dropping the connection.
 
 ## [0.4.2] - 2026-06-12
 
@@ -234,7 +259,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.3.2...v0.4.0
