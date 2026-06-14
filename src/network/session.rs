@@ -417,11 +417,23 @@ async fn handle_line(
         return HandleResult::Disconnect("rate limited".into());
     }
 
+    // Blank / whitespace-only lines (e.g. firmware keepalive newlines) aren't
+    // errors — ignore them instead of letting the empty string fail JSON parsing
+    // and drop the connection. They still consumed a rate-limit token above, so a
+    // blank-line flood stays bounded.
+    if line.trim().is_empty() {
+        return HandleResult::Messages(vec![]);
+    }
+
     let req = match StratumRequest::parse(line) {
         Ok(r) => r,
         Err(e) => {
+            // Keep the detailed serde message in the log, but emit a *bounded*
+            // disconnect reason for the metric label: the serde error embeds the
+            // line/column and varies with input, so using it as a Prometheus
+            // label lets untrusted bytes mint unbounded time series.
             debug!("Parse error from {}: {e}", session.peer);
-            return HandleResult::Disconnect(format!("parse error: {e}"));
+            return HandleResult::Disconnect("parse error".into());
         }
     };
 
