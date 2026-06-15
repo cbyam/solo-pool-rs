@@ -189,7 +189,8 @@ mod tests {
 
     #[test]
     fn suggest_clamps_to_floor_and_ceiling() {
-        let mut vd = Vardiff::new(cfg(), 100_000); // floor 1024, ceiling 1_000_000_000
+        // cfg(): floor 1024, ceiling 1_000_000_000.
+        let mut vd = Vardiff::new(cfg(), 100_000);
         // Below floor → clamped up to the floor (a hostile/buggy suggestion can
         // never push a miner below the share-rate floor).
         assert_eq!(vd.suggest(1), 1024);
