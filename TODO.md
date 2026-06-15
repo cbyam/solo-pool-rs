@@ -54,12 +54,37 @@ underflow panic). Line references are as of that review and may drift.
 - [ ] **SV2 identity pinning:** optional persistent Noise authority keypair via
   config instead of the per-process ephemeral key (deferred in the
   `protocol/sv2/noise.rs` docstring; today no miner verifies pool identity).
-- [ ] **SV1-over-TLS (`stratum+ssl://`).** SV2 is Noise-encrypted but the SV1
-  path is still plaintext — credentials/work travel in the clear on untrusted
-  LANs/WANs. Add an optional TLS listener (config-supplied cert/key, hot-reload
-  on SIGHUP) so legacy ASICs can connect encrypted without a stunnel sidecar.
-  Keep it on a separate port from the auto-detect listener (TLS ClientHello vs.
-  the SV1/SV2 first-byte peek don't co-exist cleanly on one socket).
+- [ ] **SV1-over-TLS (`stratum+ssl://`) — DEFERRED, build only on request.**
+  Decision (2026-06-15): not building it. The target audience is the
+  self-hosted *solo* crowd on a trusted LAN, where the value is marginal — solo
+  mining has no account password to leak; TLS would only hide the payout address
+  and hashrate from a passive on-path observer. SV2 (Noise) already encrypts the
+  modern firmware path, so this is purely for legacy SV1 devices over an
+  untrusted network (a shrinking niche), and client support for `stratum+ssl` is
+  spotty (cgminer/Avalon yes; AxeOS/ESP-Miner version-dependent). Revisit only
+  if a real user asks for it.
+
+  Design notes for when/if that happens, so it doesn't become a support burden:
+  - **rustls / `tokio-rustls`, not OpenSSL** — keeps the pure-Rust single-binary
+    and arm64/musl cross-compile story intact.
+  - **Separate `tls_port`** (e.g. 3334), *not* the auto-detect port. The detector
+    is binary (`first[0] == b'{'` → SV1, else → SV2, `server.rs`); a TLS
+    ClientHello (`0x16`) lands in the "else → SV2" bucket and collides with the
+    Noise handshake's arbitrary first byte, so TLS cannot share that socket.
+  - The TLS listener wraps TCP, does the handshake, then feeds the **decrypted**
+    stream into the *same* auto-detect + session path — so SV1 and SV2 both work
+    over TLS for free. Only refactor needed: make `session::run` generic over
+    `impl AsyncRead + AsyncWrite + Unpin + Send` (`tokio::io::split` instead of
+    `TcpStream::into_split`).
+  - **Cert UX is the real problem, not the crypto.** Default to a pool-generated
+    **self-signed cert** (`rcgen`) written to the data dir on first boot, so the
+    user manages nothing — Stratum-over-TLS clients generally don't verify the
+    cert anyway (opportunistic encryption), which still defeats passive
+    eavesdropping. Optional `cert_path`/`key_path` override (+ SIGHUP reload) for
+    anyone wanting a CA-signed cert. Skip ACME/Let's Encrypt (needs a public
+    domain + inbound reachability — impractical behind home NAT). Ship opt-in,
+    off by default; document as "encryption for SV1 miners over untrusted
+    networks, not needed on a trusted LAN."
 - [ ] **Multi-node Bitcoin RPC failover.** Today a single `bitcoin_rpc.url`; if
   that node restarts (see the near-daily needrestart sweep) or crashes, template
   refresh stalls until it returns. Accept a list of node endpoints and fail over
