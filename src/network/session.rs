@@ -452,7 +452,9 @@ async fn handle_line(
         ClientMessage::Subscribe(params) => handle_subscribe(session, &req, params),
         ClientMessage::Authorize(params) => handle_authorize(session, &req, params, engine).await,
         ClientMessage::Submit(params) => handle_submit(session, &req, params, engine).await,
-        ClientMessage::SuggestDifficulty(params) => handle_suggest_difficulty(session, &req, params),
+        ClientMessage::SuggestDifficulty(params) => {
+            handle_suggest_difficulty(session, &req, params)
+        }
         ClientMessage::Unknown(method) => {
             debug!("Unknown method from {}: {method}", session.peer);
             HandleResult::Messages(vec![ResponseBuilder::err(
