@@ -36,6 +36,18 @@ impl Vardiff {
         }
     }
 
+    /// Seed the working difficulty from a miner's `mining.suggest_difficulty`
+    /// hint, clamped to the configured floor/ceiling, and give it a fresh
+    /// retarget window. Returns the applied (clamped) value. Vardiff retains
+    /// full authority afterwards — this only sets the starting point.
+    pub fn suggest(&mut self, difficulty: u64) -> u64 {
+        let clamped = difficulty.clamp(self.cfg.min_difficulty, self.cfg.max_difficulty);
+        self.current = clamped;
+        self.last_retarget = Instant::now();
+        self.shares_since_retarget = 0;
+        clamped
+    }
+
     /// Record a valid share submission.
     /// `assigned_difficulty` is the difficulty this session had assigned when the share arrived.
     /// This is used to estimate hashrate: H/s ≈ Σ(assigned_diff) × 2³² / elapsed.
@@ -173,5 +185,19 @@ mod tests {
         vd.last_retarget = Instant::now() - Duration::from_secs(120);
         let result = vd.check_retarget();
         assert_eq!(result, Some(50_000));
+    }
+
+    #[test]
+    fn suggest_clamps_to_floor_and_ceiling() {
+        let mut vd = Vardiff::new(cfg(), 100_000); // floor 1024, ceiling 1_000_000_000
+        // Below floor → clamped up to the floor (a hostile/buggy suggestion can
+        // never push a miner below the share-rate floor).
+        assert_eq!(vd.suggest(1), 1024);
+        assert_eq!(vd.current, 1024);
+        // Above ceiling → clamped down.
+        assert_eq!(vd.suggest(5_000_000_000), 1_000_000_000);
+        // In range → applied verbatim.
+        assert_eq!(vd.suggest(50_000), 50_000);
+        assert_eq!(vd.current, 50_000);
     }
 }
