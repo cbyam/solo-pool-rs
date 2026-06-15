@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-15
+
 ### Added
 - Dashboard: **Connect** modal (rail nav) — shows the exact
   `stratum+tcp://<host>:<port>` to point a miner at (host derived from the
@@ -286,7 +288,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.0...v0.4.1
