@@ -41,12 +41,19 @@ pub struct DashState {
     pub settings: Arc<RuntimeSettings>,
     pub engine: Arc<TemplateEngine>,
     pub allow_settings: bool,
+    /// Port miners connect to (Stratum). Shown on the Connect page; the host is
+    /// derived client-side from the browser's own location.
+    pub stratum_port: u16,
+    pub sv2_enabled: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Startup
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Startup wiring pulls together independently-constructed runtime pieces; a
+// parameter bundle would just move the same fields around for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 pub async fn start(
     addr: &str,
     stats: Arc<PoolStats>,
@@ -54,6 +61,8 @@ pub async fn start(
     settings: Arc<RuntimeSettings>,
     engine: Arc<TemplateEngine>,
     allow_settings: bool,
+    stratum_listen_addr: &str,
+    sv2_enabled: bool,
 ) {
     if addr.is_empty() {
         return;
@@ -67,12 +76,21 @@ pub async fn start(
         }
     };
 
+    // Just the port — the Connect page builds the URL from the browser's host.
+    let stratum_port = stratum_listen_addr
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(0);
+
     let state = DashState {
         stats,
         prometheus,
         settings,
         engine,
         allow_settings,
+        stratum_port,
+        sv2_enabled,
     };
     let app = Router::new()
         .route("/", get(dashboard_html))
@@ -83,6 +101,7 @@ pub async fn start(
         .route("/history", get(history_json))
         .route("/chart", get(chart_json))
         .route("/api/settings", get(settings_get).post(settings_post))
+        .route("/api/info", get(info_get))
         .route("/metrics", get(metrics_text))
         .with_state(state);
 
@@ -150,6 +169,27 @@ const LOGO_LIGHT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox
 
 async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsSnapshot> {
     Json(state.stats.snapshot())
+}
+
+/// Static-ish pool info for the Connect page: how to point a miner here, plus
+/// build/network/payout context. The host is added client-side from the URL.
+#[derive(Serialize)]
+struct InfoView {
+    version: &'static str,
+    stratum_port: u16,
+    sv2_enabled: bool,
+    network: String,
+    coinbase_address: String,
+}
+
+async fn info_get(State(state): State<DashState>) -> Json<InfoView> {
+    Json(InfoView {
+        version: env!("CARGO_PKG_VERSION"),
+        stratum_port: state.stratum_port,
+        sv2_enabled: state.sv2_enabled,
+        network: state.settings.network().to_string(),
+        coinbase_address: state.settings.coinbase_address(),
+    })
 }
 
 async fn metrics_text(State(state): State<DashState>) -> Response {
@@ -551,8 +591,8 @@ tr:last-child td { border-bottom: none; }
   color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
 }
 
-/* ── Settings modal ── */
-#settings-modal {
+/* ── Settings / Connect modals ── */
+#settings-modal, #connect-modal {
   /* Pin to the viewport center — the UA default doesn't reliably vertically
      center a modal <dialog> across browsers. */
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0;
@@ -561,7 +601,17 @@ tr:last-child td { border-bottom: none; }
   border-radius: 10px; background: var(--surface); color: var(--text);
   padding: 1.3rem 1.5rem; box-shadow: 0 24px 60px rgba(0,0,0,0.45);
 }
-#settings-modal::backdrop { background: rgba(0,0,0,0.55); backdrop-filter: blur(2px); }
+#settings-modal::backdrop, #connect-modal::backdrop { background: rgba(0,0,0,0.55); backdrop-filter: blur(2px); }
+.copy-btn {
+  font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; flex: none;
+  color: var(--bg); background: var(--accent); border: none; border-radius: 5px; padding: 0 0.9rem;
+}
+.connect-ro {
+  font-size: 0.85rem; font-variant-numeric: tabular-nums; word-break: break-all;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 0.45rem 0.6rem;
+}
+.connect-hints { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.78rem; color: var(--muted); line-height: 1.5; }
+.connect-hints code { background: var(--surface2); padding: 0.05rem 0.3rem; border-radius: 4px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
 .modal-x {
   font: inherit; font-size: 1.3rem; line-height: 1; cursor: pointer; color: var(--muted);
@@ -607,6 +657,7 @@ tr:last-child td { border-bottom: none; }
     <a href="#overview" data-section="overview" class="active">Overview</a>
     <a href="#workers" data-section="workers">Workers</a>
     <a href="#network" data-section="network">Network</a>
+    <button type="button" class="nav-btn" id="open-connect">Connect</button>
     <button type="button" class="nav-btn" id="open-settings">Settings</button>
     <a href="/metrics">Raw metrics &#8599;</a>
   </nav>
@@ -774,6 +825,39 @@ tr:last-child td { border-bottom: none; }
     read from the Bitcoin node itself and cannot be selected here &mdash; to mine
     a different chain, connect the pool to a node on that chain.
     <span id="settings-persist-note"></span>
+  </p>
+</dialog>
+
+<dialog id="connect-modal">
+  <div class="modal-head">
+    <span class="sec-title" style="margin:0;">Connect a miner</span>
+    <button type="button" class="modal-x" id="close-connect" aria-label="Close">&times;</button>
+  </div>
+  <div class="field">
+    <label for="connect-url">Point your miner at this address</label>
+    <div style="display:flex; gap:0.5rem;">
+      <input id="connect-url" type="text" readonly spellcheck="false" value="&mdash;">
+      <button type="button" id="connect-copy" class="copy-btn">Copy</button>
+    </div>
+    <p class="settings-note" id="connect-proto" style="margin-top:0.5rem;"></p>
+  </div>
+  <div class="field">
+    <label>Payout address</label>
+    <div class="connect-ro" id="connect-address">&mdash;</div>
+    <p class="settings-note" style="margin-top:0.35rem;">Every block reward pays here in full. Change it on the <a href="#" id="connect-to-settings">Settings</a> page.</p>
+  </div>
+  <div class="field">
+    <label>Firmware quick start</label>
+    <ul class="connect-hints">
+      <li><strong>Bitaxe / AxeOS</strong> &amp; multi-chip (NerdQAxe++, Nexus): open the miner&rsquo;s web UI &rarr; set the Stratum URL + port above, any worker name.</li>
+      <li><strong>Avalon Nano / Q</strong>: in the Avalon Family app, add a pool using the host and port above.</li>
+      <li><strong>cgminer / generic ASIC</strong>: <code>--url stratum+tcp://HOST:PORT</code> with any worker name.</li>
+    </ul>
+  </div>
+  <p class="settings-note">
+    solo-pool-rs <span id="connect-version">&mdash;</span> &middot; network <span id="connect-network">&mdash;</span> &middot;
+    <a href="https://github.com/cbyam/solo-pool-rs">source</a> &middot;
+    <a href="https://github.com/cbyam/solo-pool-rs/issues">support</a> &middot; MIT/Apache-2.0
   </p>
 </dialog>
 
@@ -1260,6 +1344,40 @@ document.getElementById('paused-pill').addEventListener('click', openSettings);
 document.getElementById('close-settings').addEventListener('click', () => settingsModal.close());
 // Click on the backdrop (outside the dialog content) closes it.
 settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
+
+// ── Connect modal ─────────────────────────────────────────────────────────────
+const connectModal = document.getElementById('connect-modal');
+async function openConnect() {
+  try {
+    const resp = await fetch('/api/info');
+    if (resp.ok) {
+      const i = await resp.json();
+      const host = window.location.hostname || 'your-pool-host';
+      document.getElementById('connect-url').value = 'stratum+tcp://' + host + ':' + i.stratum_port;
+      document.getElementById('connect-proto').textContent = i.sv2_enabled
+        ? 'Stratum V1 and V2 (Noise-encrypted) are auto-detected on this one port — point any miner here.'
+        : 'Stratum V1 on this port (SV2 is disabled in this pool’s config).';
+      document.getElementById('connect-address').textContent = i.coinbase_address || '—';
+      document.getElementById('connect-version').textContent = 'v' + i.version;
+      document.getElementById('connect-network').textContent = i.network;
+    }
+  } catch (e) { console.error('Info fetch error:', e); }
+  connectModal.showModal();
+}
+document.getElementById('open-connect').addEventListener('click', openConnect);
+document.getElementById('close-connect').addEventListener('click', () => connectModal.close());
+connectModal.addEventListener('click', e => { if (e.target === connectModal) connectModal.close(); });
+document.getElementById('connect-copy').addEventListener('click', () => {
+  const el = document.getElementById('connect-url');
+  const btn = document.getElementById('connect-copy');
+  const done = () => { const p = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = p, 1200); };
+  if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done).catch(() => { el.select(); done(); });
+  else { el.select(); done(); }
+});
+// Jump from Connect → Settings to edit the payout address.
+document.getElementById('connect-to-settings').addEventListener('click', e => {
+  e.preventDefault(); connectModal.close(); openSettings();
+});
 
 attachTimeframeSelector();
 loadChart(DEFAULT_WINDOW);

@@ -128,6 +128,8 @@ async fn main() -> Result<()> {
         runtime_settings,
         engine.clone(),
         config.metrics.allow_runtime_settings,
+        &config.pool.listen_addr,
+        config.sv2.enabled,
     )
     .await;
 
