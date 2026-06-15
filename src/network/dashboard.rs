@@ -806,16 +806,36 @@ function cssVar(name) {
 const DEFAULT_WINDOW = '36h';
 let selectedWindow = DEFAULT_WINDOW;
 let lastBlockHeight = 0;
-// A worker that's online but hasn't landed an accepted share in this long is
-// "degraded" — drives both the KPI count and the per-worker yellow status LED.
-const DEGRADED_SECS = 120;
+// Degraded detection is *relative to each worker's own baseline*, not an absolute
+// timeout — so low-hashrate / never-submitted / just-connected miners (whose
+// natural share interval is long, or who haven't established one yet) are never
+// falsely flagged. A worker is degraded only if it has an established cadence and
+// has since gone silent for well beyond it.
+const DEGRADED_SECS = 120;        // floor on the silence threshold (fast miners)
+const DEGRADED_INTERVALS = 5;     // missed *expected* shares before flagging
+
+// Has the worker established a share cadence we can reason about? Needs to be
+// online, to have submitted at least once, and to have a measurable baseline
+// hashrate (the 3h window retains the rate even after a recent stall).
+function workerBaselineHps(w) {
+  return (w.online && w.last_submit_ts > 0) ? (w.hashrate_3h_hps || 0) : 0;
+}
+
+function isDegraded(w, nowSec) {
+  const baseHps = workerBaselineHps(w);
+  if (baseHps <= 0) return false;                     // no baseline → never alarm
+  // Expected seconds/share at the worker's own difficulty + baseline hashrate.
+  const expected = (w.current_vardiff * 4294967296) / baseHps;
+  const silentFor = nowSec - w.last_submit_ts;
+  return silentFor > Math.max(DEGRADED_SECS, DEGRADED_INTERVALS * expected);
+}
 
 // Classify a worker's status LED: grey (offline) > yellow (online but degraded)
 // > green (healthy). The reason rides in the tooltip, not the colour.
 function workerLed(w, nowSec) {
   if (!w.online) return { cls: 'led-off', title: 'Offline' };
-  if (w.last_submit_ts > 0 && nowSec - w.last_submit_ts > DEGRADED_SECS) {
-    return { cls: 'led-warn', title: 'Degraded — no accepted share in ' + fmtUptime(nowSec - w.last_submit_ts) };
+  if (isDegraded(w, nowSec)) {
+    return { cls: 'led-warn', title: 'Degraded — no share in ' + fmtUptime(nowSec - w.last_submit_ts) + ' (well past its usual cadence)' };
   }
   return { cls: 'led-on', title: 'Online' };
 }
@@ -1029,7 +1049,8 @@ async function refresh() {
     const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
     const onlineCount = workers.filter(w => w.online).length;
     const offlineCount = workers.filter(w => !w.online).length;
-    const degradedCount = workers.filter(w => w.online && w.last_submit_ts > 0 && Math.floor(Date.now() / 1000) - w.last_submit_ts > DEGRADED_SECS).length;
+    const nowSecKpi = Math.floor(Date.now() / 1000);
+    const degradedCount = workers.filter(w => isDegraded(w, nowSecKpi)).length;
 
     document.getElementById('v-workers-online').textContent = 'Online: ' + onlineCount;
     document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;

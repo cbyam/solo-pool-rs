@@ -42,6 +42,7 @@ pub enum ClientMessage {
     Authorize(AuthorizeParams),
     Submit(SubmitParams),
     Configure(ConfigureParams),
+    SuggestDifficulty(SuggestDifficultyParams),
     /// Any unrecognised method — we return an error
     Unknown(String),
 }
@@ -53,6 +54,9 @@ impl ClientMessage {
             "mining.authorize" => Ok(Self::Authorize(AuthorizeParams::parse(&req.params)?)),
             "mining.submit" => Ok(Self::Submit(SubmitParams::parse(&req.params)?)),
             "mining.configure" => Ok(Self::Configure(ConfigureParams::parse(&req.params)?)),
+            "mining.suggest_difficulty" => Ok(Self::SuggestDifficulty(
+                SuggestDifficultyParams::parse(&req.params)?,
+            )),
             other => Ok(Self::Unknown(other.to_string())),
         }
     }
@@ -236,6 +240,41 @@ impl ConfigureParams {
     }
 }
 
+// ── mining.suggest_difficulty ─────────────────────────────────────────────────
+
+/// The miner's requested *starting* share difficulty. Advisory — the pool
+/// applies it clamped to the configured vardiff floor/ceiling and lets vardiff
+/// take over from there.
+#[derive(Debug)]
+pub struct SuggestDifficultyParams {
+    pub difficulty: u64,
+}
+
+impl SuggestDifficultyParams {
+    fn parse(params: &Value) -> Result<Self, PoolError> {
+        // Accept both `[difficulty]` and a bare number; difficulty may be sent
+        // as an integer or float depending on firmware.
+        let d = params
+            .as_array()
+            .and_then(|a| a.first())
+            .or(Some(params))
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| PoolError::InvalidParams {
+                method: "mining.suggest_difficulty",
+                detail: "expected a numeric difficulty".into(),
+            })?;
+        if !d.is_finite() || d < 1.0 {
+            return Err(PoolError::InvalidParams {
+                method: "mining.suggest_difficulty",
+                detail: "difficulty must be a finite number >= 1".into(),
+            });
+        }
+        Ok(Self {
+            difficulty: d as u64,
+        })
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Outbound message builders
 // ─────────────────────────────────────────────────────────────────────────────
@@ -374,4 +413,42 @@ fn str_at(
             method,
             detail: format!("missing or non-string field `{field}` at index {idx}"),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClientMessage, StratumRequest};
+
+    fn parse_msg(line: &str) -> ClientMessage {
+        let req = StratumRequest::parse(line).expect("valid json-rpc");
+        ClientMessage::from_request(&req).expect("known method")
+    }
+
+    #[test]
+    fn suggest_difficulty_parses_array_int_and_float() {
+        for line in [
+            r#"{"id":1,"method":"mining.suggest_difficulty","params":[8192]}"#,
+            r#"{"id":1,"method":"mining.suggest_difficulty","params":[8192.0]}"#,
+        ] {
+            match parse_msg(line) {
+                ClientMessage::SuggestDifficulty(p) => assert_eq!(p.difficulty, 8192),
+                other => panic!("expected SuggestDifficulty, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_difficulty_rejects_garbage() {
+        for line in [
+            r#"{"id":1,"method":"mining.suggest_difficulty","params":[0]}"#,
+            r#"{"id":1,"method":"mining.suggest_difficulty","params":["nope"]}"#,
+            r#"{"id":1,"method":"mining.suggest_difficulty","params":[]}"#,
+        ] {
+            let req = StratumRequest::parse(line).expect("valid json-rpc");
+            assert!(
+                ClientMessage::from_request(&req).is_err(),
+                "should reject: {line}"
+            );
+        }
+    }
 }

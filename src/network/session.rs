@@ -23,7 +23,7 @@ use crate::{
     },
     protocol::sv1::{
         AuthorizeParams, ClientMessage, ConfigureParams, ResponseBuilder, StratumRequest,
-        SubmitParams, SubscribeParams,
+        SubmitParams, SubscribeParams, SuggestDifficultyParams,
     },
     security::{BanList, SessionGuard},
     stats::PoolStats,
@@ -452,6 +452,7 @@ async fn handle_line(
         ClientMessage::Subscribe(params) => handle_subscribe(session, &req, params),
         ClientMessage::Authorize(params) => handle_authorize(session, &req, params, engine).await,
         ClientMessage::Submit(params) => handle_submit(session, &req, params, engine).await,
+        ClientMessage::SuggestDifficulty(params) => handle_suggest_difficulty(session, &req, params),
         ClientMessage::Unknown(method) => {
             debug!("Unknown method from {}: {method}", session.peer);
             HandleResult::Messages(vec![ResponseBuilder::err(
@@ -513,6 +514,34 @@ fn handle_configure(
         configured_min_diff,
         params.subscribe_extranonce,
     )])
+}
+
+fn handle_suggest_difficulty(
+    session: &mut Session,
+    req: &StratumRequest,
+    params: SuggestDifficultyParams,
+) -> HandleResult {
+    // Seed vardiff from the hint, clamped to the configured floor/ceiling so a
+    // (buggy or hostile) suggestion can never drop a miner below the share-rate
+    // floor. Vardiff owns the difficulty from here.
+    let applied = session.vardiff.suggest(params.difficulty);
+    session.difficulty = applied;
+    debug!(
+        peer = %session.peer,
+        suggested = params.difficulty,
+        applied,
+        floor = session.vardiff_cfg.min_difficulty,
+        ceiling = session.vardiff_cfg.max_difficulty,
+        "Applied mining.suggest_difficulty"
+    );
+
+    let mut msgs = vec![ResponseBuilder::ok(&req.id, serde_json::Value::Bool(true))];
+    // If the miner is already receiving work, push the new target now; otherwise
+    // the set_difficulty sent during subscribe/authorize will carry the seed.
+    if session.subscribed {
+        msgs.push(ResponseBuilder::set_difficulty(applied));
+    }
+    HandleResult::Messages(msgs)
 }
 
 fn handle_subscribe(
