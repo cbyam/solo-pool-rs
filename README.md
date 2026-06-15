@@ -169,6 +169,28 @@ poll_fallback = true                       # falls back if ZMQ unreachable
 
 See [`config.toml.example`](config.toml.example) for the fully annotated reference.
 
+### Difficulty and small / large miners
+
+`[vardiff]` automatically tracks each miner's hashrate, but it works within a
+configured floor and ceiling (`min_difficulty` / `max_difficulty`). The default
+floor of **4096** suits roughly **1 TH/s and up** (a Bitaxe, Avalon Nano, or
+larger) at the 15 s target share time. Two cases to know about:
+
+- **Low-hashrate devices** (USB sticks, NerdMiner-class lottery miners, ~sub-0.3 TH/s)
+  will be pinned at the floor and submit shares slowly — or, for very tiny
+  devices, almost never. This is purely cosmetic: **share difficulty has no
+  payout effect in solo mining** (you're paid on blocks, 100%, regardless), so
+  such a device still finds and submits a real block normally — it just shows
+  little/no hashrate on the dashboard. If you want better telemetry for small
+  hardware, lower `min_difficulty`.
+- **Large miners / farms** can raise `max_difficulty` so vardiff can settle them
+  at a higher target instead of submitting shares faster than the 15 s goal.
+
+Miners that send `mining.suggest_difficulty` (e.g. AxeOS's "pool difficulty"
+field) are honored as a **starting** difficulty, clamped to this floor/ceiling;
+vardiff takes over from there. The floor is never crossed, so a suggestion can't
+push a miner below the configured share-rate floor.
+
 Every value can also be overridden by an environment variable named
 `SOLO_POOL_<SECTION>__<KEY>` (double underscore between section and key), so
 container platforms can inject deployment-specific settings without editing

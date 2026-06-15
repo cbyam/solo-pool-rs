@@ -9,6 +9,26 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- `mining.suggest_difficulty` is now honored as a **starting** difficulty,
+  clamped to the configured vardiff floor/ceiling (vardiff takes over from
+  there). Lets miners that send it (e.g. AxeOS's "pool difficulty" field) cold-
+  start near their settled difficulty instead of bursting low-diff shares from
+  the floor. A suggestion can never push a miner below the floor.
+
+### Changed
+- Dashboard: the per-worker **degraded (amber) status LED** is now evaluated
+  *relative to each worker's own established cadence* rather than a flat
+  no-share timeout. Low-hashrate, never-submitted, and just-connected miners
+  (whose natural share interval is long or not yet established) are no longer
+  falsely flagged; a worker is amber only after going silent well past its own
+  expected share interval.
+
+### Documentation
+- README: added a "Difficulty and small / large miners" note explaining the
+  `min_difficulty` floor, that share difficulty has no payout effect in solo,
+  and how to tune for small or large hardware.
+
 ## [0.5.0] - 2026-06-14
 
 ### Added
