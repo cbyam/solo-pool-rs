@@ -10,6 +10,13 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
+- Dashboard: **Connect** modal (rail nav) — shows the exact
+  `stratum+tcp://<host>:<port>` to point a miner at (host derived from the
+  browser, port from the pool config), with a copy button, a note that SV1/SV2
+  are auto-detected on the one port, the read-only payout address (link to
+  Settings), per-firmware quick-start hints, and build/network/license info.
+  Backed by a new read-only `GET /api/info` endpoint. Removes the
+  "where do I point my miner?" onboarding gap, especially for Umbrel installs.
 - `mining.suggest_difficulty` is now honored as a **starting** difficulty,
   clamped to the configured vardiff floor/ceiling (vardiff takes over from
   there). Lets miners that send it (e.g. AxeOS's "pool difficulty" field) cold-
