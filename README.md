@@ -1,6 +1,7 @@
 # solo-pool-rs
 
 [![CI](https://github.com/cbyam/solo-pool-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/cbyam/solo-pool-rs/actions/workflows/ci.yml)
+[![E2E block acceptance](https://github.com/cbyam/solo-pool-rs/actions/workflows/e2e.yml/badge.svg)](https://github.com/cbyam/solo-pool-rs/actions/workflows/e2e.yml)
 [![Release](https://github.com/cbyam/solo-pool-rs/actions/workflows/release.yml/badge.svg)](https://github.com/cbyam/solo-pool-rs/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Stars](https://img.shields.io/github/stars/cbyam/solo-pool-rs?style=social)](https://github.com/cbyam/solo-pool-rs)
@@ -15,10 +16,46 @@
 
 ## Why this pool
 
+If you already run an established solo-mining daemon, the honest case isn't that
+this is more battle-tested — it's younger, and the [verification
+section](#does-it-actually-find-and-pay-blocks-dont-trust--verify) is how you
+check the part that has to be correct. The case is that it does things the older
+solo daemons don't:
+
 - **SV1 + SV2 on one port** — the protocol is auto-detected from the first byte of each connection. Legacy SV1 ASICs and modern Noise-encrypted SV2 firmware (e.g. NerdQAxe++) share the *same* host:port. No proxy, no second listener.
 - **True solo** — `getblocktemplate` → your coinbase address. No shares database, no PPLNS, no operator fee.
 - **Self-contained** — a single Rust binary plus your Bitcoin node. Cookie auth, ZMQ block notifications, RPC-poll fallback.
 - **Observable** — a live HTML dashboard (hashrate history, per-worker table, network difficulty + estimated next-retarget move, probability) and a Prometheus endpoint.
+
+---
+
+## Does it actually find and pay blocks? (don't trust — verify)
+
+The fair question for any young pool is *"how do I know a found block actually
+gets submitted and pays my address?"* You don't have to take my word for it — the
+proof is in the repo and runs on every change:
+
+- **An end-to-end block-acceptance test runs on every push and PR.** It boots a
+  real `bitcoind -regtest`, launches the actual pool binary, connects over the
+  live Stratum socket exactly as a miner would, grinds a real share that is also
+  a valid block, submits it, and **asserts the node accepted it onto the chain
+  and that the coinbase pays the pool's configured address**. This is the one
+  path no unit test can fake — it guards the bugs that stay invisible until a
+  block is genuinely found: prev-hash byte order, BIP34 height, merkle root,
+  witness commitment, and the `submitblock` path itself. See
+  [`tests/block_acceptance.rs`](tests/block_acceptance.rs) and the
+  [`e2e.yml`](.github/workflows/e2e.yml) workflow — green badge above means the
+  full `getblocktemplate` → coinbase → `submitblock` pipeline passed on the
+  latest commit.
+- **Every PR and release goes through CI before merge** (fmt, clippy, tests,
+  release build) — [`ci.yml`](.github/workflows/ci.yml).
+- **Run it yourself.** The regtest harness is one command (see
+  [Development](#development)); on regtest you can mine real blocks through the
+  pool in seconds. If something breaks there, that's exactly the bug report I
+  want pre-1.0 — open an issue.
+
+Short track record is fair to weigh. But the coverage is public, reproducible,
+and exercised on every commit — so you can check it rather than trust it.
 
 ---
 
@@ -290,13 +327,19 @@ The mining engine, validator, vardiff, and template code are protocol-agnostic �
 ## Development
 
 ```bash
-cargo test                        # run tests
+cargo test                        # run unit + integration tests
 RUST_LOG=debug cargo run -- config.toml
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
+
+# End-to-end block-acceptance test: boots a real bitcoind -regtest, mines a
+# block through the pool, and requires the node to accept it (needs bitcoind +
+# bitcoin-cli on PATH or via $BITCOIND / $BITCOIN_CLI).
+cargo test --release --test block_acceptance -- --ignored --nocapture
 ```
 
-CI runs fmt, clippy, tests, and a release build on every push and PR.
+CI runs fmt, clippy, tests, and a release build on every push and PR; the
+separate E2E workflow runs the block-acceptance test on every push and PR too.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks a PR must pass, and
 commit/PR conventions.
