@@ -7,4 +7,5 @@ config.toml
 .claude/
 .cursor/
 .windsurf/
+.github/copilot-instructions.md
 *.sqlite
