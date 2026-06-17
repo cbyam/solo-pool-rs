@@ -1,13 +1,14 @@
 # solo-pool-rs
 
 [![CI](https://github.com/cbyam/solo-pool-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/cbyam/solo-pool-rs/actions/workflows/ci.yml)
+[![E2E block acceptance](https://github.com/cbyam/solo-pool-rs/actions/workflows/e2e.yml/badge.svg)](https://github.com/cbyam/solo-pool-rs/actions/workflows/e2e.yml)
 [![Release](https://github.com/cbyam/solo-pool-rs/actions/workflows/release.yml/badge.svg)](https://github.com/cbyam/solo-pool-rs/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Stars](https://img.shields.io/github/stars/cbyam/solo-pool-rs?style=social)](https://github.com/cbyam/solo-pool-rs)
 
-**A solo Bitcoin mining pool that speaks both Stratum V1 and Noise-encrypted Stratum V2 on a single port** — point any ASIC (or a Bitaxe / NerdQAxe++) at it and **100% of the block reward goes to your address**. One Rust binary, one Bitcoin node, no fees, no payout splits, no accounts.
+**A solo Bitcoin mining pool that speaks both Stratum V1 and Noise-encrypted Stratum V2 on a single port.** Point any ASIC (or a Bitaxe / NerdQAxe++) at it and **100% of the block reward goes to your address**. One Rust binary, one Bitcoin node, no fees, no payout splits, no accounts.
 
-> **Lottery / solo mining**: every block your miners find pays out entirely to the coinbase address you configure. The pool just coordinates work — it never takes a cut.
+> **Lottery / solo mining**: every block your miners find pays out entirely to the coinbase address you configure. The pool only coordinates work; it never takes a cut.
 
 ![solo-pool-rs dashboard](docs/dashboard.png)
 
@@ -15,10 +16,46 @@
 
 ## Why this pool
 
-- **SV1 + SV2 on one port** — the protocol is auto-detected from the first byte of each connection. Legacy SV1 ASICs and modern Noise-encrypted SV2 firmware (e.g. NerdQAxe++) share the *same* host:port. No proxy, no second listener.
-- **True solo** — `getblocktemplate` → your coinbase address. No shares database, no PPLNS, no operator fee.
-- **Self-contained** — a single Rust binary plus your Bitcoin node. Cookie auth, ZMQ block notifications, RPC-poll fallback.
-- **Observable** — a live HTML dashboard (hashrate history, per-worker table, network difficulty + estimated next-retarget move, probability) and a Prometheus endpoint.
+If you already run an established solo-mining daemon, the honest case isn't that
+this is more battle-tested. It's younger, and the [verification
+section](#does-it-actually-find-and-pay-blocks-dont-trust-verify) is how you
+check the part that has to be correct. The case is that it does things the older
+solo daemons don't:
+
+- **SV1 + SV2 on one port.** The protocol is auto-detected from the first byte of each connection. Legacy SV1 ASICs and modern Noise-encrypted SV2 firmware (e.g. NerdQAxe++) share the *same* host:port. No proxy, no second listener.
+- **True solo.** `getblocktemplate` → your coinbase address. No shares database, no PPLNS, no operator fee.
+- **Self-contained.** A single Rust binary plus your Bitcoin node. Cookie auth, ZMQ block notifications, RPC-poll fallback.
+- **Observable.** A live HTML dashboard (hashrate history, per-worker table, network difficulty + estimated next-retarget move, probability) and a Prometheus endpoint.
+
+---
+
+## Does it actually find and pay blocks? (don't trust, verify)
+
+The fair question for any young pool is *"how do I know a found block actually
+gets submitted and pays my address?"* You don't have to take my word for it. The
+proof is in the repo and runs on every change:
+
+- **An end-to-end block-acceptance test runs on every push and PR.** It boots a
+  real `bitcoind -regtest`, launches the actual pool binary, connects over the
+  live Stratum socket exactly as a miner would, grinds a real share that is also
+  a valid block, submits it, and **asserts the node accepted it onto the chain
+  and that the coinbase pays the pool's configured address**. This is the one
+  path no unit test can fake. It guards the bugs that stay invisible until a
+  block is genuinely found: prev-hash byte order, BIP34 height, merkle root,
+  witness commitment, and the `submitblock` path itself. See
+  [`tests/block_acceptance.rs`](tests/block_acceptance.rs) and the
+  [`e2e.yml`](.github/workflows/e2e.yml) workflow. A green badge above means the
+  full `getblocktemplate` → coinbase → `submitblock` pipeline passed on the
+  latest commit.
+- **Every PR and release goes through CI before merge** (fmt, clippy, tests,
+  release build). See [`ci.yml`](.github/workflows/ci.yml).
+- **Run it yourself.** The regtest harness is one command (see
+  [Development](#development)); on regtest you can mine real blocks through the
+  pool in seconds. If something breaks there, that's exactly the bug report I
+  want pre-1.0. Open an issue.
+
+Short track record is fair to weigh. But the coverage is public, reproducible,
+and exercised on every commit, so you can check it rather than trust it.
 
 ---
 
@@ -26,16 +63,16 @@
 
 | Category | Detail |
 |---|---|
-| Protocol | Stratum V1 (JSON-RPC over TCP) **and** Stratum V2 (Extended Channel, Noise-encrypted) — auto-detected per connection on one port |
+| Protocol | Stratum V1 (JSON-RPC over TCP) **and** Stratum V2 (Extended Channel, Noise-encrypted), auto-detected per connection on one port |
 | ASIC extensions | SV1: `version-rolling` (BIP320), `minimum-difficulty`, `subscribe-extranonce`, `mining.configure`. SV2: extended channel with BIP320 version rolling |
-| Auth | `mining.authorize` (any worker name accepted — solo pool) |
+| Auth | `mining.authorize` (any worker name accepted, solo pool) |
 | Difficulty | Per-miner vardiff with configurable target share time, retarget interval, and max adjustment factor |
 | Block template | `getblocktemplate` via Bitcoin RPC, ZMQ `hashblock` push (RPC poll fallback) |
 | Coinbase | BIP34 height, configurable tag, SegWit witness commitment, reward to your address |
 | Share validation | Header reconstruction, double-SHA256, meets-target check, duplicate detection, ntime drift check |
 | Block submission | `submitblock` on valid block, immediate with latency logging |
 | Security | Per-IP connection rate limiting, per-session share rate limiting (token bucket), invalid-share counting, IP ban list with TTL, message size limit |
-| Metrics | Prometheus endpoint (`/metrics`) — hashrate, share counts, block finds, connected miners |
+| Metrics | Prometheus endpoint (`/metrics`): hashrate, share counts, block finds, connected miners |
 | Logging | Structured JSON or human-readable via `tracing` |
 
 ---
@@ -60,7 +97,7 @@ docker run -d --name solo-pool-rs --network host \
   ghcr.io/cbyam/solo-pool-rs:latest
 ```
 
-Or with Compose — see [`docker-compose.yml`](docker-compose.yml):
+Or with Compose, see [`docker-compose.yml`](docker-compose.yml):
 
 ```bash
 docker compose up -d
@@ -72,7 +109,7 @@ Then open the dashboard at `http://<host>:9090/`.
 > `10001`) instead of root. Two one-time changes are needed: grant cookie access
 > via the node group as shown above (`--group-add` / Compose `group_add`), and if
 > you persist data with `-v ./data:/app/data`, make that host dir writable by the
-> new uid — `sudo chown -R 10001:10001 ./data`. See [CHANGELOG.md](CHANGELOG.md).
+> new uid: `sudo chown -R 10001:10001 ./data`. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -106,10 +143,10 @@ sudo install -Dm644 config.toml /etc/solo-pool-rs/config.toml      # then edit i
 # 2. Create a dedicated system user
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin solo-pool
 
-# 3. Give it read access to bitcoind's RPC cookie — pick ONE:
+# 3. Give it read access to bitcoind's RPC cookie (pick one):
 #    a) add it to the group that can read your node's data dir, and set
 #       rpccookieperms=group in bitcoin.conf. The group name is whatever you use
-#       for node access — bitcoind's own group, or a shared one (e.g. `bitstack`
+#       for node access: bitcoind's own group, or a shared one (e.g. `bitstack`
 #       covering CLN/electrum/etc.). Substitute your group below:
 sudo usermod -aG <node-group> solo-pool
 #    b) or use explicit rpcuser/rpcpassword in config.toml (skip the cookie)
@@ -132,7 +169,7 @@ Logs go to the journal by default (`log_dir` empty); set `log_dir` plus
 ```ini
 # Required: RPC
 server=1
-# Cookie auth is on by default — no rpcuser/rpcpassword needed
+# Cookie auth is on by default; no rpcuser/rpcpassword needed
 
 # Recommended: ZMQ for instant block notifications
 zmqpubhashblock=tcp://127.0.0.1:28332
@@ -177,11 +214,11 @@ floor of **4096** suits roughly **1 TH/s and up** (a Bitaxe, Avalon Nano, or
 larger) at the 15 s target share time. Two cases to know about:
 
 - **Low-hashrate devices** (USB sticks, NerdMiner-class lottery miners, ~sub-0.3 TH/s)
-  will be pinned at the floor and submit shares slowly — or, for very tiny
-  devices, almost never. This is purely cosmetic: **share difficulty has no
+  will be pinned at the floor and submit shares slowly, or for very tiny
+  devices almost never. This is purely cosmetic: **share difficulty has no
   payout effect in solo mining** (you're paid on blocks, 100%, regardless), so
-  such a device still finds and submits a real block normally — it just shows
-  little/no hashrate on the dashboard. If you want better telemetry for small
+  such a device still finds and submits a real block normally; it just shows
+  little or no hashrate on the dashboard. If you want better telemetry for small
   hardware, lower `min_difficulty`.
 - **Large miners / farms** can raise `max_difficulty` so vardiff can settle them
   at a higher target instead of submitting shares faster than the 15 s goal.
@@ -219,14 +256,14 @@ Modern firmware (Braiins OS, LuxOS, stock AxeOS) auto-negotiates `mining.configu
 
 ### Stratum V2 (e.g. NerdQAxe++)
 
-SV2 firmware connects to the **same host and port** as SV1 — the protocol is auto-detected, so there is no separate listener.
+SV2 firmware connects to the **same host and port** as SV1. The protocol is auto-detected, so there is no separate listener.
 
 On a NerdQAxe++ (AxeOS ≥ v1.0.37):
 
 | Field | Value |
 |---|---|
 | Stratum | select **Stratum V2** |
-| Encryption | **on** (Noise) — no authority pubkey needed; leave it unset |
+| Encryption | **on** (Noise), no authority pubkey needed; leave it unset |
 | Host / Port | `<your-server-ip>` : `3333` (same as SV1) |
 | Worker | anything (used as the SV2 `user_identity`) |
 
@@ -240,7 +277,7 @@ With `prometheus_addr` set (default `0.0.0.0:9090`), an HTTP server exposes:
 
 | Route | Description |
 |---|---|
-| `GET /` | HTML dashboard — hashrate chart, workers, network difficulty + estimated next-retarget move, probability, uptime (auto-refreshes) |
+| `GET /` | HTML dashboard: hashrate chart, workers, network difficulty + estimated next-retarget move, probability, uptime (auto-refreshes) |
 | `GET /stats` | JSON snapshot of current pool state |
 | `GET /metrics` | Prometheus text exposition |
 
@@ -263,40 +300,46 @@ Key Prometheus metrics:
 ASIC / Bitaxe (SV1 or SV2)
     │ TCP :3333  (protocol auto-detected from first byte)
     ▼
-network/server.rs        — accept loop, IP limits, connection cap
+network/server.rs        - accept loop, IP limits, connection cap
     │
-    ├── SV1 ──▶ network/session.rs   — subscribe→auth→submit state machine
+    ├── SV1 ──▶ network/session.rs   - subscribe→auth→submit state machine
     │                                  vardiff, extension negotiation
-    └── SV2 ──▶ protocol/sv2/         — Noise handshake, extended channel,
+    └── SV2 ──▶ protocol/sv2/         - Noise handshake, extended channel,
                                         NewExtendedMiningJob / SetNewPrevHash
     │
     ▼
-mining/validator.rs      — header reconstruction, SHA256d, target comparison
-mining/vardiff.rs        — per-session difficulty management
-mining/engine.rs         — current job store, job history, broadcast channel
+mining/validator.rs      - header reconstruction, SHA256d, target comparison
+mining/vardiff.rs        - per-session difficulty management
+mining/engine.rs         - current job store, job history, broadcast channel
     │
     ▼
-bitcoin/template.rs      — GBT → StratumJob (coinbase, merkle branch, job ID)
-bitcoin/rpc.rs           — Bitcoin RPC (cookie auth, getblocktemplate, submitblock)
-bitcoin/zmq.rs           — ZMQ hashblock listener + RPC poll fallback
+bitcoin/template.rs      - GBT → StratumJob (coinbase, merkle branch, job ID)
+bitcoin/rpc.rs           - Bitcoin RPC (cookie auth, getblocktemplate, submitblock)
+bitcoin/zmq.rs           - ZMQ hashblock listener + RPC poll fallback
 
-network/dashboard.rs     — HTTP :9090 — dashboard, /stats JSON, /metrics
+network/dashboard.rs     - HTTP :9090 - dashboard, /stats JSON, /metrics
 ```
 
-The mining engine, validator, vardiff, and template code are protocol-agnostic — SV1 and SV2 share the same job pipeline.
+The mining engine, validator, vardiff, and template code are protocol-agnostic; SV1 and SV2 share the same job pipeline.
 
 ---
 
 ## Development
 
 ```bash
-cargo test                        # run tests
+cargo test                        # run unit + integration tests
 RUST_LOG=debug cargo run -- config.toml
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
+
+# End-to-end block-acceptance test: boots a real bitcoind -regtest, mines a
+# block through the pool, and requires the node to accept it (needs bitcoind +
+# bitcoin-cli on PATH or via $BITCOIND / $BITCOIN_CLI).
+cargo test --release --test block_acceptance -- --ignored --nocapture
 ```
 
-CI runs fmt, clippy, tests, and a release build on every push and PR.
+CI runs fmt, clippy, tests, and a release build on every push and PR; the
+separate E2E workflow runs the block-acceptance test on every push and PR too.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks a PR must pass, and
 commit/PR conventions.
@@ -320,7 +363,7 @@ cargo build
 
 # 3. Commit the version bump + changelog together.
 git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit -m "release: v0.3.1 — <one-line summary>"
+git commit -m "release: v0.3.1 - <one-line summary>"
 
 # 4. Tag and push. The tag is what triggers the release automation.
 git tag -a v0.3.1 -m "v0.3.1"
@@ -329,14 +372,14 @@ git push && git push origin v0.3.1
 
 Pushing a `v*` tag triggers two workflows automatically:
 
-- **`release.yml`** — builds the Linux x86_64 binary, packages a tarball
+- **`release.yml`** builds the Linux x86_64 binary, packages a tarball
   (binary + `config.toml.example` + README), and publishes a GitHub Release with
   auto-generated notes.
-- **`docker.yml`** — builds and pushes the image to
+- **`docker.yml`** builds and pushes the image to
   `ghcr.io/cbyam/solo-pool-rs:<tag>`.
 
 So the only manual steps are the changelog promotion, the version bump, and the
-tag push — CI produces the artifacts and the GitHub Release.
+tag push. CI produces the artifacts and the GitHub Release.
 
 ---
 
