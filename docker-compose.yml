@@ -35,6 +35,9 @@ services:
       #   mkdir -p data && sudo chown -R 10001:10001 data
       # Then in config.toml set stats_db_path = "data/pool_stats.sqlite" and
       # found_block_dir = "data/found-blocks" so both land in this volume.
+      # The SV2 authority key defaults to /app/sv2-authority.key, which does not
+      # survive a container re-create. If miners pin the pool identity, also set
+      # authority_key_file = "data/sv2-authority.key" so the key lives here too.
       - ./data:/app/data
 
 # Without host networking, drop `network_mode: host`, add:
