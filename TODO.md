@@ -25,12 +25,12 @@ underflow panic). Line references are as of that review and may drift.
   funnel through a dedicated writer thread, enable WAL + `synchronous=NORMAL`),
   and the dashboard `/history` + `/chart` SQLite scans (contend with the share
   path on the same connection mutex; wrap in `spawn_blocking`).
-- [x] **Harden the duplicate-share set** (unreleased, headed for v0.6.0):
+- [x] **Harden the duplicate-share set** (shipped in v0.6.0, 2026-07-02):
   shares are recorded for dedup only after validation passes, and the
   per-session set clears on every clean-job broadcast (live-jobs scoping); the
   4096 FIFO cap remains as a memory backstop only.
 - [x] **Credit background-retrier block acceptance to dashboard stats**
-  (unreleased, headed for v0.6.0): worker + `PoolStats` are threaded through
+  (shipped in v0.6.0, 2026-07-02): worker + `PoolStats` are threaded through
   `submit_found_block` into the resubmit task; retry success now mirrors the
   inline-success stats update.
 
@@ -38,7 +38,7 @@ underflow panic). Line references are as of that review and may drift.
 
 - [x] Monotonic guard on pool best-share/best-hashrate SQLite `UPDATE`s
   (`WHERE ?1 > ...`), matching the per-worker variant; best-hashrate in-memory
-  update is now a CAS. (unreleased, headed for v0.6.0)
+  update is now a CAS. (shipped in v0.6.0, 2026-07-02)
 - [x] Fix ghost-online accounting: repeated `mining.authorize` increments
   `active_sessions` per call but disconnect decrements once, for the last name
   only. (Fixed alongside the authorization cap: same-name re-auth is a no-op,
@@ -51,7 +51,7 @@ underflow panic). Line references are as of that review and may drift.
 ## Planned features
 
 - [x] **v0.4.0: non-root Docker image** (shipped in v0.4.0, 2026-06-11).
-- [x] **SV2 identity pinning** (unreleased, headed for v0.6.0): persistent
+- [x] **SV2 identity pinning** (shipped in v0.6.0, 2026-07-02): persistent
   Noise authority key (`[sv2] authority_key_file`, cookie-style
   create-on-first-start), pubkey logged at boot + shown in the dashboard
   Connect modal + `GET /api/info`; `persist_authority_key = false` opts out,
