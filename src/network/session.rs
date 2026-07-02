@@ -257,6 +257,12 @@ pub async fn run(
             job_result = job_rx.recv() => {
                 match job_result {
                     Ok(JobBroadcast { job, clean }) => {
+                        if clean {
+                            // A clean job retires every outstanding job; shares
+                            // for them are now rejected as stale before dedup,
+                            // so the dedup entries have nothing left to guard.
+                            session.share_set.clear();
+                        }
                         if session.subscribed && session.authorized {
                             let notify = build_notify(&job, clean);
                             session.current_job = Some(job.clone());
@@ -714,13 +720,16 @@ async fn handle_submit(
         "Validating submitted share"
     );
 
-    if session.share_set.check_and_insert(
+    // Duplicates are only *checked* here; the key is inserted after validation
+    // passes, so invalid submissions cannot occupy dedup slots.
+    let share_key = validator::ShareKey::new(
         &params.job_id,
         &params.extranonce2,
         params.ntime,
         params.nonce,
         params.version_bits.unwrap_or(0),
-    ) {
+    );
+    if session.share_set.contains(&share_key) {
         metrics::share_rejected("duplicate", worker);
         session.stats.share_rejected();
         session.stats.worker_share_rejected(worker);
@@ -743,31 +752,29 @@ async fn handle_submit(
     let validation_start = Instant::now();
     let job_height = job_entry.job.height;
     let extranonce1 = session.extranonce1.clone();
-    let share_set = std::mem::take(&mut session.share_set);
     let job_entry = job_entry.clone();
     let validation = task::spawn_blocking(move || {
-        let result = validator::validate_share_no_dedup(
+        validator::validate_share_no_dedup(
             &share_params,
             &job_entry.job,
             &job_entry,
             &extranonce1,
             accept_difficulty,
-        );
-        (share_set, result)
+        )
     })
     .await;
 
     let validation_result = match validation {
-        Ok((share_set, result)) => {
-            session.share_set = share_set;
-            result
-        }
+        Ok(result) => result,
         Err(e) => {
-            session.share_set = ShareSet::new();
             error!("Share validation task failed: {e}");
             return HandleResult::Disconnect("internal error".into());
         }
     };
+    // Record for dedup only now that the share proved itself (Valid or Block).
+    if validation_result.is_ok() {
+        session.share_set.insert(share_key);
+    }
     match validation_result {
         Ok(ShareResult::Valid {
             assigned_difficulty,
@@ -809,7 +816,13 @@ async fn handle_submit(
 
             let block_hash_hex = hex::encode(hash);
             let submit_result = engine
-                .submit_found_block(job_height, &block_hash_hex, block_hex)
+                .submit_found_block(
+                    job_height,
+                    &block_hash_hex,
+                    block_hex,
+                    worker,
+                    session.stats.clone(),
+                )
                 .await;
             match submit_result {
                 Ok(_) => {

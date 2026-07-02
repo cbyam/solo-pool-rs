@@ -45,6 +45,12 @@ Group=solo-pool
 
 # systemd creates and owns /var/lib/solo-pool-rs for you. Point the SQLite
 # stats DB there:  stats_db_path = "/var/lib/solo-pool-rs/pool_stats.sqlite"
+# The SV2 authority key needs a writable path too. Its default
+# ("sv2-authority.key") resolves against the working directory, which is
+# read-only under ProtectSystem=strict below, and the pool fails at boot if it
+# cannot create the key. In config.toml set:
+#   authority_key_file = "/var/lib/solo-pool-rs/sv2-authority.key"
+# (or set persist_authority_key = false to keep an ephemeral per-process key).
 StateDirectory=solo-pool-rs
 
 # Logs go to the journal (journalctl -u solo-pool-rs). Keep log_dir empty in
