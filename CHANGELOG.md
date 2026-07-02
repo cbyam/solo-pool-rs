@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-02
+
 ### Added
 - **SV2 pool identity (authority key pinning).** The Noise authority key now
   persists across restarts (`[sv2] authority_key_file`, created on first start
@@ -338,7 +340,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.1...v0.4.2
