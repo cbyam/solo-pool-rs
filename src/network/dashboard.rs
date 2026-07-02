@@ -45,6 +45,9 @@ pub struct DashState {
     /// derived client-side from the browser's own location.
     pub stratum_port: u16,
     pub sv2_enabled: bool,
+    /// Base58check SV2 Noise authority public key (None when SV2 is disabled).
+    /// Shown on the Connect page so miners can pin the pool identity.
+    pub sv2_authority_pubkey: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +66,7 @@ pub async fn start(
     allow_settings: bool,
     stratum_listen_addr: &str,
     sv2_enabled: bool,
+    sv2_authority_pubkey: Option<String>,
 ) {
     if addr.is_empty() {
         return;
@@ -91,6 +95,7 @@ pub async fn start(
         allow_settings,
         stratum_port,
         sv2_enabled,
+        sv2_authority_pubkey,
     };
     let app = Router::new()
         .route("/", get(dashboard_html))
@@ -178,6 +183,9 @@ struct InfoView {
     version: &'static str,
     stratum_port: u16,
     sv2_enabled: bool,
+    /// SV2 Noise authority public key (base58check) for identity pinning;
+    /// null when SV2 is disabled.
+    sv2_authority_pubkey: Option<String>,
     network: String,
     coinbase_address: String,
 }
@@ -187,6 +195,7 @@ async fn info_get(State(state): State<DashState>) -> Json<InfoView> {
         version: env!("CARGO_PKG_VERSION"),
         stratum_port: state.stratum_port,
         sv2_enabled: state.sv2_enabled,
+        sv2_authority_pubkey: state.sv2_authority_pubkey.clone(),
         network: state.settings.network().to_string(),
         coinbase_address: state.settings.coinbase_address(),
     })
@@ -846,6 +855,14 @@ tr:last-child td { border-bottom: none; }
     <div class="connect-ro" id="connect-address">&mdash;</div>
     <p class="settings-note" style="margin-top:0.35rem;">Every block reward pays here in full. Change it on the <a href="#" id="connect-to-settings">Settings</a> page.</p>
   </div>
+  <div class="field" id="connect-authority-field" hidden>
+    <label for="connect-authority">Pool identity (SV2 authority public key)</label>
+    <div style="display:flex; gap:0.5rem;">
+      <input id="connect-authority" type="text" readonly spellcheck="false" value="&mdash;">
+      <button type="button" id="connect-authority-copy" class="copy-btn">Copy</button>
+    </div>
+    <p class="settings-note" style="margin-top:0.35rem;">Optional: set this as the pool/authority public key on an SV2 miner to verify it is talking to this pool. Miners connect fine without it.</p>
+  </div>
   <div class="field">
     <label>Firmware quick start</label>
     <ul class="connect-hints">
@@ -1358,6 +1375,8 @@ async function openConnect() {
         ? 'Stratum V1 and V2 (Noise-encrypted) are auto-detected on this one port — point any miner here.'
         : 'Stratum V1 on this port (SV2 is disabled in this pool’s config).';
       document.getElementById('connect-address').textContent = i.coinbase_address || '—';
+      document.getElementById('connect-authority-field').hidden = !i.sv2_authority_pubkey;
+      document.getElementById('connect-authority').value = i.sv2_authority_pubkey || '—';
       document.getElementById('connect-version').textContent = 'v' + i.version;
       document.getElementById('connect-network').textContent = i.network;
     }
@@ -1367,13 +1386,27 @@ async function openConnect() {
 document.getElementById('open-connect').addEventListener('click', openConnect);
 document.getElementById('close-connect').addEventListener('click', () => connectModal.close());
 connectModal.addEventListener('click', e => { if (e.target === connectModal) connectModal.close(); });
-document.getElementById('connect-copy').addEventListener('click', () => {
-  const el = document.getElementById('connect-url');
-  const btn = document.getElementById('connect-copy');
-  const done = () => { const p = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = p, 1200); };
-  if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done).catch(() => { el.select(); done(); });
-  else { el.select(); done(); }
-});
+function wireCopy(inputId, btnId) {
+  document.getElementById(btnId).addEventListener('click', () => {
+    const el = document.getElementById(inputId);
+    const btn = document.getElementById(btnId);
+    const done = ok => { const p = btn.textContent; btn.textContent = ok ? 'Copied' : 'Copy manually'; setTimeout(() => btn.textContent = p, 1500); };
+    // navigator.clipboard only exists in secure contexts (HTTPS/localhost);
+    // this dashboard is usually plain HTTP on the LAN, so fall back to
+    // selecting the text and execCommand('copy'). The selection is left in
+    // place so a manual Ctrl/Cmd+C works if even that fails.
+    const legacy = () => {
+      el.focus(); el.select(); el.setSelectionRange(0, el.value.length);
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      done(ok);
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(el.value).then(() => done(true)).catch(legacy);
+    else legacy();
+  });
+}
+wireCopy('connect-url', 'connect-copy');
+wireCopy('connect-authority', 'connect-authority-copy');
 // Jump from Connect → Settings to edit the payout address.
 document.getElementById('connect-to-settings').addEventListener('click', e => {
   e.preventDefault(); connectModal.close(); openSettings();

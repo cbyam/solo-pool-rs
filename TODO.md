@@ -25,20 +25,20 @@ underflow panic). Line references are as of that review and may drift.
   funnel through a dedicated writer thread, enable WAL + `synchronous=NORMAL`),
   and the dashboard `/history` + `/chart` SQLite scans (contend with the share
   path on the same connection mutex; wrap in `spawn_blocking`).
-- [ ] **Harden the duplicate-share set.** 4096-entry FIFO allows bounded replay
-  (evict-then-resubmit inflates share/hashrate stats); shares are also inserted
-  *before* validation, so invalid shares occupy slots and later identical
-  submits are misreported as `duplicate`. Scope dedup to live jobs and insert
-  only after validation passes. (`src/mining/validator.rs`)
-- [ ] **Credit background-retrier block acceptance to dashboard stats.** A block
-  accepted by the PR #6 background retrier updates Prometheus counters but not
-  the dashboard block list / pool stats (needs session context plumbing).
+- [x] **Harden the duplicate-share set** (unreleased, headed for v0.6.0):
+  shares are recorded for dedup only after validation passes, and the
+  per-session set clears on every clean-job broadcast (live-jobs scoping); the
+  4096 FIFO cap remains as a memory backstop only.
+- [x] **Credit background-retrier block acceptance to dashboard stats**
+  (unreleased, headed for v0.6.0): worker + `PoolStats` are threaded through
+  `submit_found_block` into the resubmit task; retry success now mirrors the
+  inline-success stats update.
 
 ## Low
 
-- [ ] Monotonic guard on pool best-share/best-hashrate SQLite `UPDATE`s
-  (`WHERE ?1 > ...`), matching the per-worker variant; also make the
-  best-hashrate in-memory update a CAS. (`src/stats.rs`)
+- [x] Monotonic guard on pool best-share/best-hashrate SQLite `UPDATE`s
+  (`WHERE ?1 > ...`), matching the per-worker variant; best-hashrate in-memory
+  update is now a CAS. (unreleased, headed for v0.6.0)
 - [x] Fix ghost-online accounting: repeated `mining.authorize` increments
   `active_sessions` per call but disconnect decrements once, for the last name
   only. (Fixed alongside the authorization cap: same-name re-auth is a no-op,
@@ -51,9 +51,15 @@ underflow panic). Line references are as of that review and may drift.
 ## Planned features
 
 - [x] **v0.4.0: non-root Docker image** (shipped in v0.4.0, 2026-06-11).
-- [ ] **SV2 identity pinning:** optional persistent Noise authority keypair via
-  config instead of the per-process ephemeral key (deferred in the
-  `protocol/sv2/noise.rs` docstring; today no miner verifies pool identity).
+- [x] **SV2 identity pinning** (unreleased, headed for v0.6.0): persistent
+  Noise authority key (`[sv2] authority_key_file`, cookie-style
+  create-on-first-start), pubkey logged at boot + shown in the dashboard
+  Connect modal + `GET /api/info`; `persist_authority_key = false` opts out,
+  `cert_validity_secs` configurable. Verified on a NerdQAxe++: pinned key
+  verifies and mines, wrong key rejected. Note: the bitaxe/nerdqaxe firmware
+  checks only the Schnorr signature, never the validity window (no wall
+  clock); upstream enforcement-toggle PRs: bitaxeorg/ESP-Miner#1796,
+  shufps/ESP-Miner-NerdQAxePlus#656.
 - [ ] **SV1-over-TLS (`stratum+ssl://`) — DEFERRED, build only on request.**
   Decision (2026-06-15): not building it. The target audience is the
   self-hosted *solo* crowd on a trusted LAN, where the value is marginal — solo

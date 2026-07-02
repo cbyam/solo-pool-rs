@@ -239,6 +239,8 @@ impl TemplateEngine {
         height: u64,
         hash_hex: &str,
         block_hex: String,
+        worker: &str,
+        stats: Arc<crate::stats::PoolStats>,
     ) -> Result<(), PoolError> {
         let block_hex = Arc::new(block_hex);
 
@@ -271,7 +273,13 @@ impl TemplateEngine {
             }
         }
 
-        self.spawn_resubmit_task(height, hash_hex.to_owned(), block_hex);
+        self.spawn_resubmit_task(
+            height,
+            hash_hex.to_owned(),
+            block_hex,
+            worker.to_owned(),
+            stats,
+        );
         Err(last_err
             .unwrap_or_else(|| PoolError::Other(anyhow::anyhow!("submitblock never attempted"))))
     }
@@ -292,6 +300,8 @@ impl TemplateEngine {
         height: u64,
         hash_hex: String,
         block_hex: Arc<String>,
+        worker: String,
+        stats: Arc<crate::stats::PoolStats>,
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
@@ -304,6 +314,9 @@ impl TemplateEngine {
                     Ok(()) => {
                         metrics::block_found();
                         metrics::block_submission_success();
+                        // Mirror the inline-success path so the dashboard's
+                        // block count / last-block panel agree with Prometheus.
+                        stats.block_found(&worker, &hash_hex);
                         info!(
                             "🏆 Block {hash_hex} (height {height}) accepted on \
                              retry attempt {attempt}"

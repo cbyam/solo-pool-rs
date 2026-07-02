@@ -9,6 +9,56 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- **SV2 pool identity (authority key pinning).** The Noise authority key now
+  persists across restarts (`[sv2] authority_key_file`, created on first start
+  with owner-only permissions, same pattern as bitcoind's `.cookie`), so the
+  pool keeps a stable identity that miners can pin. The base58check public key
+  (SRI `key-utils` format) is logged at startup and shown in the dashboard's
+  Connect modal with a copy button, and returned by `GET /api/info` as
+  `sv2_authority_pubkey`. Set it as the pool/authority public key on an SV2
+  miner to cryptographically verify the pool; miners that do not pin connect
+  exactly as before. `[sv2] persist_authority_key = false` opts out (fresh key
+  per process, the previous behavior).
+- `[sv2] cert_validity_secs` — validity window of the per-connection
+  certificate (default one year). Short values are useful for testing how a
+  verifying miner handles certificate expiry and clock skew.
+- Tests: full Noise handshakes against a pinning SRI initiator (correct key
+  accepted, wrong authority key rejected, expired certificate rejected, no-pin
+  still connects) plus authority-key-file round-trip/permission checks.
+
+### Changed
+- **Upgrade note (breaking for read-only deployments):** with SV2 enabled the
+  pool now creates `sv2-authority.key` (relative to its working directory) on
+  first start and **fails at boot if it cannot**. Deployments with a read-only
+  working directory, such as the shipped systemd unit with
+  `ProtectSystem=strict`, must set `[sv2] authority_key_file` to a writable
+  path (e.g. `/var/lib/solo-pool-rs/sv2-authority.key`) or set
+  `persist_authority_key = false`. Docker users who want the pool identity to
+  survive container re-creates should point it into the data volume
+  (`authority_key_file = "data/sv2-authority.key"`).
+
+### Fixed
+- Dashboard: the Connect modal **Copy buttons now actually copy** when the
+  dashboard is served over plain HTTP (the usual LAN case).
+  `navigator.clipboard` only exists in secure contexts, so the old code
+  selected the text and showed "Copied" without copying. Insecure contexts now
+  fall back to `document.execCommand('copy')`, and if even that fails the
+  button says "Copy manually" and leaves the text selected.
+- **Duplicate-share tracking** no longer misreports or permits bounded replay:
+  a share is recorded for dedup only after it validates (invalid submissions
+  previously occupied slots, so a later identical valid submit was wrongly
+  rejected as `duplicate`), and the per-session set is cleared on every
+  clean-job broadcast, scoping replay protection to live jobs instead of FIFO
+  eviction (evict-then-resubmit could inflate share/hashrate stats).
+- Pool **best-share / best-hashrate writes are monotonic end to end**: the
+  SQLite `UPDATE`s now carry a `?1 > ...` guard (matching the per-worker
+  variant) and the in-memory best-hashrate update is a CAS loop, so racing
+  writers can no longer regress a recorded best value.
+- A block accepted by the **background submit retrier** (inline attempts
+  failed, e.g. while bitcoind restarts) now updates the dashboard block count
+  and last-block panel, not just the Prometheus counters.
+
 ## [0.5.1] - 2026-06-15
 
 ### Added
