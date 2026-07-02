@@ -9,3 +9,4 @@ config.toml
 .windsurf/
 .github/copilot-instructions.md
 *.sqlite
+sv2-authority.key

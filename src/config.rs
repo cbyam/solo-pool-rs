@@ -63,17 +63,48 @@ pub struct Sv2Config {
     /// same listen port as SV1. The protocol is auto-detected from the first
     /// byte of each connection ('{' → SV1 JSON, otherwise → SV2 Noise
     /// handshake). When false, the pool rejects SV2 and only serves SV1.
-    ///
-    /// The Noise authority keypair is generated per process; miners such as the
-    /// NerdQAxe++ do not pin/verify the pool identity, so no key configuration is
-    /// required. (A persistent, configurable authority key can be added later for
-    /// identity pinning.)
     pub enabled: bool,
+    /// Persist the Noise authority key across restarts so miners can pin the
+    /// pool's identity (configure the pool's authority public key on the
+    /// miner). The key file is created on first start. When false, a fresh
+    /// authority key is generated each start; miners that pin the pool
+    /// identity will refuse to connect after every restart.
+    #[serde(default = "default_persist_authority_key")]
+    pub persist_authority_key: bool,
+    /// Path of the authority secret key file (base58check, one line). Created
+    /// with owner-only permissions on first start when `persist_authority_key`
+    /// is true. Relative paths resolve against the service working directory,
+    /// like `stats_db_path`. Supports `~` expansion.
+    #[serde(default = "default_authority_key_file")]
+    pub authority_key_file: String,
+    /// Validity window (seconds) of the certificate signed per handshake:
+    /// `valid_from = now`, `not_valid_after = now + cert_validity_secs`.
+    /// Miners that verify pool identity check this window against their own
+    /// clock, so short values expose device clock skew. Defaults to one year.
+    #[serde(default = "default_cert_validity_secs")]
+    pub cert_validity_secs: u32,
+}
+
+fn default_persist_authority_key() -> bool {
+    true
+}
+
+fn default_authority_key_file() -> String {
+    "sv2-authority.key".into()
+}
+
+fn default_cert_validity_secs() -> u32 {
+    365 * 24 * 60 * 60
 }
 
 impl Default for Sv2Config {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            persist_authority_key: default_persist_authority_key(),
+            authority_key_file: default_authority_key_file(),
+            cert_validity_secs: default_cert_validity_secs(),
+        }
     }
 }
 
@@ -240,6 +271,15 @@ impl Config {
                  a zero total extranonce width underflows SV2 channel setup"
             );
         }
+        if self.sv2.enabled
+            && self.sv2.persist_authority_key
+            && self.sv2.authority_key_file.trim().is_empty()
+        {
+            anyhow::bail!(
+                "[sv2] authority_key_file must not be empty while \
+                 persist_authority_key = true"
+            );
+        }
         Ok(())
     }
 }
@@ -344,7 +384,7 @@ fn infer_toml_scalar(raw: String) -> toml::Value {
 }
 
 /// Expand a leading `~` to the home directory.
-fn expand_tilde(path: &str) -> PathBuf {
+pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
             return Path::new(&home).join(rest);

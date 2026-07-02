@@ -28,8 +28,16 @@ pub const VERSION_ROLLING_MASK: u32 = 0x1FFF_E000;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Per-session duplicate-share tracker.
-/// Stores (job_id, extranonce2_hex, ntime, nonce) tuples.
-/// Bounded to prevent memory exhaustion — evicts the oldest entry when full.
+///
+/// Only *validated* shares are recorded (callers `contains`-check before
+/// validating and `insert` after it succeeds), so invalid submissions cannot
+/// occupy slots and later identical valid submits are judged on their own
+/// merits. Sessions `clear` the set on every clean-job broadcast — a clean job
+/// retires all outstanding jobs, so entries never need to outlive one — which
+/// keeps replay protection scoped to live jobs instead of depending on FIFO
+/// eviction. The FIFO cap remains as a memory backstop; filling it now takes
+/// real proof-of-work at the session floor difficulty within a single job
+/// generation, not free invalid submits.
 #[derive(Clone, Default)]
 pub struct ShareSet {
     seen: HashSet<ShareKey>,
@@ -39,12 +47,30 @@ pub struct ShareSet {
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
-struct ShareKey {
+pub struct ShareKey {
     job_id: String,
     extranonce2: Vec<u8>,
     ntime: u32,
     nonce: u32,
     version_bits: u32,
+}
+
+impl ShareKey {
+    pub fn new(
+        job_id: &str,
+        extranonce2: &[u8],
+        ntime: u32,
+        nonce: u32,
+        version_bits: u32,
+    ) -> Self {
+        Self {
+            job_id: job_id.to_string(),
+            extranonce2: extranonce2.to_vec(),
+            ntime,
+            nonce,
+            version_bits,
+        }
+    }
 }
 
 impl ShareSet {
@@ -56,24 +82,15 @@ impl ShareSet {
         }
     }
 
-    /// Returns true if this share has been seen before (duplicate).
-    pub fn check_and_insert(
-        &mut self,
-        job_id: &str,
-        extranonce2: &[u8],
-        ntime: u32,
-        nonce: u32,
-        version_bits: u32,
-    ) -> bool {
-        let key = ShareKey {
-            job_id: job_id.to_string(),
-            extranonce2: extranonce2.to_vec(),
-            ntime,
-            nonce,
-            version_bits,
-        };
+    /// Whether this share was already accepted this job generation.
+    pub fn contains(&self, key: &ShareKey) -> bool {
+        self.seen.contains(key)
+    }
+
+    /// Record a share that passed validation.
+    pub fn insert(&mut self, key: ShareKey) {
         if self.seen.contains(&key) {
-            return true; // duplicate
+            return;
         }
         if self.seen.len() >= self.max_size {
             // Evict the oldest entry rather than clearing the whole set.
@@ -83,7 +100,13 @@ impl ShareSet {
         }
         self.order.push_back(key.clone());
         self.seen.insert(key);
-        false
+    }
+
+    /// Drop all entries. Called on clean-job broadcasts: every outstanding job
+    /// is retired, so stale-job rejection takes over from dedup.
+    pub fn clear(&mut self) {
+        self.seen.clear();
+        self.order.clear();
     }
 }
 
@@ -224,27 +247,6 @@ pub fn validate_share_no_dedup(
         hash_difficulty,
         hash,
     })
-}
-
-#[allow(dead_code)]
-pub fn validate_share(
-    params: &ShareParams,
-    job: &StratumJob,
-    job_entry: &JobEntry,
-    extranonce1: &[u8],
-    session_difficulty: u64,
-    share_set: &mut ShareSet,
-) -> Result<ShareResult, PoolError> {
-    if share_set.check_and_insert(
-        &params.job_id,
-        &params.extranonce2,
-        params.ntime,
-        params.nonce,
-        params.version_bits.unwrap_or(0),
-    ) {
-        return Err(PoolError::DuplicateShare);
-    }
-    validate_share_no_dedup(params, job, job_entry, extranonce1, session_difficulty)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,12 +418,63 @@ mod tests {
     #[test]
     fn test_duplicate_share_detection() {
         let mut ss = ShareSet::new();
-        assert!(!ss.check_and_insert("job1", b"en2", 12345, 999, 0));
-        assert!(ss.check_and_insert("job1", b"en2", 12345, 999, 0));
+        let key = ShareKey::new("job1", b"en2", 12345, 999, 0);
+        assert!(!ss.contains(&key));
+        ss.insert(key.clone());
+        assert!(ss.contains(&key));
         // Different nonce should not be a duplicate
-        assert!(!ss.check_and_insert("job1", b"en2", 12345, 1000, 0));
+        assert!(!ss.contains(&ShareKey::new("job1", b"en2", 12345, 1000, 0)));
         // Different version bits should also not be a duplicate
-        assert!(!ss.check_and_insert("job1", b"en2", 12345, 1000, 0x2000));
+        assert!(!ss.contains(&ShareKey::new("job1", b"en2", 12345, 999, 0x2000)));
+    }
+
+    #[test]
+    fn invalid_shares_do_not_occupy_dedup_slots() {
+        // The caller only inserts after validation passes, so a rejected
+        // submission leaves no trace: an identical later submit that validates
+        // is judged fresh, not misreported as `duplicate`.
+        let mut ss = ShareSet::new();
+        let key = ShareKey::new("job1", b"en2", 12345, 999, 0);
+        assert!(!ss.contains(&key)); // invalid attempt: checked, never inserted
+        assert!(!ss.contains(&key)); // same share resubmitted: still fresh
+        ss.insert(key.clone()); // now it validates
+        assert!(ss.contains(&key)); // and only now is a resubmit a duplicate
+    }
+
+    #[test]
+    fn clear_retires_all_entries_on_clean_job() {
+        let mut ss = ShareSet::new();
+        let key = ShareKey::new("job1", b"en2", 12345, 999, 0);
+        ss.insert(key.clone());
+        assert!(ss.contains(&key));
+        ss.clear();
+        assert!(!ss.contains(&key));
+        // Re-inserting after a clear works (fresh job generation).
+        ss.insert(key.clone());
+        assert!(ss.contains(&key));
+    }
+
+    #[test]
+    fn insert_is_bounded_by_fifo_eviction() {
+        let mut ss = ShareSet {
+            max_size: 4,
+            ..ShareSet::default()
+        };
+        let keys: Vec<ShareKey> = (0..6)
+            .map(|n| ShareKey::new("job1", b"en2", 12345, n, 0))
+            .collect();
+        for k in &keys {
+            ss.insert(k.clone());
+        }
+        // Oldest two evicted, newest four retained.
+        assert!(!ss.contains(&keys[0]));
+        assert!(!ss.contains(&keys[1]));
+        for k in &keys[2..] {
+            assert!(ss.contains(k));
+        }
+        // Double-insert of a present key must not grow the FIFO or evict.
+        ss.insert(keys[5].clone());
+        assert!(ss.contains(&keys[2]));
     }
 
     #[test]

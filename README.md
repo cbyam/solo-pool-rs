@@ -263,11 +263,13 @@ On a NerdQAxe++ (AxeOS ≥ v1.0.37):
 | Field | Value |
 |---|---|
 | Stratum | select **Stratum V2** |
-| Encryption | **on** (Noise), no authority pubkey needed; leave it unset |
+| Encryption | **on** (Noise); authority pubkey optional, see below |
 | Host / Port | `<your-server-ip>` : `3333` (same as SV1) |
 | Worker | anything (used as the SV2 `user_identity`) |
 
 The connection is secured with the SV2 **Noise** handshake (pool = responder); the device then opens an **Extended Channel** and is served `NewExtendedMiningJob` + `SetNewPrevHash` from the same `getblocktemplate` pipeline as SV1. Set `enabled = false` under `[sv2]` to refuse SV2 and serve SV1 only.
+
+**Pool identity (optional pinning).** The pool signs each connection's Noise certificate with a persistent authority key and prints the base58check public key at startup (also shown in the dashboard's Connect modal, and at `GET /api/info`). Miners that support it can pin this key to cryptographically verify they are talking to your pool; miners that leave it unset connect exactly the same, encrypted but without identity verification. The key file (`[sv2] authority_key_file`, default `sv2-authority.key`) is created on first start; `persist_authority_key = false` reverts to a fresh key per process. Both the accept and reject paths are covered by tests that run a real handshake against a pinning SRI initiator, including wrong-key and expired-certificate cases.
 
 ---
 

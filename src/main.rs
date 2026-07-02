@@ -119,6 +119,20 @@ async fn main() -> Result<()> {
         tokio::spawn(engine.run(new_block_rx));
     }
 
+    // ── SV2 Noise authority (before the dashboard, which shows the pubkey) ────
+    let sv2_authority_pubkey = if config.sv2.enabled {
+        let pubkey = protocol::sv2::init_noise_authority(&config.sv2)
+            .context("Initialising SV2 Noise authority key")?;
+        if config.sv2.persist_authority_key {
+            info!("SV2 authority public key: {pubkey} (pin this on the miner to verify pool identity)");
+        } else {
+            info!("SV2 authority public key: {pubkey} (ephemeral: persist_authority_key = false, changes every restart)");
+        }
+        Some(pubkey)
+    } else {
+        None
+    };
+
     // ── Dashboard (after the engine exists: the Settings page triggers a
     //    clean-job refresh through it) ──────────────────────────────────────────
     network::dashboard::start(
@@ -130,6 +144,7 @@ async fn main() -> Result<()> {
         config.metrics.allow_runtime_settings,
         &config.pool.listen_addr,
         config.sv2.enabled,
+        sv2_authority_pubkey,
     )
     .await;
 

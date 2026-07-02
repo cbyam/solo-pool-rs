@@ -152,9 +152,14 @@ impl StatsStore {
         Ok((best_values.0, best_values.1, worker_best_shares))
     }
 
+    // The `?1 > ...` guards (matching set_worker_best_share) make the writes
+    // monotonic at the SQL level: two racing writers can call these out of
+    // order, and a stale lower value must not overwrite a higher one already
+    // persisted.
     fn set_best_share_difficulty(&self, difficulty: u64) {
         if let Err(e) = self.conn.lock().execute(
-            "UPDATE pool_stats SET best_share_difficulty = ?1 WHERE id = 1",
+            "UPDATE pool_stats SET best_share_difficulty = ?1
+             WHERE id = 1 AND ?1 > best_share_difficulty",
             params![difficulty],
         ) {
             warn!("Failed to persist best_share_difficulty: {e}");
@@ -163,7 +168,8 @@ impl StatsStore {
 
     fn set_best_hashrate_hps(&self, hps: f64) {
         if let Err(e) = self.conn.lock().execute(
-            "UPDATE pool_stats SET best_hashrate_hps = ?1 WHERE id = 1",
+            "UPDATE pool_stats SET best_hashrate_hps = ?1
+             WHERE id = 1 AND ?1 > best_hashrate_hps",
             params![hps],
         ) {
             warn!("Failed to persist best_hashrate_hps: {e}");
@@ -433,19 +439,37 @@ impl PoolStats {
             .map(|e| f64::from_bits(*e.value()))
             .sum();
 
-        // Track all-time best (persistent) and session-best (since boot)
-        let prev_best = f64::from_bits(self.best_hashrate_hps.load(Ordering::Relaxed));
-        if total_10m > prev_best {
-            self.best_hashrate_hps
-                .store(total_10m.to_bits(), Ordering::Relaxed);
-            self.persist_best_hashrate_hps(total_10m);
+        // Track all-time best (persistent) and session-best (since boot).
+        // CAS loops (like share_accepted's best-share tracking) so two racing
+        // updaters cannot let a lower value overwrite a higher one that landed
+        // between the load and the store.
+        let mut prev = self.best_hashrate_hps.load(Ordering::Relaxed);
+        while total_10m > f64::from_bits(prev) {
+            match self.best_hashrate_hps.compare_exchange_weak(
+                prev,
+                total_10m.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    self.persist_best_hashrate_hps(total_10m);
+                    break;
+                }
+                Err(x) => prev = x,
+            }
         }
 
-        let prev_session_best =
-            f64::from_bits(self.session_best_hashrate_hps.load(Ordering::Relaxed));
-        if total_10m > prev_session_best {
-            self.session_best_hashrate_hps
-                .store(total_10m.to_bits(), Ordering::Relaxed);
+        let mut prev_session = self.session_best_hashrate_hps.load(Ordering::Relaxed);
+        while total_10m > f64::from_bits(prev_session) {
+            match self.session_best_hashrate_hps.compare_exchange_weak(
+                prev_session,
+                total_10m.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(x) => prev_session = x,
+            }
         }
     }
 
