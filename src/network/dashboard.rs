@@ -574,8 +574,17 @@ tr:last-child td { border-bottom: none; }
 .led-warn { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
 .led-off { background: var(--muted); opacity: 0.45; }
 .col-led { text-align: center; }
-@keyframes blockFlash { 0% { background: var(--ok); } 100% { background: transparent; } }
-#v-height.block-new { animation: blockFlash 0.8s ease-out; }
+/* New chain tip: pulse the number itself in the accent color (two beats),
+   matching the other highlighted values instead of flashing the background. */
+@keyframes blockPulse {
+  0%   { color: var(--text);   transform: scale(1); }
+  15%  { color: var(--accent); transform: scale(1.14); }
+  40%  { color: var(--accent); transform: scale(1); }
+  55%  { color: var(--accent); transform: scale(1.08); }
+  75%  { color: var(--accent); transform: scale(1); }
+  100% { color: var(--text);   transform: scale(1); }
+}
+#v-height.block-new { animation: blockPulse 1.6s ease-in-out; transform-origin: left center; }
 
 /* ── Settings form / network badge ── */
 #net-badge {
