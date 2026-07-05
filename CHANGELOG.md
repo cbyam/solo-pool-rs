@@ -21,6 +21,10 @@ everything else bumps the **patch** version.
   browser (localStorage, like the theme), and while hidden the dashboard skips
   the periodic chart fetch; expanding re-fetches immediately.
 
+### Changed
+- New-block indication on the Chain tip card: the height now pulses in the
+  accent color (two beats), replacing the green background flash.
+
 ### Fixed
 - Per-worker rejected counts previously missed `job_not_found` rejects (SV1
   and SV2) and `bad_extranonce` rejects (SV2); only the pool-level counter
