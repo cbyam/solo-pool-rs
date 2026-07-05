@@ -9,6 +9,30 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-05
+
+### Added
+- **Per-reason reject breakdown on the dashboard.** Each worker's rejected
+  shares are now counted by reason (stale, duplicate, low difficulty, unknown
+  job, bad extranonce, invalid) in the in-memory stats and exposed via
+  `/api/stats` (`worker_states[].reject_reasons`). The Rejects tile shows the
+  pool-wide breakdown next to the stale rate, and hovering a worker's rejected
+  count in the workers table shows that worker's breakdown. Counters reset on
+  restart.
+- Hide/Show toggle on the hashrate chart panel. The choice persists in the
+  browser (localStorage, like the theme), and while hidden the dashboard skips
+  the periodic chart fetch; expanding re-fetches immediately.
+
+### Changed
+- New-block indication on the Chain tip card: the height now pulses in the
+  accent color (two beats), replacing the green background flash.
+
+### Fixed
+- Per-worker rejected counts previously missed `job_not_found` rejects (SV1
+  and SV2) and `bad_extranonce` rejects (SV2); only the pool-level counter
+  recorded them. All reject paths now increment the worker counter, matching
+  the Prometheus `pool_shares_rejected_total` metric.
+
 ## [0.6.0] - 2026-07-02
 
 ### Added
@@ -340,7 +364,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...v0.5.0

@@ -546,6 +546,13 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 /* ── Panels / chart / table ── */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.15rem 1.3rem; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.7rem; }
+.panel-controls { display: flex; align-items: center; gap: 0.7rem; }
+#chart-toggle {
+  cursor: pointer; font: inherit; font-size: 0.72rem; color: var(--muted);
+  background: none; border: 1px solid var(--border); border-radius: 5px;
+  padding: 0.22rem 0.45rem;
+}
+#chart-toggle:hover { color: var(--text); border-color: var(--muted); }
 .panel-title { font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.13em; color: var(--muted); }
 #timeframe-select {
   font: inherit; font-size: 0.72rem; color: var(--text); background: var(--surface2);
@@ -567,8 +574,17 @@ tr:last-child td { border-bottom: none; }
 .led-warn { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
 .led-off { background: var(--muted); opacity: 0.45; }
 .col-led { text-align: center; }
-@keyframes blockFlash { 0% { background: var(--ok); } 100% { background: transparent; } }
-#v-height.block-new { animation: blockFlash 0.8s ease-out; }
+/* New chain tip: pulse the number itself in the accent color (two beats),
+   matching the other highlighted values instead of flashing the background. */
+@keyframes blockPulse {
+  0%   { color: var(--text);   transform: scale(1); }
+  15%  { color: var(--accent); transform: scale(1.14); }
+  40%  { color: var(--accent); transform: scale(1); }
+  55%  { color: var(--accent); transform: scale(1.08); }
+  75%  { color: var(--accent); transform: scale(1); }
+  100% { color: var(--text);   transform: scale(1); }
+}
+#v-height.block-new { animation: blockPulse 1.6s ease-in-out; transform-origin: left center; }
 
 /* ── Settings form / network badge ── */
 #net-badge {
@@ -738,15 +754,18 @@ tr:last-child td { border-bottom: none; }
   <div class="panel">
     <div class="panel-head">
       <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes" style="cursor:help;">&#9432;</span></div>
-      <label style="font-size:0.72rem; color:var(--muted);">Window
-        <select id="timeframe-select">
-          <option value="36h" selected>36h</option>
-          <option value="1w">1w</option>
-          <option value="1m">1m</option>
-          <option value="6m">6m</option>
-          <option value="all">all</option>
-        </select>
-      </label>
+      <div class="panel-controls">
+        <label id="chart-window-label" style="font-size:0.72rem; color:var(--muted);">Window
+          <select id="timeframe-select">
+            <option value="36h" selected>36h</option>
+            <option value="1w">1w</option>
+            <option value="1m">1m</option>
+            <option value="6m">6m</option>
+            <option value="all">all</option>
+          </select>
+        </label>
+        <button id="chart-toggle" title="Hide or show the hashrate chart">Hide</button>
+      </div>
     </div>
     <div id="hashrate-chart"></div>
   </div>
@@ -965,7 +984,28 @@ window.addEventListener('resize', () => myChart.resize());
 
 document.getElementById('theme-toggle').addEventListener('click', () => {
   applyTheme(currentTheme() === 'light' ? 'carbon' : 'light');
-  loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
+  if (!chartCollapsed()) loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
+});
+
+// ── Chart collapse toggle ────────────────────────────────────────────────────
+// Persisted like the theme choice; while collapsed the periodic chart fetch
+// is skipped, and expanding re-fetches so the chart is current immediately.
+const CHART_COLLAPSED_KEY = 'chartCollapsed';
+function chartCollapsed() {
+  try { return localStorage.getItem(CHART_COLLAPSED_KEY) === '1'; } catch (_) { return false; }
+}
+function applyChartCollapsed(collapsed) {
+  try { localStorage.setItem(CHART_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (_) {}
+  document.getElementById('hashrate-chart').style.display = collapsed ? 'none' : '';
+  document.getElementById('chart-window-label').style.display = collapsed ? 'none' : '';
+  document.getElementById('chart-toggle').textContent = collapsed ? 'Show' : 'Hide';
+  if (!collapsed) {
+    myChart.resize(); // container was display:none; ECharts needs a re-measure
+    loadChart(selectedWindow);
+  }
+}
+document.getElementById('chart-toggle').addEventListener('click', () => {
+  applyChartCollapsed(!chartCollapsed());
 });
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -1143,9 +1183,21 @@ async function refresh() {
     const rejectPct = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';
     const staleTotal = Array.isArray(d.worker_states) ? d.worker_states.reduce((sum, w) => sum + (w.shares_stale || 0), 0) : 0;
     const stalePct = total > 0 ? (staleTotal / total * 100).toFixed(1) : '0.0';
+    const reasonTotals = {};
+    (Array.isArray(d.worker_states) ? d.worker_states : []).forEach(w => {
+      Object.entries(w.reject_reasons || {}).forEach(([r, n]) => {
+        reasonTotals[r] = (reasonTotals[r] || 0) + n;
+      });
+    });
+    const otherReasons = Object.entries(reasonTotals)
+      .filter(([r, n]) => r !== 'stale' && n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([r, n]) => `${rejectLabel(r)}: ${n.toLocaleString()}`)
+      .join(' · ');
 
     document.getElementById('v-reject-rate').textContent = `${d.shares_rejected.toLocaleString()} (${rejectPct}%)`;
-    document.getElementById('v-stale-rate').textContent = `Stale: ${staleTotal.toLocaleString()} (${stalePct}%)`;
+    document.getElementById('v-stale-rate').textContent =
+      `Stale: ${staleTotal.toLocaleString()} (${stalePct}%)` + (otherReasons ? ` · ${otherReasons}` : '');
 
     const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
     const onlineCount = workers.filter(w => w.online).length;
@@ -1180,7 +1232,7 @@ async function refresh() {
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
             <td>${fmtHr(w.hashrate_24h_hps, false)}</td>
             <td>${w.shares_accepted.toLocaleString()}</td>
-            <td>${w.shares_rejected.toLocaleString()}</td>
+            <td title="${rejectBreakdown(w)}">${w.shares_rejected.toLocaleString()}</td>
             <td>${fmtDiff(w.best_share_difficulty)}</td>
             <td>${lastShareAgo}</td>
             <td>${uptime}</td>
@@ -1195,6 +1247,27 @@ async function refresh() {
     console.error('Dashboard refresh error:', e);
   }
   updateConnLed();
+}
+
+const REJECT_LABELS = {
+  stale: 'Stale',
+  duplicate: 'Duplicate',
+  low_difficulty: 'Low diff',
+  job_not_found: 'Unknown job',
+  bad_extranonce: 'Bad extranonce',
+  invalid: 'Invalid',
+};
+
+function rejectLabel(reason) {
+  return REJECT_LABELS[reason] || reason;
+}
+
+function rejectBreakdown(w) {
+  const parts = Object.entries(w.reject_reasons || {})
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `${rejectLabel(r)}: ${n.toLocaleString()}`);
+  return parts.length ? parts.join(', ') : 'No rejects';
 }
 
 function fmtOdds(p) {
@@ -1413,7 +1486,11 @@ document.getElementById('connect-to-settings').addEventListener('click', e => {
 });
 
 attachTimeframeSelector();
-loadChart(DEFAULT_WINDOW);
+if (chartCollapsed()) {
+  applyChartCollapsed(true);
+} else {
+  loadChart(DEFAULT_WINDOW);
+}
 updateConnLed();
 refresh();
 loadSettings();
@@ -1422,7 +1499,7 @@ setInterval(refresh, 10000);
 // Re-evaluate the connectivity LED between refreshes so it goes stale on its
 // own even if refresh() stops landing (server down, tab throttled, etc.).
 setInterval(updateConnLed, 5000);
-setInterval(() => loadChart(selectedWindow), 60000);
+setInterval(() => { if (!chartCollapsed()) loadChart(selectedWindow); }, 60000);
 setInterval(fetchBtcPrice, 60000);
 </script>
 </body>
