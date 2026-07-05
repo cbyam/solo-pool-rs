@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-05
+
 ### Added
 - **Per-reason reject breakdown on the dashboard.** Each worker's rejected
   shares are now counted by reason (stale, duplicate, low difficulty, unknown
@@ -362,7 +364,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.4.2...v0.5.0

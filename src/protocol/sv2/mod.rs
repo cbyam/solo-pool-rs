@@ -576,7 +576,9 @@ async fn handle_submit(
         );
         metrics::share_rejected("bad_extranonce", &worker);
         session.stats.share_rejected();
-        session.stats.worker_share_rejected(&worker, "bad_extranonce");
+        session
+            .stats
+            .worker_share_rejected(&worker, "bad_extranonce");
         if session.guard.invalid_shares.record_invalid() {
             return Flow::Disconnect("too many invalid shares".into());
         }
@@ -601,7 +603,9 @@ async fn handle_submit(
         None => {
             metrics::share_rejected("job_not_found", &worker);
             session.stats.share_rejected();
-            session.stats.worker_share_rejected(&worker, "job_not_found");
+            session
+                .stats
+                .worker_share_rejected(&worker, "job_not_found");
             if session.guard.invalid_shares.record_invalid() {
                 return Flow::Disconnect("too many invalid shares".into());
             }
