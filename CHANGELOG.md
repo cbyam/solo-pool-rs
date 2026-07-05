@@ -9,6 +9,21 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- **Per-reason reject breakdown on the dashboard.** Each worker's rejected
+  shares are now counted by reason (stale, duplicate, low difficulty, unknown
+  job, bad extranonce, invalid) in the in-memory stats and exposed via
+  `/api/stats` (`worker_states[].reject_reasons`). The Rejects tile shows the
+  pool-wide breakdown next to the stale rate, and hovering a worker's rejected
+  count in the workers table shows that worker's breakdown. Counters reset on
+  restart.
+
+### Fixed
+- Per-worker rejected counts previously missed `job_not_found` rejects (SV1
+  and SV2) and `bad_extranonce` rejects (SV2); only the pool-level counter
+  recorded them. All reject paths now increment the worker counter, matching
+  the Prometheus `pool_shares_rejected_total` metric.
+
 ## [0.6.0] - 2026-07-02
 
 ### Added

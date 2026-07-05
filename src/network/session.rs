@@ -676,6 +676,7 @@ async fn handle_submit(
         None => {
             metrics::share_rejected("job_not_found", worker);
             session.stats.share_rejected();
+            session.stats.worker_share_rejected(worker, "job_not_found");
             if session.guard.invalid_shares.record_invalid() {
                 return HandleResult::Disconnect("too many invalid shares".into());
             }
@@ -732,7 +733,7 @@ async fn handle_submit(
     if session.share_set.contains(&share_key) {
         metrics::share_rejected("duplicate", worker);
         session.stats.share_rejected();
-        session.stats.worker_share_rejected(worker);
+        session.stats.worker_share_rejected(worker, "duplicate");
         if session.guard.invalid_shares.record_invalid() {
             return HandleResult::Disconnect("too many invalid shares".into());
         }
@@ -876,10 +877,7 @@ async fn handle_submit(
             );
             metrics::share_rejected(reason, worker);
             session.stats.share_rejected();
-            session.stats.worker_share_rejected(worker);
-            if let PoolError::StaleJob(_) = e {
-                session.stats.worker_share_stale(worker);
-            }
+            session.stats.worker_share_rejected(worker, reason);
             session.shares_rejected += 1;
 
             // Low-difficulty shares are expected during vardiff transitions — the miner
