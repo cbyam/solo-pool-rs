@@ -7,6 +7,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -267,6 +268,10 @@ pub struct WorkerState {
     pub shares_accepted: u64,
     pub shares_rejected: u64,
     pub shares_stale: u64,
+    /// Rejected shares broken down by reason ("stale", "duplicate",
+    /// "low_difficulty", ...). Keys come from the fixed reason strings at the
+    /// reject sites, so cardinality is bounded. Session-lifetime, not persisted.
+    pub reject_reasons: BTreeMap<String, u64>,
     pub best_share_difficulty: u64,
     pub active_sessions: u64,
     pub connected_ts: u64,
@@ -527,6 +532,7 @@ impl PoolStats {
                     shares_accepted: 0,
                     shares_rejected: 0,
                     shares_stale: 0,
+                    reject_reasons: BTreeMap::new(),
                     best_share_difficulty,
                     active_sessions: 1,
                     connected_ts: now,
@@ -579,15 +585,13 @@ impl PoolStats {
         }
     }
 
-    pub fn worker_share_rejected(&self, worker: &str) {
+    pub fn worker_share_rejected(&self, worker: &str, reason: &str) {
         if let Some(mut state) = self.worker_states.get_mut(worker) {
             state.shares_rejected += 1;
-        }
-    }
-
-    pub fn worker_share_stale(&self, worker: &str) {
-        if let Some(mut state) = self.worker_states.get_mut(worker) {
-            state.shares_stale += 1;
+            *state.reject_reasons.entry(reason.to_string()).or_insert(0) += 1;
+            if reason == "stale" {
+                state.shares_stale += 1;
+            }
         }
     }
 
@@ -786,6 +790,7 @@ impl PoolStats {
                 shares_accepted: 0,
                 shares_rejected: 0,
                 shares_stale: 0,
+                reject_reasons: BTreeMap::new(),
                 best_share_difficulty: *entry.value(),
                 active_sessions: 0,
                 connected_ts: 0,
@@ -967,6 +972,25 @@ mod tests {
         assert!(stats.worker_states.get("online").is_some());
         assert!(stats.worker_states.get("recent").is_some());
         assert!(stats.worker_states.get("idle").is_none());
+    }
+
+    #[test]
+    fn worker_rejects_are_counted_per_reason() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("w", 1_000);
+
+        stats.worker_share_rejected("w", "stale");
+        stats.worker_share_rejected("w", "stale");
+        stats.worker_share_rejected("w", "low_difficulty");
+        stats.worker_share_rejected("w", "duplicate");
+
+        let state = stats.worker_states.get("w").unwrap();
+        assert_eq!(state.shares_rejected, 4);
+        assert_eq!(state.shares_stale, 2);
+        assert_eq!(state.reject_reasons.get("stale"), Some(&2));
+        assert_eq!(state.reject_reasons.get("low_difficulty"), Some(&1));
+        assert_eq!(state.reject_reasons.get("duplicate"), Some(&1));
+        assert_eq!(state.reject_reasons.get("invalid"), None);
     }
 
     #[test]

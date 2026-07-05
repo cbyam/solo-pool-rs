@@ -1143,9 +1143,21 @@ async function refresh() {
     const rejectPct = total > 0 ? (d.shares_rejected / total * 100).toFixed(1) : '0.0';
     const staleTotal = Array.isArray(d.worker_states) ? d.worker_states.reduce((sum, w) => sum + (w.shares_stale || 0), 0) : 0;
     const stalePct = total > 0 ? (staleTotal / total * 100).toFixed(1) : '0.0';
+    const reasonTotals = {};
+    (Array.isArray(d.worker_states) ? d.worker_states : []).forEach(w => {
+      Object.entries(w.reject_reasons || {}).forEach(([r, n]) => {
+        reasonTotals[r] = (reasonTotals[r] || 0) + n;
+      });
+    });
+    const otherReasons = Object.entries(reasonTotals)
+      .filter(([r, n]) => r !== 'stale' && n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([r, n]) => `${rejectLabel(r)}: ${n.toLocaleString()}`)
+      .join(' · ');
 
     document.getElementById('v-reject-rate').textContent = `${d.shares_rejected.toLocaleString()} (${rejectPct}%)`;
-    document.getElementById('v-stale-rate').textContent = `Stale: ${staleTotal.toLocaleString()} (${stalePct}%)`;
+    document.getElementById('v-stale-rate').textContent =
+      `Stale: ${staleTotal.toLocaleString()} (${stalePct}%)` + (otherReasons ? ` · ${otherReasons}` : '');
 
     const workers = Array.isArray(d.worker_states) ? d.worker_states : [];
     const onlineCount = workers.filter(w => w.online).length;
@@ -1180,7 +1192,7 @@ async function refresh() {
             <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
             <td>${fmtHr(w.hashrate_24h_hps, false)}</td>
             <td>${w.shares_accepted.toLocaleString()}</td>
-            <td>${w.shares_rejected.toLocaleString()}</td>
+            <td title="${rejectBreakdown(w)}">${w.shares_rejected.toLocaleString()}</td>
             <td>${fmtDiff(w.best_share_difficulty)}</td>
             <td>${lastShareAgo}</td>
             <td>${uptime}</td>
@@ -1195,6 +1207,27 @@ async function refresh() {
     console.error('Dashboard refresh error:', e);
   }
   updateConnLed();
+}
+
+const REJECT_LABELS = {
+  stale: 'Stale',
+  duplicate: 'Duplicate',
+  low_difficulty: 'Low diff',
+  job_not_found: 'Unknown job',
+  bad_extranonce: 'Bad extranonce',
+  invalid: 'Invalid',
+};
+
+function rejectLabel(reason) {
+  return REJECT_LABELS[reason] || reason;
+}
+
+function rejectBreakdown(w) {
+  const parts = Object.entries(w.reject_reasons || {})
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `${rejectLabel(r)}: ${n.toLocaleString()}`);
+  return parts.length ? parts.join(', ') : 'No rejects';
 }
 
 function fmtOdds(p) {
