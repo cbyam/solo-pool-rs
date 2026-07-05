@@ -586,6 +586,15 @@ tr:last-child td { border-bottom: none; }
 }
 #v-height.block-new { animation: blockPulse 1.6s ease-in-out; transform-origin: left center; }
 
+/* BTC price tick: pulse the number green/red by direction, settling back. */
+@keyframes pricePulse { 0% { color: var(--pulse); } 70% { color: var(--pulse); } 100% { color: var(--text); } }
+#v-btc-price.price-up   { --pulse: var(--ok);  animation: pricePulse 1.4s ease-out; }
+#v-btc-price.price-down { --pulse: var(--bad); animation: pricePulse 1.4s ease-out; }
+/* .kpi .sub sets the muted color at higher specificity; win it back for the
+   24h change line. */
+.kpi .sub.ok  { color: var(--ok); }
+.kpi .sub.bad { color: var(--bad); }
+
 /* ── Settings form / network badge ── */
 #net-badge {
   font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
@@ -820,6 +829,7 @@ tr:last-child td { border-bottom: none; }
     <div class="kpi">
       <div class="label">Market</div>
       <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC: &mdash;</div>
+      <div class="sub" id="v-btc-change">24h: &mdash;</div>
     </div>
   </div>
 </section>
@@ -1323,14 +1333,29 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+let lastBtcPrice = null;
 async function fetchBtcPrice() {
   try {
-    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true');
     if (!resp.ok) return;
     const data = await resp.json();
     const price = data?.bitcoin?.usd;
+    const change = data?.bitcoin?.usd_24h_change;
     if (price != null) {
-      document.getElementById('v-btc-price').textContent = 'BTC $' + price.toLocaleString([], { maximumFractionDigits: 0 });
+      const el = document.getElementById('v-btc-price');
+      el.textContent = 'BTC $' + price.toLocaleString([], { maximumFractionDigits: 0 });
+      if (lastBtcPrice != null && price !== lastBtcPrice) {
+        el.classList.remove('price-up', 'price-down');
+        void el.offsetWidth; // restart the animation
+        el.classList.add(price > lastBtcPrice ? 'price-up' : 'price-down');
+      }
+      lastBtcPrice = price;
+    }
+    if (change != null) {
+      const chEl = document.getElementById('v-btc-change');
+      chEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(1) + '% (24h)';
+      chEl.classList.remove('ok', 'bad');
+      chEl.classList.add(change >= 0 ? 'ok' : 'bad');
     }
   } catch (_) {}
 }
