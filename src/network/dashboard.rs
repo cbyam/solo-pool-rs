@@ -586,10 +586,15 @@ tr:last-child td { border-bottom: none; }
 }
 #v-height.block-new { animation: blockPulse 1.6s ease-in-out; transform-origin: left center; }
 
-/* BTC price tick: pulse the number green/red by direction, settling back. */
-@keyframes pricePulse { 0% { color: var(--pulse); } 70% { color: var(--pulse); } 100% { color: var(--text); } }
-#v-btc-price.price-up   { --pulse: var(--ok);  animation: pricePulse 1.4s ease-out; }
-#v-btc-price.price-down { --pulse: var(--bad); animation: pricePulse 1.4s ease-out; }
+/* BTC price tick: pulse just the price digits green/red by direction. */
+@keyframes pricePulse { 0% { color: var(--pulse); } 70% { color: var(--pulse); } 100% { color: inherit; } }
+#v-btc-price-num.price-up   { --pulse: var(--ok);  animation: pricePulse 1.4s ease-out; }
+#v-btc-price-num.price-down { --pulse: var(--bad); animation: pricePulse 1.4s ease-out; }
+#pair-select {
+  font: inherit; font-size: 0.62rem; color: var(--muted); text-transform: none;
+  letter-spacing: normal; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0.08rem 0.25rem;
+}
 /* .kpi .sub sets the muted color at higher specificity; win it back for the
    24h change line. */
 .kpi .sub.ok  { color: var(--ok); }
@@ -827,8 +832,18 @@ tr:last-child td { border-bottom: none; }
       <div class="sub" id="v-block-reward">Reward: &mdash;</div>
     </div>
     <div class="kpi">
-      <div class="label">Market</div>
-      <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC: &mdash;</div>
+      <div class="label" style="display:flex; justify-content:space-between; align-items:center;">Market
+        <select id="pair-select" title="Quote currency">
+          <option selected>USD</option>
+          <option>EUR</option>
+          <option>GBP</option>
+          <option>CAD</option>
+          <option>AUD</option>
+          <option>CHF</option>
+          <option>JPY</option>
+        </select>
+      </div>
+      <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC <span id="v-btc-price-num">&mdash;</span></div>
       <div class="sub" id="v-btc-change">24h: &mdash;</div>
     </div>
   </div>
@@ -1333,17 +1348,31 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+const PAIR_KEY = 'btcPair';
+const PAIRS = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'CHF', 'JPY'];
+function currentPair() {
+  try {
+    const p = localStorage.getItem(PAIR_KEY);
+    return PAIRS.includes(p) ? p : 'USD';
+  } catch (_) { return 'USD'; }
+}
+
 let lastBtcPrice = null;
 async function fetchBtcPrice() {
+  const pair = currentPair();
   try {
-    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true');
+    const vs = pair.toLowerCase();
+    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=' + vs + '&include_24hr_change=true');
     if (!resp.ok) return;
     const data = await resp.json();
-    const price = data?.bitcoin?.usd;
-    const change = data?.bitcoin?.usd_24h_change;
+    if (pair !== currentPair()) return; // pair switched while the fetch was in flight
+    const price = data?.bitcoin?.[vs];
+    const change = data?.bitcoin?.[vs + '_24h_change'];
     if (price != null) {
-      const el = document.getElementById('v-btc-price');
-      el.textContent = 'BTC $' + price.toLocaleString([], { maximumFractionDigits: 0 });
+      const el = document.getElementById('v-btc-price-num');
+      el.textContent = new Intl.NumberFormat(undefined, {
+        style: 'currency', currency: pair, maximumFractionDigits: 0,
+      }).format(price);
       if (lastBtcPrice != null && price !== lastBtcPrice) {
         el.classList.remove('price-up', 'price-down');
         void el.offsetWidth; // restart the animation
@@ -1359,6 +1388,14 @@ async function fetchBtcPrice() {
     }
   } catch (_) {}
 }
+
+const pairSelect = document.getElementById('pair-select');
+pairSelect.value = currentPair();
+pairSelect.addEventListener('change', () => {
+  try { localStorage.setItem(PAIR_KEY, pairSelect.value); } catch (_) {}
+  lastBtcPrice = null; // a currency switch is not a price move; don't pulse
+  fetchBtcPrice();
+});
 
 // ── Settings page ────────────────────────────────────────────────────────────
 function updateNetBadge(network) {
