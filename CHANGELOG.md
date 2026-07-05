@@ -17,6 +17,9 @@ everything else bumps the **patch** version.
   pool-wide breakdown next to the stale rate, and hovering a worker's rejected
   count in the workers table shows that worker's breakdown. Counters reset on
   restart.
+- Hide/Show toggle on the hashrate chart panel. The choice persists in the
+  browser (localStorage, like the theme), and while hidden the dashboard skips
+  the periodic chart fetch; expanding re-fetches immediately.
 
 ### Fixed
 - Per-worker rejected counts previously missed `job_not_found` rejects (SV1

@@ -546,6 +546,13 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 /* ── Panels / chart / table ── */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.15rem 1.3rem; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.7rem; }
+.panel-controls { display: flex; align-items: center; gap: 0.7rem; }
+#chart-toggle {
+  cursor: pointer; font: inherit; font-size: 0.72rem; color: var(--muted);
+  background: none; border: 1px solid var(--border); border-radius: 5px;
+  padding: 0.22rem 0.45rem;
+}
+#chart-toggle:hover { color: var(--text); border-color: var(--muted); }
 .panel-title { font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.13em; color: var(--muted); }
 #timeframe-select {
   font: inherit; font-size: 0.72rem; color: var(--text); background: var(--surface2);
@@ -738,15 +745,18 @@ tr:last-child td { border-bottom: none; }
   <div class="panel">
     <div class="panel-head">
       <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes" style="cursor:help;">&#9432;</span></div>
-      <label style="font-size:0.72rem; color:var(--muted);">Window
-        <select id="timeframe-select">
-          <option value="36h" selected>36h</option>
-          <option value="1w">1w</option>
-          <option value="1m">1m</option>
-          <option value="6m">6m</option>
-          <option value="all">all</option>
-        </select>
-      </label>
+      <div class="panel-controls">
+        <label id="chart-window-label" style="font-size:0.72rem; color:var(--muted);">Window
+          <select id="timeframe-select">
+            <option value="36h" selected>36h</option>
+            <option value="1w">1w</option>
+            <option value="1m">1m</option>
+            <option value="6m">6m</option>
+            <option value="all">all</option>
+          </select>
+        </label>
+        <button id="chart-toggle" title="Hide or show the hashrate chart">Hide</button>
+      </div>
     </div>
     <div id="hashrate-chart"></div>
   </div>
@@ -965,7 +975,28 @@ window.addEventListener('resize', () => myChart.resize());
 
 document.getElementById('theme-toggle').addEventListener('click', () => {
   applyTheme(currentTheme() === 'light' ? 'carbon' : 'light');
-  loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
+  if (!chartCollapsed()) loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
+});
+
+// ── Chart collapse toggle ────────────────────────────────────────────────────
+// Persisted like the theme choice; while collapsed the periodic chart fetch
+// is skipped, and expanding re-fetches so the chart is current immediately.
+const CHART_COLLAPSED_KEY = 'chartCollapsed';
+function chartCollapsed() {
+  try { return localStorage.getItem(CHART_COLLAPSED_KEY) === '1'; } catch (_) { return false; }
+}
+function applyChartCollapsed(collapsed) {
+  try { localStorage.setItem(CHART_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (_) {}
+  document.getElementById('hashrate-chart').style.display = collapsed ? 'none' : '';
+  document.getElementById('chart-window-label').style.display = collapsed ? 'none' : '';
+  document.getElementById('chart-toggle').textContent = collapsed ? 'Show' : 'Hide';
+  if (!collapsed) {
+    myChart.resize(); // container was display:none; ECharts needs a re-measure
+    loadChart(selectedWindow);
+  }
+}
+document.getElementById('chart-toggle').addEventListener('click', () => {
+  applyChartCollapsed(!chartCollapsed());
 });
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -1446,7 +1477,11 @@ document.getElementById('connect-to-settings').addEventListener('click', e => {
 });
 
 attachTimeframeSelector();
-loadChart(DEFAULT_WINDOW);
+if (chartCollapsed()) {
+  applyChartCollapsed(true);
+} else {
+  loadChart(DEFAULT_WINDOW);
+}
 updateConnLed();
 refresh();
 loadSettings();
@@ -1455,7 +1490,7 @@ setInterval(refresh, 10000);
 // Re-evaluate the connectivity LED between refreshes so it goes stale on its
 // own even if refresh() stops landing (server down, tab throttled, etc.).
 setInterval(updateConnLed, 5000);
-setInterval(() => loadChart(selectedWindow), 60000);
+setInterval(() => { if (!chartCollapsed()) loadChart(selectedWindow); }, 60000);
 setInterval(fetchBtcPrice, 60000);
 </script>
 </body>
