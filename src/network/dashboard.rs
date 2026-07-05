@@ -1382,7 +1382,7 @@ async function fetchBtcPrice() {
     }
     if (change != null) {
       const chEl = document.getElementById('v-btc-change');
-      chEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(1) + '% (24h)';
+      chEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '% (24h)';
       chEl.classList.remove('ok', 'bad');
       chEl.classList.add(change >= 0 ? 'ok' : 'bad');
     }
