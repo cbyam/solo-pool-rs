@@ -11,9 +11,10 @@ everything else bumps the **patch** version.
 
 ### Added
 - Market card: 24-hour price change shown as a green/red percentage under the
-  BTC price, and the price pulses green or red on each tick by direction
-  (fetched from CoinGecko every 60 seconds, now with the 24h-change field on
-  the same request).
+  BTC price, and the price digits pulse green or red on each tick by
+  direction (fetched from CoinGecko every 60 seconds, with the 24h-change
+  field on the same request). A quote-currency selector (USD, EUR, GBP, CAD,
+  AUD, CHF, JPY) persists in the browser like the theme choice.
 
 ## [0.6.1] - 2026-07-05
 
