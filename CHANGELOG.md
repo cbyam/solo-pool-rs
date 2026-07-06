@@ -9,6 +9,19 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Market card: 24-hour price change shown as a green/red percentage under the
+  BTC price, and the price digits pulse green or red on each tick by
+  direction (fetched from CoinGecko every 60 seconds, with the 24h-change
+  field on the same request). A quote-currency selector (USD, EUR, GBP, CAD,
+  AUD, CHF, JPY) persists in the browser like the theme choice.
+- Mobile layout: below 880px the nav collapses into a hamburger drawer
+  (brand left, menu button right; links, Connect/Settings, Raw metrics,
+  Theme, and Uptime inside). The workers table now scrolls horizontally
+  inside its panel instead of stretching the whole page, and on phones the
+  Mode, Vardiff, 3h/24h hashrate, Best share, and Uptime columns are hidden
+  so the essentials fit without scrolling.
+
 ## [0.6.1] - 2026-07-05
 
 ### Added
