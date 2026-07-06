@@ -475,7 +475,8 @@ body {
 }
 .brand { display: flex; align-items: center; gap: 0.5rem; padding: 0 0.6rem; }
 .brand img.mark { height: 1.9rem; width: auto; border-radius: 5px; display: block; }
-.brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; }
+.brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; white-space: nowrap; }
+#nav-burger { display: none; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a, nav .nav-btn {
   color: var(--muted); text-decoration: none; font-size: 0.8rem; font-weight: 500;
@@ -545,6 +546,9 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 
 /* ── Panels / chart / table ── */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.15rem 1.3rem; }
+/* A too-wide table scrolls inside its panel instead of stretching the page
+   (which pushed every other card off-balance on narrow screens). */
+#workers .panel { overflow-x: auto; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.7rem; }
 .panel-controls { display: flex; align-items: center; gap: 0.7rem; }
 #chart-toggle {
@@ -585,6 +589,20 @@ tr:last-child td { border-bottom: none; }
   100% { color: var(--text);   transform: scale(1); }
 }
 #v-height.block-new { animation: blockPulse 1.6s ease-in-out; transform-origin: left center; }
+
+/* BTC price tick: pulse just the price digits green/red by direction. */
+@keyframes pricePulse { 0% { color: var(--pulse); } 70% { color: var(--pulse); } 100% { color: inherit; } }
+#v-btc-price-num.price-up   { --pulse: var(--ok);  animation: pricePulse 1.4s ease-out; }
+#v-btc-price-num.price-down { --pulse: var(--bad); animation: pricePulse 1.4s ease-out; }
+#pair-select {
+  font: inherit; font-size: 0.62rem; color: var(--muted); text-transform: none;
+  letter-spacing: normal; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0.08rem 0.25rem;
+}
+/* .kpi .sub sets the muted color at higher specificity; win it back for the
+   24h change line. */
+.kpi .sub.ok  { color: var(--ok); }
+.kpi .sub.bad { color: var(--bad); }
 
 /* ── Settings form / network badge ── */
 #net-badge {
@@ -658,18 +676,45 @@ tr:last-child td { border-bottom: none; }
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
   .shell { flex-direction: column; }
+  /* Top bar: brand left, burger right; nav + foot live in a drawer that
+     expands below the bar (pushing content down — no overlay to manage). */
   .rail {
     width: 100%; height: auto; position: static; flex-direction: row;
-    align-items: center; gap: 0.9rem; padding: 0.7rem 1rem;
+    flex-wrap: wrap; align-items: center; gap: 0.9rem; padding: 0.7rem 1rem;
     border-right: none; border-bottom: 1px solid var(--border);
   }
-  nav { flex-direction: row; }
-  nav a { border-left: none; border-bottom: 2px solid transparent; border-radius: 5px 5px 0 0; }
-  nav a.active { border-left-color: transparent; border-bottom-color: var(--accent); }
-  .rail-foot { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; gap: 0.8rem; }
+  #nav-burger {
+    display: block; margin-left: auto; cursor: pointer;
+    font-size: 1.15rem; line-height: 1; color: var(--muted);
+    background: none; border: 1px solid var(--border); border-radius: 5px;
+    padding: 0.25rem 0.55rem;
+  }
+  #nav-burger:hover { color: var(--text); border-color: var(--muted); }
+  .rail.nav-open #nav-burger { color: var(--text); border-color: var(--accent); }
+  nav, .rail-foot { display: none; }
+  .rail.nav-open nav {
+    display: flex; flex-direction: column; width: 100%;
+    padding-top: 0.5rem; border-top: 1px solid var(--border);
+  }
+  .rail.nav-open .rail-foot {
+    display: flex; flex-direction: row; flex-wrap: wrap; align-items: center;
+    width: 100%; margin-top: 0; gap: 0.8rem;
+  }
   .rail-foot .hide-sm { display: none; }
   main { padding: 1.2rem 1rem 2rem; }
   .hero-side { margin-left: 0; padding-left: 0; border-left: none; }
+}
+
+/* Phone: the 12-column workers table can't fit; drop the columns a phone
+   glance doesn't need (Mode, Vardiff, 3h/24h hashrate, Best share, Uptime)
+   and let anything still wider scroll inside its panel. */
+@media (max-width: 660px) {
+  #workers th:nth-child(3), #workers td:nth-child(3),
+  #workers th:nth-child(4), #workers td:nth-child(4),
+  #workers th:nth-child(6), #workers td:nth-child(6),
+  #workers th:nth-child(7), #workers td:nth-child(7),
+  #workers th:nth-child(10), #workers td:nth-child(10),
+  #workers th:nth-child(12), #workers td:nth-child(12) { display: none; }
 }
 </style>
 </head>
@@ -678,6 +723,7 @@ tr:last-child td { border-bottom: none; }
 
 <aside class="rail">
   <div class="brand"><img id="brand-logo" class="mark" src="/logo-dark.svg" alt="solo-pool-rs logo" width="64" height="64"><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
+  <button type="button" id="nav-burger" aria-label="Toggle menu" aria-expanded="false">&#9776;</button>
   <nav id="rail-nav">
     <a href="#overview" data-section="overview" class="active">Overview</a>
     <a href="#workers" data-section="workers">Workers</a>
@@ -818,8 +864,19 @@ tr:last-child td { border-bottom: none; }
       <div class="sub" id="v-block-reward">Reward: &mdash;</div>
     </div>
     <div class="kpi">
-      <div class="label">Market</div>
-      <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC: &mdash;</div>
+      <div class="label" style="display:flex; justify-content:space-between; align-items:center;">Market
+        <select id="pair-select" title="Quote currency">
+          <option selected>USD</option>
+          <option>EUR</option>
+          <option>GBP</option>
+          <option>CAD</option>
+          <option>AUD</option>
+          <option>CHF</option>
+          <option>JPY</option>
+        </select>
+      </div>
+      <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC <span id="v-btc-price-num">&mdash;</span></div>
+      <div class="sub" id="v-btc-change">24h: &mdash;</div>
     </div>
   </div>
 </section>
@@ -985,6 +1042,19 @@ window.addEventListener('resize', () => myChart.resize());
 document.getElementById('theme-toggle').addEventListener('click', () => {
   applyTheme(currentTheme() === 'light' ? 'carbon' : 'light');
   if (!chartCollapsed()) loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
+});
+
+// ── Mobile nav drawer ────────────────────────────────────────────────────────
+const railEl = document.querySelector('.rail');
+const burgerEl = document.getElementById('nav-burger');
+burgerEl.addEventListener('click', () => {
+  const open = railEl.classList.toggle('nav-open');
+  burgerEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+// Any tap inside the drawer that navigates or opens a modal also closes it.
+document.getElementById('rail-nav').addEventListener('click', () => {
+  railEl.classList.remove('nav-open');
+  burgerEl.setAttribute('aria-expanded', 'false');
 });
 
 // ── Chart collapse toggle ────────────────────────────────────────────────────
@@ -1323,17 +1393,54 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-async function fetchBtcPrice() {
+const PAIR_KEY = 'btcPair';
+const PAIRS = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'CHF', 'JPY'];
+function currentPair() {
   try {
-    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+    const p = localStorage.getItem(PAIR_KEY);
+    return PAIRS.includes(p) ? p : 'USD';
+  } catch (_) { return 'USD'; }
+}
+
+let lastBtcPrice = null;
+async function fetchBtcPrice() {
+  const pair = currentPair();
+  try {
+    const vs = pair.toLowerCase();
+    const resp = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=' + vs + '&include_24hr_change=true');
     if (!resp.ok) return;
     const data = await resp.json();
-    const price = data?.bitcoin?.usd;
+    if (pair !== currentPair()) return; // pair switched while the fetch was in flight
+    const price = data?.bitcoin?.[vs];
+    const change = data?.bitcoin?.[vs + '_24h_change'];
     if (price != null) {
-      document.getElementById('v-btc-price').textContent = 'BTC $' + price.toLocaleString([], { maximumFractionDigits: 0 });
+      const el = document.getElementById('v-btc-price-num');
+      el.textContent = new Intl.NumberFormat(undefined, {
+        style: 'currency', currency: pair, maximumFractionDigits: 0,
+      }).format(price);
+      if (lastBtcPrice != null && price !== lastBtcPrice) {
+        el.classList.remove('price-up', 'price-down');
+        void el.offsetWidth; // restart the animation
+        el.classList.add(price > lastBtcPrice ? 'price-up' : 'price-down');
+      }
+      lastBtcPrice = price;
+    }
+    if (change != null) {
+      const chEl = document.getElementById('v-btc-change');
+      chEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '% (24h)';
+      chEl.classList.remove('ok', 'bad');
+      chEl.classList.add(change >= 0 ? 'ok' : 'bad');
     }
   } catch (_) {}
 }
+
+const pairSelect = document.getElementById('pair-select');
+pairSelect.value = currentPair();
+pairSelect.addEventListener('change', () => {
+  try { localStorage.setItem(PAIR_KEY, pairSelect.value); } catch (_) {}
+  lastBtcPrice = null; // a currency switch is not a price move; don't pulse
+  fetchBtcPrice();
+});
 
 // ── Settings page ────────────────────────────────────────────────────────────
 function updateNetBadge(network) {
