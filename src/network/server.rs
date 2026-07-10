@@ -138,17 +138,15 @@ pub async fn run(
         let sock = socket2::SockRef::from(&stream);
         let keepalive = socket2::TcpKeepalive::new()
             .with_time(std::time::Duration::from_secs(TCP_KEEPALIVE_IDLE_SECS))
-            .with_interval(std::time::Duration::from_secs(
-                TCP_KEEPALIVE_INTERVAL_SECS,
-            ))
+            .with_interval(std::time::Duration::from_secs(TCP_KEEPALIVE_INTERVAL_SECS))
             .with_retries(TCP_KEEPALIVE_RETRIES);
         if let Err(e) = sock.set_tcp_keepalive(&keepalive) {
             warn!("TCP keepalive setup failed for {peer}: {e}");
         }
         #[cfg(target_os = "linux")]
-        if let Err(e) = sock.set_tcp_user_timeout(Some(std::time::Duration::from_secs(
-            TCP_USER_TIMEOUT_SECS,
-        ))) {
+        if let Err(e) =
+            sock.set_tcp_user_timeout(Some(std::time::Duration::from_secs(TCP_USER_TIMEOUT_SECS)))
+        {
             warn!("TCP_USER_TIMEOUT failed for {peer}: {e}");
         }
 
