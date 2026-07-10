@@ -160,6 +160,11 @@ pub async fn run(
     let idle_timeout = tokio::time::Duration::from_secs(config.pool.idle_timeout_secs);
     let preauth_timeout =
         tokio::time::Duration::from_secs(crate::network::server::HANDSHAKE_TIMEOUT_SECS);
+    // Idle tracking must anchor on the last *inbound* message: every completed
+    // select! iteration (job broadcasts arrive far more often than the idle
+    // timeout) recreates the read-arm future, so a plain timeout() would reset
+    // the idle clock and a dead peer that keeps receiving jobs never times out.
+    let mut last_inbound = tokio::time::Instant::now();
 
     loop {
         // Until a worker authorizes, hold the connection to the short handshake
@@ -172,8 +177,8 @@ pub async fn run(
         };
         tokio::select! {
             // ── Inbound message from miner ──────────────────────────────────
-            line_result = tokio::time::timeout(
-                read_timeout,
+            line_result = tokio::time::timeout_at(
+                last_inbound + read_timeout,
                 read_line_bounded(&mut reader, &mut line_buf, session.guard.max_message_bytes),
             ) => {
                 match line_result {
@@ -196,6 +201,7 @@ pub async fn run(
                         break;
                     }
                     Ok(Ok(Some(_len))) => {
+                        last_inbound = tokio::time::Instant::now();
                         let line = match std::str::from_utf8(&line_buf) {
                             Ok(s) => s,
                             Err(_) => {
