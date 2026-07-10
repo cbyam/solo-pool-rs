@@ -22,6 +22,17 @@ everything else bumps the **patch** version.
   Mode, Vardiff, 3h/24h hashrate, Best share, and Uptime columns are hidden
   so the essentials fit without scrolling.
 
+### Fixed
+- **Offline workers no longer freeze the pool hashrate.** Windowed hashrate
+  estimates are only recomputed while a miner's session is delivering traffic,
+  so a disconnected worker's last values stayed in the dashboard totals
+  unchanged until eviction (up to 24 hours). Offline workers' estimates now
+  decay linearly out of each window: the 60s figure reads zero after a minute
+  offline, 10m after ten minutes, 3h after three hours, 24h after a day. The
+  decayed values feed the dashboard totals, the per-worker rows, the hashrate
+  history chart, and the best-hashrate watermark. Online workers and
+  reconnects behave as before.
+
 ## [0.6.1] - 2026-07-05
 
 ### Added
