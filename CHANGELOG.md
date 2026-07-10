@@ -32,6 +32,21 @@ everything else bumps the **patch** version.
   decayed values feed the dashboard totals, the per-worker rows, the hashrate
   history chart, and the best-hashrate watermark. Online workers and
   reconnects behave as before.
+- **Dead miners are detected in about a minute instead of 15-20 minutes.**
+  A powered-off miner sends no TCP FIN, and two intended defenses were not
+  working: the accept path claimed to enable TCP keepalive but only set
+  TCP_NODELAY, and the per-session idle timeout was reset by every job
+  broadcast (the timeout future is recreated each `select!` iteration), so it
+  never fired for a dead peer still being sent jobs. Detection was left to the
+  kernel's retransmission budget on job writes (15-20 minutes with Linux
+  defaults). Accepted sockets now get real TCP keepalive (probe after 60s
+  idle, every 10s, 3 tries) plus `TCP_USER_TIMEOUT` (90s, Linux) bounding
+  unacked job writes, and the idle timeout in both session loops (SV1 and SV2)
+  anchors on the last inbound message, so `idle_timeout_secs` now works as
+  documented. Note for very small hardware: the broken timeout also never
+  disconnected legitimate miners whose share interval exceeds
+  `idle_timeout_secs` (default 300). If your vardiff floor puts a miner's
+  expected share pace above that, raise `idle_timeout_secs`.
 
 ## [0.6.1] - 2026-07-05
 

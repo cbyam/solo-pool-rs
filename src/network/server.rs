@@ -28,6 +28,22 @@ use tracing::{info, warn};
 /// cannot pin the bounded global connection slots.
 pub(crate) const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
+/// TCP keepalive tuning for accepted miner connections. A powered-off miner
+/// sends no FIN, so without probes a dead-but-quiet connection lives until the
+/// kernel exhausts its retransmission budget on the next write (15-20 minutes
+/// with Linux defaults). Probe after 60s of silence, every 10s, give up after
+/// 3 failed probes: a dead peer is detected within ~90 seconds.
+const TCP_KEEPALIVE_IDLE_SECS: u64 = 60;
+const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 10;
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+/// Upper bound on how long written data (job broadcasts) may sit unacked
+/// before the kernel declares the connection dead. Covers the write-to-dead-
+/// peer path the same way keepalive covers the idle path. On Linux this also
+/// overrides keepalive's retry accounting, so keep the two in the same
+/// ballpark.
+const TCP_USER_TIMEOUT_SECS: u64 = 90;
+
 pub async fn run(
     config: Arc<Config>,
     engine: Arc<TemplateEngine>,
@@ -116,9 +132,22 @@ pub async fn run(
         }
 
         // ── TCP tuning ───────────────────────────────────────────────────────
-        // Keep-alive so we detect dead miners without waiting for idle_timeout
         if let Err(e) = stream.set_nodelay(true) {
             warn!("TCP_NODELAY failed for {peer}: {e}");
+        }
+        let sock = socket2::SockRef::from(&stream);
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(TCP_KEEPALIVE_IDLE_SECS))
+            .with_interval(std::time::Duration::from_secs(TCP_KEEPALIVE_INTERVAL_SECS))
+            .with_retries(TCP_KEEPALIVE_RETRIES);
+        if let Err(e) = sock.set_tcp_keepalive(&keepalive) {
+            warn!("TCP keepalive setup failed for {peer}: {e}");
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(e) =
+            sock.set_tcp_user_timeout(Some(std::time::Duration::from_secs(TCP_USER_TIMEOUT_SECS)))
+        {
+            warn!("TCP_USER_TIMEOUT failed for {peer}: {e}");
         }
 
         // ── Spawn session task ───────────────────────────────────────────────

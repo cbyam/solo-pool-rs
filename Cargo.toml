@@ -14,6 +14,9 @@ path = "src/main.rs"
 [dependencies]
 # ── Async runtime ──────────────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }
+# Socket options tokio doesn't expose (TCP keepalive, TCP_USER_TIMEOUT); already
+# in the dependency tree via tokio.
+socket2 = { version = "0.6", features = ["all"] }
 
 # ── Bitcoin primitives ─────────────────────────────────────────────────────────
 bitcoin = { version = "0.32", features = ["rand-std"] }
