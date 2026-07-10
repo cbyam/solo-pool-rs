@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-10
+
 ### Added
 - Market card: 24-hour price change shown as a green/red percentage under the
   BTC price, and the price digits pulse green or red on each tick by
@@ -403,7 +405,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.0...v0.5.1
