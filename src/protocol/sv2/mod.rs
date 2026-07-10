@@ -237,6 +237,11 @@ pub async fn run(
 
     let idle_timeout = Duration::from_secs(config.pool.idle_timeout_secs);
     let preauth_timeout = Duration::from_secs(crate::network::server::HANDSHAKE_TIMEOUT_SECS);
+    // Idle tracking must anchor on the last *inbound* message: every completed
+    // select! iteration (job broadcasts arrive far more often than the idle
+    // timeout) recreates the read-arm future, so a plain timeout() would reset
+    // the idle clock and a dead peer that keeps receiving jobs never times out.
+    let mut last_inbound = tokio::time::Instant::now();
 
     loop {
         // Until the channel opens (worker identified), hold the connection to
@@ -248,11 +253,11 @@ pub async fn run(
         };
         tokio::select! {
             // ── Inbound (decrypted) SV2 message ─────────────────────────────
-            inbound = tokio::time::timeout(read_timeout, inbound_rx.recv()) => {
+            inbound = tokio::time::timeout_at(last_inbound + read_timeout, inbound_rx.recv()) => {
                 let (msg_type, mut payload) = match inbound {
                     Err(_) => { warn!("SV2 miner {peer} idle timeout — disconnecting"); break; }
                     Ok(None) => { debug!("SV2 {peer} reader closed"); break; }
-                    Ok(Some(m)) => m,
+                    Ok(Some(m)) => { last_inbound = tokio::time::Instant::now(); m }
                 };
 
                 if let Err(e) = session.guard.check_message_size(payload.len()) {
