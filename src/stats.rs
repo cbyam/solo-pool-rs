@@ -26,6 +26,21 @@ const IDLE_WORKER_EVICT_SECS: u64 = 86_400;
 /// operator's real fleet is far below this.
 const MAX_WORKER_BEST_SHARES: usize = 512;
 
+/// The trailing windows (seconds) behind the 60s / 10m / 3h / 24h hashrate
+/// estimates. Must match the windows the session loops pass to
+/// `Vardiff::estimated_hashrate_in_window`.
+const HASHRATE_WINDOW_60S: u64 = 60;
+const HASHRATE_WINDOW_10M: u64 = 600;
+const HASHRATE_WINDOW_3H: u64 = 10_800;
+const HASHRATE_WINDOW_24H: u64 = 86_400;
+
+/// Fraction of a trailing window still covered by an estimate computed
+/// `elapsed` seconds ago, assuming shares were spread evenly across it.
+/// Reaches 0.0 once the whole window postdates the estimate.
+fn window_overlap(elapsed: u64, window_secs: u64) -> f64 {
+    (1.0 - elapsed as f64 / window_secs as f64).max(0.0)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Persistent store for all-time metrics
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +265,11 @@ pub struct PoolStats {
     worker_hashrates_10m: DashMap<String, u64>,
     worker_hashrates_3h: DashMap<String, u64>,
     worker_hashrates_24h: DashMap<String, u64>,
+    /// When each worker's hashrate estimates were last recomputed. Estimates
+    /// only refresh while a session is delivering traffic, so this is the
+    /// anchor for decaying an offline worker's frozen values out of each
+    /// window (see `worker_hashrates`).
+    worker_hashrate_updated_ts: DashMap<String, u64>,
     worker_protocol: DashMap<String, String>,
     worker_last_submit_ts: DashMap<String, u64>,
     worker_best_shares: DashMap<String, u64>,
@@ -331,6 +351,7 @@ impl PoolStats {
             worker_hashrates_10m: DashMap::new(),
             worker_hashrates_3h: DashMap::new(),
             worker_hashrates_24h: DashMap::new(),
+            worker_hashrate_updated_ts: DashMap::new(),
             worker_protocol: DashMap::new(),
             worker_last_submit_ts: DashMap::new(),
             worker_best_shares,
@@ -437,11 +458,16 @@ impl PoolStats {
             .insert(worker.to_string(), hps_3h.to_bits());
         self.worker_hashrates_24h
             .insert(worker.to_string(), hps_24h.to_bits());
+        let now = Self::now_secs();
+        self.worker_hashrate_updated_ts
+            .insert(worker.to_string(), now);
 
+        // Decayed sum, so a worker that went offline at high hashrate can't
+        // keep inflating the pool total (and the best-hashrate watermark).
         let total_10m: f64 = self
             .worker_hashrates_10m
             .iter()
-            .map(|e| f64::from_bits(*e.value()))
+            .map(|e| self.worker_hashrates(e.key(), now).1)
             .sum();
 
         // Track all-time best (persistent) and session-best (since boot).
@@ -483,6 +509,49 @@ impl PoolStats {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
+    }
+
+    /// The four windowed hashrate estimates for `worker`: (60s, 10m, 3h, 24h).
+    ///
+    /// Estimates only refresh while the miner's session is delivering traffic,
+    /// so an offline worker's stored values would otherwise freeze at their
+    /// last computed level. To keep each window honest, an offline worker's
+    /// values decay linearly by the fraction of the window that has passed
+    /// since the last recompute: the 60s figure reads zero after a minute
+    /// offline, the 24h figure after a day. Online workers are returned as
+    /// stored, since their session recomputes on every message.
+    fn worker_hashrates(&self, worker: &str, now: u64) -> (f64, f64, f64, f64) {
+        let get = |map: &DashMap<String, u64>| {
+            map.get(worker)
+                .map(|h| f64::from_bits(*h.value()))
+                .unwrap_or(0.0)
+        };
+        let hr_60s = get(&self.worker_hashrates_60s);
+        let hr_10m = get(&self.worker_hashrates_10m);
+        let hr_3h = get(&self.worker_hashrates_3h);
+        let hr_24h = get(&self.worker_hashrates_24h);
+
+        let online = self
+            .worker_states
+            .get(worker)
+            .map(|s| s.online)
+            .unwrap_or(false);
+        if online {
+            return (hr_60s, hr_10m, hr_3h, hr_24h);
+        }
+
+        let updated = self
+            .worker_hashrate_updated_ts
+            .get(worker)
+            .map(|v| *v.value())
+            .unwrap_or(0);
+        let elapsed = now.saturating_sub(updated);
+        (
+            hr_60s * window_overlap(elapsed, HASHRATE_WINDOW_60S),
+            hr_10m * window_overlap(elapsed, HASHRATE_WINDOW_10M),
+            hr_3h * window_overlap(elapsed, HASHRATE_WINDOW_3H),
+            hr_24h * window_overlap(elapsed, HASHRATE_WINDOW_24H),
+        )
     }
 
     /// Record the connection protocol ("sv1" / "sv2") for a worker.
@@ -627,6 +696,7 @@ impl PoolStats {
             self.worker_hashrates_10m.remove(w);
             self.worker_hashrates_3h.remove(w);
             self.worker_hashrates_24h.remove(w);
+            self.worker_hashrate_updated_ts.remove(w);
             self.worker_protocol.remove(w);
             self.worker_last_submit_ts.remove(w);
         }
@@ -677,7 +747,7 @@ impl PoolStats {
             let hps: f64 = self
                 .worker_hashrates_10m
                 .iter()
-                .map(|e| f64::from_bits(*e.value()))
+                .map(|e| self.worker_hashrates(e.key(), ts).1)
                 .sum();
             store.record_hashrate_snapshot(ts, hps);
         }
@@ -706,16 +776,13 @@ impl PoolStats {
     }
 
     pub fn snapshot(&self) -> StatsSnapshot {
+        let now = Self::now_secs();
         let worker_hashrates: Vec<WorkerHashrate> = self
             .worker_hashrates_10m
             .iter()
             .map(|e| {
                 let worker = e.key().clone();
-                let get = |map: &DashMap<String, u64>| {
-                    map.get(&worker)
-                        .map(|h| f64::from_bits(*h.value()))
-                        .unwrap_or(0.0)
-                };
+                let (hr_60s, hr_10m, hr_3h, hr_24h) = self.worker_hashrates(&worker, now);
                 WorkerHashrate {
                     worker: worker.clone(),
                     last_submit_ts: self
@@ -723,10 +790,10 @@ impl PoolStats {
                         .get(&worker)
                         .map(|v| *v.value())
                         .unwrap_or(0),
-                    hashrate_60s_hps: get(&self.worker_hashrates_60s),
-                    hashrate_10m_hps: f64::from_bits(*e.value()),
-                    hashrate_3h_hps: get(&self.worker_hashrates_3h),
-                    hashrate_24h_hps: get(&self.worker_hashrates_24h),
+                    hashrate_60s_hps: hr_60s,
+                    hashrate_10m_hps: hr_10m,
+                    hashrate_3h_hps: hr_3h,
+                    hashrate_24h_hps: hr_24h,
                 }
             })
             .collect();
@@ -747,15 +814,11 @@ impl PoolStats {
                 let worker = e.key();
                 seen.insert(worker.clone());
                 state.worker = worker.clone();
-                let get = |map: &DashMap<String, u64>| {
-                    map.get(worker)
-                        .map(|h| f64::from_bits(*h.value()))
-                        .unwrap_or(0.0)
-                };
-                state.hashrate_60s_hps = get(&self.worker_hashrates_60s);
-                state.hashrate_10m_hps = get(&self.worker_hashrates_10m);
-                state.hashrate_3h_hps = get(&self.worker_hashrates_3h);
-                state.hashrate_24h_hps = get(&self.worker_hashrates_24h);
+                let (hr_60s, hr_10m, hr_3h, hr_24h) = self.worker_hashrates(worker, now);
+                state.hashrate_60s_hps = hr_60s;
+                state.hashrate_10m_hps = hr_10m;
+                state.hashrate_3h_hps = hr_3h;
+                state.hashrate_24h_hps = hr_24h;
                 if let Some(p) = self.worker_protocol.get(worker) {
                     state.protocol = p.value().clone();
                 }
@@ -1038,5 +1101,108 @@ mod tests {
         assert_eq!(w1.best_share_difficulty, 4000);
 
         std::fs::remove_file(db_path).ok();
+    }
+
+    const TH: f64 = 1e12;
+
+    /// Backdate a worker's last hashrate recompute so decay tests don't sleep.
+    fn backdate_hashrate_update(stats: &PoolStats, worker: &str, secs_ago: u64) {
+        stats
+            .worker_hashrate_updated_ts
+            .insert(worker.to_string(), PoolStats::now_secs() - secs_ago);
+    }
+
+    #[test]
+    fn offline_worker_hashrate_decays_out_of_each_window() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("axe", 1024);
+        stats.update_worker_hashrate("axe", TH, TH, TH, TH);
+        stats.mark_worker_offline("axe");
+
+        // 700s offline: past the 60s and 10m windows, partway into 3h and 24h.
+        backdate_hashrate_update(&stats, "axe", 700);
+
+        let ss = stats.snapshot();
+        assert_eq!(ss.total_hashrate_60s, 0.0);
+        assert_eq!(ss.total_hashrate_10m, 0.0);
+        // Tolerances cover the clock ticking between backdating and snapshot.
+        let tol_3h = 3.0 * TH / HASHRATE_WINDOW_3H as f64;
+        let tol_24h = 3.0 * TH / HASHRATE_WINDOW_24H as f64;
+        assert!((ss.total_hashrate_3h - TH * (1.0 - 700.0 / 10_800.0)).abs() < tol_3h);
+        assert!((ss.total_hashrate_24h - TH * (1.0 - 700.0 / 86_400.0)).abs() < tol_24h);
+
+        // Per-worker rows decay the same way, in both dashboard shapes.
+        let row = &ss.worker_hashrates[0];
+        assert_eq!(row.hashrate_60s_hps, 0.0);
+        assert_eq!(row.hashrate_10m_hps, 0.0);
+        let state = ss.worker_states.iter().find(|w| w.worker == "axe").unwrap();
+        assert_eq!(state.hashrate_10m_hps, 0.0);
+        assert!(state.hashrate_3h_hps > 0.0);
+    }
+
+    #[test]
+    fn offline_worker_hashrate_zeroes_after_the_longest_window() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("axe", 1024);
+        stats.update_worker_hashrate("axe", TH, TH, TH, TH);
+        stats.mark_worker_offline("axe");
+
+        backdate_hashrate_update(&stats, "axe", HASHRATE_WINDOW_24H);
+
+        let ss = stats.snapshot();
+        assert_eq!(ss.total_hashrate_60s, 0.0);
+        assert_eq!(ss.total_hashrate_10m, 0.0);
+        assert_eq!(ss.total_hashrate_3h, 0.0);
+        assert_eq!(ss.total_hashrate_24h, 0.0);
+    }
+
+    #[test]
+    fn online_worker_hashrate_is_not_decayed() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("axe", 1024);
+        stats.update_worker_hashrate("axe", TH, TH, TH, TH);
+
+        // Even with a stale recompute timestamp, online workers report the
+        // stored values; their session refreshes them on every message.
+        backdate_hashrate_update(&stats, "axe", 700);
+
+        let ss = stats.snapshot();
+        assert_eq!(ss.total_hashrate_60s, TH);
+        assert_eq!(ss.total_hashrate_10m, TH);
+        assert_eq!(ss.total_hashrate_3h, TH);
+        assert_eq!(ss.total_hashrate_24h, TH);
+    }
+
+    #[test]
+    fn reconnecting_worker_hashrate_resumes_from_fresh_estimates() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("axe", 1024);
+        stats.update_worker_hashrate("axe", TH, TH, TH, TH);
+        stats.mark_worker_offline("axe");
+        backdate_hashrate_update(&stats, "axe", HASHRATE_WINDOW_24H);
+        assert_eq!(stats.snapshot().total_hashrate_10m, 0.0);
+
+        stats.mark_worker_online("axe", 1024);
+        stats.update_worker_hashrate("axe", 2.0 * TH, 2.0 * TH, 2.0 * TH, 2.0 * TH);
+
+        let ss = stats.snapshot();
+        assert_eq!(ss.total_hashrate_10m, 2.0 * TH);
+        assert_eq!(ss.total_hashrate_24h, 2.0 * TH);
+    }
+
+    #[test]
+    fn offline_worker_does_not_inflate_best_hashrate_watermark() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("a", 1024);
+        stats.update_worker_hashrate("a", TH, TH, TH, TH);
+        stats.mark_worker_offline("a");
+        backdate_hashrate_update(&stats, "a", HASHRATE_WINDOW_24H);
+
+        // A second worker updating must not see worker "a"'s frozen 1 TH/s in
+        // the pool total that feeds the best-hashrate watermark.
+        stats.mark_worker_online("b", 1024);
+        stats.update_worker_hashrate("b", TH, TH, TH, TH);
+
+        assert_eq!(stats.snapshot().session_best_hashrate_hps, TH);
     }
 }
