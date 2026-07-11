@@ -9,6 +9,14 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- SV2 setup rejections now answer with a spec-compliant `SetupConnection.Error`
+  before disconnecting: `unsupported-protocol` for non-mining sub-protocols
+  (such as a Job Declarator Client) and `protocol-version-mismatch` for
+  version ranges the pool cannot serve. Previously the connection was closed
+  without a reply, which a conformant client could not distinguish from a
+  network fault. Malformed payloads still disconnect immediately.
+
 ## [0.6.2] - 2026-07-10
 
 ### Added

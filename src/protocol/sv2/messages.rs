@@ -13,7 +13,9 @@
 //! here directly (no Noise — see the SV2 dependency note in Cargo.toml).
 use anyhow::{anyhow, Result};
 use binary_sv2::{Str0255, B032, U256};
-use common_messages_sv2::{Protocol, SetupConnection, SetupConnectionSuccess};
+use common_messages_sv2::{
+    Protocol, SetupConnection, SetupConnectionError, SetupConnectionSuccess,
+};
 use framing_sv2::header::Header;
 use mining_sv2::{
     OpenExtendedMiningChannel, OpenExtendedMiningChannelSuccess, OpenMiningChannelError, SetTarget,
@@ -51,20 +53,21 @@ pub fn frame_bytes(msg_type: u8, channel_msg: bool, payload: &[u8]) -> Vec<u8> {
 
 #[derive(Debug)]
 pub struct SetupConn {
+    pub protocol: Protocol,
     pub min_version: u16,
     pub max_version: u16,
     #[allow(dead_code)]
     pub flags: u32,
 }
 
-/// Decode `SetupConnection`, rejecting any non-mining sub-protocol.
+/// Decode `SetupConnection`. The sub-protocol check lives in the handler so a
+/// well-formed request for an unsupported protocol (e.g. a Job Declarator
+/// Client) gets a `SetupConnection.Error` reply instead of a bare disconnect.
 pub fn decode_setup_connection(payload: &mut [u8]) -> Result<SetupConn> {
     let m: SetupConnection =
         binary_sv2::from_bytes(payload).map_err(|e| anyhow!("decode SetupConnection: {e:?}"))?;
-    if !matches!(m.protocol, Protocol::MiningProtocol) {
-        return Err(anyhow!("unsupported sub-protocol: {:?}", m.protocol));
-    }
     Ok(SetupConn {
+        protocol: m.protocol,
         min_version: m.min_version,
         max_version: m.max_version,
         flags: m.flags,
@@ -137,6 +140,17 @@ pub fn setup_connection_success(used_version: u16) -> Result<Vec<u8>> {
     encode(SetupConnectionSuccess {
         used_version,
         flags: 0,
+    })
+}
+
+/// `SetupConnection.Error` with a spec-defined error code
+/// (`unsupported-protocol`, `protocol-version-mismatch`). `flags` stays 0: it
+/// only carries data for `unsupported-feature-flags`, which we never reject on.
+pub fn setup_connection_error(code: &str) -> Result<Vec<u8>> {
+    encode(SetupConnectionError {
+        flags: 0,
+        error_code: Str0255::try_from(code.to_string())
+            .map_err(|e| anyhow!("error_code: {e:?}"))?,
     })
 }
 
@@ -217,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_connection_decode_accepts_mining_and_rejects_others() {
+    fn setup_connection_decode_reports_sub_protocol() {
         let mk = |protocol: Protocol| {
             let m = SetupConnection {
                 protocol,
@@ -236,11 +250,26 @@ mod tests {
 
         let mut mining = mk(Protocol::MiningProtocol);
         let decoded = decode_setup_connection(&mut mining).unwrap();
+        assert!(matches!(decoded.protocol, Protocol::MiningProtocol));
         assert_eq!(decoded.min_version, 2);
         assert_eq!(decoded.max_version, 2);
 
+        // A non-mining sub-protocol still decodes; the handler answers it with
+        // SetupConnection.Error rather than a bare disconnect.
         let mut jd = mk(Protocol::JobDeclarationProtocol);
-        assert!(decode_setup_connection(&mut jd).is_err());
+        let decoded = decode_setup_connection(&mut jd).unwrap();
+        assert!(matches!(decoded.protocol, Protocol::JobDeclarationProtocol));
+    }
+
+    #[test]
+    fn setup_connection_error_roundtrips_error_code() {
+        let mut bytes = setup_connection_error("unsupported-protocol").unwrap();
+        let decoded: SetupConnectionError = binary_sv2::from_bytes(&mut bytes).unwrap();
+        assert_eq!(decoded.flags, 0);
+        assert_eq!(
+            decoded.error_code.inner_as_ref(),
+            b"unsupported-protocol" as &[u8]
+        );
     }
 
     #[test]
