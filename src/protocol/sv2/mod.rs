@@ -32,12 +32,13 @@ use crate::{
     security::{BanList, SessionGuard},
     stats::PoolStats,
 };
+use common_messages_sv2::Protocol;
 use const_sv2::{
     MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB,
     MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL, MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCES,
     MESSAGE_TYPE_OPEN_MINING_CHANNEL_ERROR, MESSAGE_TYPE_SETUP_CONNECTION,
-    MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS, MESSAGE_TYPE_SET_TARGET,
-    MESSAGE_TYPE_SUBMIT_SHARES_ERROR, MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
+    MESSAGE_TYPE_SETUP_CONNECTION_ERROR, MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS,
+    MESSAGE_TYPE_SET_TARGET, MESSAGE_TYPE_SUBMIT_SHARES_ERROR, MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
     MESSAGE_TYPE_SUBMIT_SHARES_SUCCESS,
 };
 use std::{
@@ -406,13 +407,27 @@ async fn handle_setup_connection(
 ) -> Flow {
     let setup = match messages::decode_setup_connection(payload) {
         Ok(s) => s,
+        // Malformed payload: nothing sane to reply to, just drop.
         Err(e) => return Flow::Disconnect(format!("bad SetupConnection: {e}")),
     };
+    if !matches!(setup.protocol, Protocol::MiningProtocol) {
+        return setup_error(
+            writer,
+            "unsupported-protocol",
+            format!("unsupported sub-protocol: {:?}", setup.protocol),
+        )
+        .await;
+    }
     if setup.min_version > SV2_PROTOCOL_VERSION {
-        return Flow::Disconnect(format!(
-            "unsupported SV2 version range {}..{}",
-            setup.min_version, setup.max_version
-        ));
+        return setup_error(
+            writer,
+            "protocol-version-mismatch",
+            format!(
+                "unsupported SV2 version range {}..{}",
+                setup.min_version, setup.max_version
+            ),
+        )
+        .await;
     }
     let used_version = SV2_PROTOCOL_VERSION.min(setup.max_version);
     session.setup_done = true;
@@ -430,6 +445,21 @@ async fn handle_setup_connection(
         }
         Err(e) => Flow::Disconnect(format!("encode SetupConnectionSuccess: {e}")),
     }
+}
+
+/// Send `SetupConnection.Error` with the spec error code, then disconnect.
+/// Best-effort: an encode or write failure still disconnects with `reason`,
+/// so the client can at most miss the courtesy reply it gets today anyway.
+async fn setup_error(writer: &mut NoiseWriter, code: &str, reason: String) -> Flow {
+    match messages::setup_connection_error(code) {
+        Ok(p) => {
+            writer
+                .send(MESSAGE_TYPE_SETUP_CONNECTION_ERROR, false, &p)
+                .await;
+        }
+        Err(e) => warn!(code, "encode SetupConnectionError: {e}"),
+    }
+    Flow::Disconnect(reason)
 }
 
 async fn handle_open_extended(
