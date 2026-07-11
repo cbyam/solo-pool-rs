@@ -51,12 +51,20 @@ pub fn frame_bytes(msg_type: u8, channel_msg: bool, payload: &[u8]) -> Vec<u8> {
 // Inbound decode (extract owned values so nothing borrows the payload buffer)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Mining-protocol `SetupConnection.flags` bits (SV2 spec).
+pub const FLAG_REQUIRES_STANDARD_JOBS: u32 = 1 << 0;
+pub const FLAG_REQUIRES_WORK_SELECTION: u32 = 1 << 1;
+
+/// Flags this pool cannot honor: we serve extended channels only (no standard
+/// jobs) and do no job declaration (no work selection). Version rolling
+/// (bit 2) is supported, so it never causes a rejection.
+pub const UNSUPPORTED_SETUP_FLAGS: u32 = FLAG_REQUIRES_STANDARD_JOBS | FLAG_REQUIRES_WORK_SELECTION;
+
 #[derive(Debug)]
 pub struct SetupConn {
     pub protocol: Protocol,
     pub min_version: u16,
     pub max_version: u16,
-    #[allow(dead_code)]
     pub flags: u32,
 }
 
@@ -144,11 +152,13 @@ pub fn setup_connection_success(used_version: u16) -> Result<Vec<u8>> {
 }
 
 /// `SetupConnection.Error` with a spec-defined error code
-/// (`unsupported-protocol`, `protocol-version-mismatch`). `flags` stays 0: it
-/// only carries data for `unsupported-feature-flags`, which we never reject on.
-pub fn setup_connection_error(code: &str) -> Result<Vec<u8>> {
+/// (`unsupported-feature-flags`, `unsupported-protocol`,
+/// `protocol-version-mismatch`). Per spec, `flags` carries the full set of
+/// feature flags the server does not support when the code is
+/// `unsupported-feature-flags`, and 0 otherwise.
+pub fn setup_connection_error(code: &str, flags: u32) -> Result<Vec<u8>> {
     encode(SetupConnectionError {
-        flags: 0,
+        flags,
         error_code: Str0255::try_from(code.to_string())
             .map_err(|e| anyhow!("error_code: {e:?}"))?,
     })
@@ -263,12 +273,25 @@ mod tests {
 
     #[test]
     fn setup_connection_error_roundtrips_error_code() {
-        let mut bytes = setup_connection_error("unsupported-protocol").unwrap();
+        let mut bytes = setup_connection_error("unsupported-protocol", 0).unwrap();
         let decoded: SetupConnectionError = binary_sv2::from_bytes(&mut bytes).unwrap();
         assert_eq!(decoded.flags, 0);
         assert_eq!(
             decoded.error_code.inner_as_ref(),
             b"unsupported-protocol" as &[u8]
+        );
+
+        // unsupported-feature-flags must carry the full unsupported set.
+        let mut bytes =
+            setup_connection_error("unsupported-feature-flags", UNSUPPORTED_SETUP_FLAGS).unwrap();
+        let decoded: SetupConnectionError = binary_sv2::from_bytes(&mut bytes).unwrap();
+        assert_eq!(
+            decoded.flags,
+            FLAG_REQUIRES_STANDARD_JOBS | FLAG_REQUIRES_WORK_SELECTION
+        );
+        assert_eq!(
+            decoded.error_code.inner_as_ref(),
+            b"unsupported-feature-flags" as &[u8]
         );
     }
 

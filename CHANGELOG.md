@@ -11,11 +11,15 @@ everything else bumps the **patch** version.
 
 ### Fixed
 - SV2 setup rejections now answer with a spec-compliant `SetupConnection.Error`
-  before disconnecting: `unsupported-protocol` for non-mining sub-protocols
-  (such as a Job Declarator Client) and `protocol-version-mismatch` for
-  version ranges the pool cannot serve. Previously the connection was closed
-  without a reply, which a conformant client could not distinguish from a
-  network fault. Malformed payloads still disconnect immediately.
+  before disconnecting, covering all three spec error codes:
+  `unsupported-protocol` for non-mining sub-protocols (such as a Job
+  Declarator Client), `protocol-version-mismatch` for version ranges the pool
+  cannot serve, and `unsupported-feature-flags` for devices that require
+  standard jobs or work selection (the pool serves extended channels only and
+  does no job declaration; such a device previously stalled at channel open).
+  Previously the connection was closed without a reply, which a conformant
+  client could not distinguish from a network fault. Malformed payloads still
+  disconnect immediately.
 
 ## [0.6.2] - 2026-07-10
 

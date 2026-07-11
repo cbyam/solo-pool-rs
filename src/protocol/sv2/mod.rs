@@ -414,6 +414,7 @@ async fn handle_setup_connection(
         return setup_error(
             writer,
             "unsupported-protocol",
+            0,
             format!("unsupported sub-protocol: {:?}", setup.protocol),
         )
         .await;
@@ -422,10 +423,23 @@ async fn handle_setup_connection(
         return setup_error(
             writer,
             "protocol-version-mismatch",
+            0,
             format!(
                 "unsupported SV2 version range {}..{}",
                 setup.min_version, setup.max_version
             ),
+        )
+        .await;
+    }
+    // Extended channels only, no job declaration: a device that *requires*
+    // standard jobs or work selection cannot mine here (today it would stall
+    // at channel open, since OpenStandardMiningChannel is ignored).
+    if setup.flags & messages::UNSUPPORTED_SETUP_FLAGS != 0 {
+        return setup_error(
+            writer,
+            "unsupported-feature-flags",
+            messages::UNSUPPORTED_SETUP_FLAGS,
+            format!("unsupported feature flags {:#x}", setup.flags),
         )
         .await;
     }
@@ -448,10 +462,12 @@ async fn handle_setup_connection(
 }
 
 /// Send `SetupConnection.Error` with the spec error code, then disconnect.
+/// `flags` is the full unsupported feature-flag set for
+/// `unsupported-feature-flags` and 0 for the other codes.
 /// Best-effort: an encode or write failure still disconnects with `reason`,
 /// so the client can at most miss the courtesy reply it gets today anyway.
-async fn setup_error(writer: &mut NoiseWriter, code: &str, reason: String) -> Flow {
-    match messages::setup_connection_error(code) {
+async fn setup_error(writer: &mut NoiseWriter, code: &str, flags: u32, reason: String) -> Flow {
+    match messages::setup_connection_error(code, flags) {
         Ok(p) => {
             writer
                 .send(MESSAGE_TYPE_SETUP_CONNECTION_ERROR, false, &p)
