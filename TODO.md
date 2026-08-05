@@ -106,6 +106,12 @@ shard guard, confirmed a writer was blocked on it, then completed the read).
 
 ### Low
 
+- [ ] Keep the E2E node matrix current. It pins the deployed Knots build, the
+  next Knots build (where RDTS can no longer be opted out of), and a recent
+  Core. The middle entry is the one with a shelf life: once the node is upgraded
+  it becomes the deployed build and a newer one should take its place, so the
+  matrix keeps answering "does this still work after the next upgrade" rather
+  than only "did it work before the last one".
 - [ ] Scope the Prometheus `idle_timeout(MetricKindMask::ALL, 24h)` to the
   worker-labelled series. It currently expires rarely-written globals too:
   `pool_connected_miners` disappears when one miner stays connected without
