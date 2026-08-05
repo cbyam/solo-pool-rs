@@ -167,8 +167,6 @@ impl RpcConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ZmqConfig {
     pub hashblock_endpoint: String,
-    #[allow(dead_code)]
-    pub rawtx_endpoint: String,
     pub poll_fallback: bool,
     pub poll_interval_ms: u64,
 }

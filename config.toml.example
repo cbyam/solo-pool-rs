@@ -121,10 +121,6 @@ timeout_secs = 10
 # Enable in bitcoin.conf:  zmqpubhashblock=tcp://127.0.0.1:28332
 hashblock_endpoint = "tcp://127.0.0.1:28332"
 
-# Also subscribe to raw transactions (for future fee estimation / mempool tracking)
-# zmqpubrawtx=tcp://127.0.0.1:28333
-rawtx_endpoint = "tcp://127.0.0.1:28333"
-
 # Fall back to polling if ZMQ is unavailable
 poll_fallback = true
 poll_interval_ms = 1000

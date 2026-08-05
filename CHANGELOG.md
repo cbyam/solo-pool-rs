@@ -9,6 +9,12 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Removed
+- The unused `[zmq] rawtx_endpoint` config field. The pool only consumes
+  `hashblock` notifications; the raw-transaction stream was never read.
+  Existing configs that still set the key keep working (unknown keys are
+  ignored), and `zmqpubrawtx` is no longer suggested in the docs.
+
 ### Fixed
 - The per-worker Prometheus hashrate gauge (`pool_hashrate_estimated_hps`) no
   longer freezes at its last value when a miner disconnects. A background task

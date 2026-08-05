@@ -468,7 +468,6 @@ timeout_secs = 10
 
 [zmq]
 hashblock_endpoint = "tcp://127.0.0.1:1"
-rawtx_endpoint = ""
 poll_fallback = true
 poll_interval_ms = 500
 
