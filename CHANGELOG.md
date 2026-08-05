@@ -9,6 +9,17 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-08-05
+
+### Added
+- BIP110/RDTS card on the dashboard: shows whether the node's block templates
+  set version bit 4, read live from the current template. The pool copies the
+  block version from the node, so the card reflects the node's stance, not
+  anything the pool decides. It exists so an operator can see which side of
+  the RDTS deployment their node is on, and, once enforcement starts, whether
+  they are still connected to a node that followed a minority split. Expected
+  to be removed once the deployment settles.
+
 ### Removed
 - The unused `[zmq] rawtx_endpoint` config field. The pool only consumes
   `hashblock` notifications; the raw-transaction stream was never read.
@@ -429,7 +440,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cbyam/solo-pool-rs/compare/v0.5.1...v0.6.0
