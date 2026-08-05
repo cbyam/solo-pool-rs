@@ -1,0 +1,110 @@
+name: security
+
+# Supply-chain checks on a schedule, not only on pull requests.
+#
+# An advisory lands against a crate nobody has touched in months, so a check that
+# only fires when someone pushes goes stale exactly when it matters. This runs
+# daily and opens an issue on failure, because a red run on a repo you are not
+# actively pushing to is a red run nobody sees.
+#
+# Scope limits worth remembering when this reports green: SQLite is linked from
+# the system library, so SQLite fixes arrive through OS updates and never show up
+# here, and libzmq is compiled into the binary by zeromq-src rather than coming
+# from crates.io, so no advisory feed covers it.
+
+on:
+  schedule:
+    # 07:15 UTC daily. Offset off the hour so it is not competing with everyone
+    # else's cron for runners.
+    - cron: "15 7 * * *"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".cargo/audit.toml"
+      - ".github/workflows/security.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Check for advisories
+        run: cargo audit --deny warnings
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # advisories: RustSec database
+          # bans:       duplicate/wildcard dependencies
+          # licenses:   permissive-only allow-list
+          # sources:    crates.io only, so the advisory DB covers the whole tree
+          arguments: --all-features
+
+  report:
+    name: open an issue on failure
+    needs: [audit, deny]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: File or update the tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Supply-chain check failed';
+            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              'The scheduled `cargo audit` / `cargo deny` run failed.',
+              '',
+              `Run: ${url}`,
+              '',
+              'Usual causes: a new RustSec advisory against something in the tree,',
+              'a yanked crate, or a dependency arriving under a licence that is not',
+              'on the allow-list in `deny.toml`.',
+              '',
+              'Remember what this cannot see: SQLite is linked from the system',
+              'library and libzmq is compiled in from `zeromq-src`, so neither is',
+              'covered by the advisory database.',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security',
+            });
+            const open = existing.data.find(i => i.title === title);
+            if (open) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: open.number,
+                body: `Still failing as of ${new Date().toISOString().slice(0, 10)}. ${url}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['security'],
+              });
+            }

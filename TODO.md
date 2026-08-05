@@ -106,6 +106,12 @@ shard guard, confirmed a writer was blocked on it, then completed the read).
 
 ### Low
 
+- [ ] Keep the E2E node matrix current. It pins the deployed Knots build, the
+  next Knots build (where RDTS can no longer be opted out of), and a recent
+  Core. The middle entry is the one with a shelf life: once the node is upgraded
+  it becomes the deployed build and a newer one should take its place, so the
+  matrix keeps answering "does this still work after the next upgrade" rather
+  than only "did it work before the last one".
 - [ ] Scope the Prometheus `idle_timeout(MetricKindMask::ALL, 24h)` to the
   worker-labelled series. It currently expires rarely-written globals too:
   `pool_connected_miners` disappears when one miner stays connected without
@@ -136,7 +142,15 @@ shard guard, confirmed a writer was blocked on it, then completed the read).
   into `target/release/`, so any `cargo build` in the working tree changes what
   the service runs on its next restart, with no version pinning and no rollback.
   A validation build during the v0.6.4 work armed an unintended deploy this way.
-  Copy the binary into place, or point the unit at a versioned path.
+  `packaging/install.sh` now does the right thing (copy to
+  `/usr/local/lib/solo-pool-rs/<version>/`, atomic symlink swap, `--rollback`
+  and `--list`), but the live host is still on the old symlink. Cut over with:
+
+      cargo build --release && sudo packaging/install.sh && systemctl restart solo-pool-rs
+
+  Until that runs, treat any `cargo build` in this tree as arming a deploy. The
+  scheduled local E2E already avoids it by building into a private
+  `CARGO_TARGET_DIR`; do not remove that override before the cutover.
 
 ## Planned features
 
