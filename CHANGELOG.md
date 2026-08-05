@@ -9,6 +9,94 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- A chain tip that moved without a ZMQ notification no longer leaves miners
+  working a dead prevhash. Two defects combined here. ZMQ's `connect` is lazy
+  and returns success for an endpoint with nothing listening (wrong port, a
+  node started without `-zmqpubhashblock`, a firewall), after which the
+  subscription blocks forever without ever reporting an error, so the polling
+  fallback could not engage in the one case it existed for. Separately, the
+  periodic 30-second template refresh never compared prevhashes, so a tip
+  change first noticed there went out as `clean_jobs = false`, telling miners
+  they could keep their current work. Shares against the retired job kept
+  validating, and a block found on it would have been rejected by the node.
+  The tip comparison now lives in the refresh itself, so correct invalidation
+  no longer depends on ZMQ being healthy.
+- Stratum messages split across TCP segments are no longer corrupted. The line
+  reader consumed bytes before the newline arrived but cleared its buffer on
+  entry, and the session loop races that read against job broadcasts, so the
+  read is routinely cancelled mid-line. A `mining.submit` arriving in two
+  segments with a `mining.notify` in the gap lost its first fragment, failed to
+  parse, and disconnected the miner. A block-winning share arriving that way
+  was lost until the miner reconnected.
+- SV1 now rejects a `mining.submit` whose extranonce2 is not the width the
+  session was given. On a width mismatch the coinbase splice silently left the
+  extranonce region zeroed, producing a coinbase the miner could predict, so
+  one share mined at the difficulty floor could be replayed under unlimited
+  distinct extranonce2 values: identical hash, passing target check, and a new
+  duplicate-detection key every time. The SV2 path already guarded this.
+  Mis-sized firmware now also gets a named error instead of a stream of
+  "low difficulty" rejects ending in a disconnect.
+- Share duplicate-detection keys are built from the fields validation actually
+  uses. When version rolling was not negotiated the submitted version bits are
+  discarded before validation, so replaying one share under version bits 1, 2,
+  3 and so on produced the identical header each time and a distinct key each
+  time.
+- Found-block hashes are reported in the byte order `bitcoin-cli` and block
+  explorers use. The found-block log, the archive filename, the submission
+  logs and the dashboard all showed the reversed form, so nothing an operator
+  saw during a block find would have matched the node. Submission itself was
+  unaffected.
+- `[bitcoin_rpc] timeout_secs` is applied. It was parsed and then never passed
+  to the RPC client, so the transport default of roughly 15 seconds governed
+  every call including the inline `submitblock` attempts, and tightening the
+  value did nothing. Boot now rejects values below 5 seconds, since the timeout
+  covers block submission and full-block validation can take seconds.
+- A panic inside a miner session no longer leaks its connection slot. The
+  global connection budget was released by straight-line code after the session
+  returned, so an unwinding task kept its slot forever and `max_connections`
+  ratcheted downward until the pool refused every miner and only a restart
+  recovered.
+- A share against a job that aged out of the history window no longer counts
+  toward the invalid-share disconnect counter. A job explicitly retired by a
+  clean job was already exempt, and an aged-out job returns the same error to
+  the miner, but only the latter counted: a miner legitimately continuing on a
+  non-clean job was disconnected after `max_invalid_shares` submissions.
+- The windowed hashrate estimate no longer overstates the rate. It summed every
+  in-window share's difficulty while measuring elapsed time from the oldest of
+  them, which counts work finished before the measured interval began and
+  inflates the result by a factor of n/(n-1): double at two shares in the
+  window, about 25% high at five, negligible once there are hundreds. Short
+  windows are where the share count is smallest, so the 60-second figure was
+  the most affected. Expect the short-window dashboard readings to drop; the
+  new figures are the correct ones.
+- Repeated `mining.suggest_difficulty` messages can no longer postpone
+  retargeting indefinitely. Each one reset the retarget window, so a client
+  suggesting more often than `retarget_interval_secs` could pin itself at the
+  difficulty floor for the life of the session. The first suggestion still gets
+  a fresh window and later ones still set the value.
+- A malformed transaction id in a block template is reported as a recoverable
+  error instead of aborting the template engine's task, which previously left
+  the pool serving one frozen job for the rest of the process lifetime.
+- Configurations that would make every found block invalid are rejected at
+  boot. The coinbase scriptSig has a 100-byte consensus limit and nothing
+  checked it, so an over-long `coinbase_tag` left the pool looking healthy,
+  accepting shares, until a block was finally found and rejected with
+  `bad-cb-length`. The total extranonce width is also bounded at 32 bytes,
+  which SV2 channel setup requires, and `extranonce1_size` must be non-zero so
+  sessions do not all search identical space.
+
+### Changed
+- The RPC tip poll now runs continuously alongside ZMQ rather than only after a
+  ZMQ failure, because a subscription cannot be proven live from the pool's
+  side. It signals only when the tip hash actually changes, so with healthy ZMQ
+  it costs one `getbestblockhash` per `poll_interval_ms` and nothing else.
+- `pool_rpc_fallback_used_total` now counts tip changes observed while ZMQ was
+  silent, rather than the listener returning an error, and a warning naming the
+  relevant config key is logged alongside it. A silently dead subscription is
+  visible instead of invisible. Alerting on this metric may begin firing on
+  deployments where ZMQ was never delivering.
+
 ## [0.6.3] - 2026-08-05
 
 ### Added
