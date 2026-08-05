@@ -50,12 +50,38 @@ pub struct RpcClient {
     state: RwLock<Inner>,
 }
 
+/// Build a client that honours the configured timeout.
+///
+/// `Client::new` builds the transport with its own default (15s) and gives no
+/// way to override it, so `timeout_secs` was parsed and then silently ignored:
+/// an operator tightening it to bound submit failover got no such thing.
+///
+/// The timeout covers every call, including the inline `submitblock` attempts
+/// on the block-found path. That is safe: a submission that times out after the
+/// node already accepted it is retried, and the node answers `duplicate`, which
+/// `submit_block` already maps to success.
+fn build_client(url: &str, auth: bitcoincore_rpc::Auth, timeout_secs: u64) -> Result<Client> {
+    let (user, pass) = auth.get_user_pass()?;
+    let transport = bitcoincore_rpc::jsonrpc::simple_http::SimpleHttpTransport::builder()
+        .url(url)
+        .map_err(|e| anyhow::anyhow!("Parsing Bitcoin RPC url '{url}': {e}"))?
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .auth(user.unwrap_or_default(), pass)
+        .build();
+    Ok(Client::from_jsonrpc(
+        bitcoincore_rpc::jsonrpc::Client::with_transport(transport),
+    ))
+}
+
 impl RpcClient {
     pub fn new(cfg: &RpcConfig) -> Result<Self> {
         let cookie = cfg.read_cookie().ok();
         let auth = cfg.rpc_auth()?;
-        let client = Client::new(&cfg.url, auth)?;
-        info!("Bitcoin RPC connected to {}", cfg.url);
+        let client = build_client(&cfg.url, auth, cfg.timeout_secs)?;
+        info!(
+            "Bitcoin RPC connected to {} (timeout {}s)",
+            cfg.url, cfg.timeout_secs
+        );
         Ok(Self {
             cfg: cfg.clone(),
             state: RwLock::new(Inner { client, cookie }),
@@ -92,11 +118,12 @@ impl RpcClient {
         }
 
         warn!("Bitcoin RPC cookie changed on disk; rebuilding client and retrying");
-        let new_client = Client::new(
+        let new_client = build_client(
             &self.cfg.url,
             bitcoincore_rpc::Auth::UserPass(fresh_cookie.0.clone(), fresh_cookie.1.clone()),
+            self.cfg.timeout_secs,
         )
-        .map_err(PoolError::Rpc)?;
+        .map_err(|e| PoolError::Other(anyhow::anyhow!(e)))?;
 
         {
             let mut guard = self.state.write().expect("rpc state lock poisoned");

@@ -234,7 +234,7 @@ pub fn validate_share_no_dedup(
         tracing::info!(
             "🎉 BLOCK FOUND! height={} hash={}",
             job.height,
-            hex::encode(hash)
+            hash_display_hex(&hash)
         );
         return Ok(ShareResult::Block {
             hash_difficulty,
@@ -252,6 +252,22 @@ pub fn validate_share_no_dedup(
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Hex of a hash in conventional big-endian display order — the form
+/// `bitcoin-cli`, block explorers, and `getblockhash` all use.
+///
+/// Hashes are held internally as raw SHA256d output, which is little-endian;
+/// that is the order `meets_target` and `hash_to_difficulty` need, so it stays
+/// the internal representation. The reversal belongs at the boundary where a
+/// person or an explorer reads the value: the found-block log, the archive
+/// filename, and the dashboard. Reporting the internal order there means that
+/// during the one event this pool exists for, nothing the operator sees matches
+/// what the node reports.
+pub fn hash_display_hex(hash: &[u8; 32]) -> String {
+    let mut be = *hash;
+    be.reverse();
+    hex::encode(be)
+}
 
 /// Apply BIP320 version-rolling: only modify bits allowed by the mask.
 fn resolve_version(
@@ -375,6 +391,23 @@ fn encode_varint(n: u64) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    /// Genesis block: SHA256d output in internal order, and the hash as every
+    /// explorer and `bitcoin-cli` reports it. Pins the display convention so
+    /// the found-block log, archive filename, and dashboard agree with the node
+    /// during the one event this pool exists for.
+    #[test]
+    fn hash_display_uses_big_endian_like_bitcoin_cli() {
+        let internal: [u8; 32] =
+            hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(
+            super::hash_display_hex(&internal),
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -846,7 +846,7 @@ async fn handle_submit(
             debug!(
                 worker = worker,
                 job = %params.job_id,
-                hash = %hex::encode(hash),
+                hash = %validator::hash_display_hex(&hash),
                 diff = assigned_difficulty,
                 hash_diff = hash_difficulty,
                 latency_ms = latency_ms,
@@ -872,7 +872,7 @@ async fn handle_submit(
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
-            let block_hash_hex = hex::encode(hash);
+            let block_hash_hex = validator::hash_display_hex(&hash);
             let submit_result = engine
                 .submit_found_block(
                     job_height,
@@ -886,7 +886,7 @@ async fn handle_submit(
                 Ok(_) => {
                     metrics::block_found();
                     metrics::block_submission_success();
-                    session.stats.block_found(worker, &hex::encode(hash));
+                    session.stats.block_found(worker, &block_hash_hex);
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(hash_difficulty);
@@ -894,7 +894,7 @@ async fn handle_submit(
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",
-                        hex::encode(hash)
+                        block_hash_hex
                     );
                     HandleResult::Messages(vec![ResponseBuilder::ok(
                         &req.id,
