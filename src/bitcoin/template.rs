@@ -180,17 +180,29 @@ pub fn build_job(
     let coinbase2 = coinbase_bytes[extranonce_offset + en_total..].to_vec();
 
     // ── 3. Merkle branch (from tx hashes, excluding coinbase) ─────────────────
+    // A txid that is not exactly 32 bytes is a fatal template error, not something
+    // to paper over: `unwrap_or_default` + a truncating copy would either panic
+    // (killing the engine task for the process lifetime) or silently build a
+    // wrong merkle branch. Returning `Err` lets `refresh` log and retry.
     let tx_txids: Vec<[u8; 32]> = gbt
         .transactions
         .iter()
         .map(|tx| {
-            let mut b = hex::decode(&tx.txid).unwrap_or_default();
+            let mut b = hex::decode(&tx.txid)
+                .ok()
+                .filter(|b| b.len() == 32)
+                .ok_or_else(|| {
+                    PoolError::Other(anyhow::anyhow!(
+                        "getblocktemplate returned a malformed txid: {}",
+                        tx.txid
+                    ))
+                })?;
             b.reverse(); // txid in internal byte order
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&b[..32.min(b.len())]);
-            arr
+            arr.copy_from_slice(&b);
+            Ok(arr)
         })
-        .collect();
+        .collect::<Result<Vec<_>, PoolError>>()?;
 
     let merkle_branch_raw = compute_merkle_branch_raw(&tx_txids);
     let merkle_branch = merkle_branch_raw.iter().map(hex::encode).collect();
@@ -629,6 +641,83 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BIP173 test-vector P2WPKH address; only needs to parse into a script.
+    const ADDR: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+    fn gbt_with_txids(txids: &[&str]) -> crate::bitcoin::rpc::GbtResult {
+        crate::bitcoin::rpc::GbtResult {
+            version: 0x2000_0000,
+            // Mainnet block 1's prev hash (the genesis hash), in RPC byte order.
+            prev_hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+                .to_string(),
+            bits: "1d00ffff".to_string(),
+            cur_time: 1_700_000_000,
+            height: 900_000,
+            coinbase_value: 312_500_000,
+            transactions: txids
+                .iter()
+                .map(|t| crate::bitcoin::rpc::GbtTransaction {
+                    data: vec![],
+                    txid: (*t).to_string(),
+                    hash: (*t).to_string(),
+                    fee: 0,
+                    weight: 0,
+                })
+                .collect(),
+            longpoll_id: None,
+            default_witness_commitment: None,
+            rules: vec![],
+        }
+    }
+
+    #[test]
+    fn wrong_length_extranonce2_yields_one_predictable_coinbase() {
+        // Why the session layer must reject a wrong-length extranonce2 before it
+        // gets here: on a width mismatch this returns the template with the
+        // extranonce region still zeroed, so every wrong-length value maps to the
+        // SAME coinbase — and therefore the same merkle root and header hash.
+        // Since the dedup key includes the raw extranonce2 bytes, one valid share
+        // could otherwise be replayed indefinitely under different lengths.
+        let job = build_job(&gbt_with_txids(&[]), ADDR, "tag", 4, 4).unwrap();
+        let en1 = [0xAAu8; 4];
+
+        let correct = job.assemble_coinbase(&en1, &[1, 2, 3, 4]);
+        let too_short = job.assemble_coinbase(&en1, &[1, 2, 3]);
+        let too_long = job.assemble_coinbase(&en1, &[1, 2, 3, 4, 5]);
+        let different_short = job.assemble_coinbase(&en1, &[9, 9, 9]);
+
+        assert_ne!(
+            correct, too_short,
+            "a correctly sized extranonce2 must actually be spliced in"
+        );
+        assert_eq!(
+            too_short, too_long,
+            "mismatched widths collapse to the same coinbase"
+        );
+        assert_eq!(
+            too_short, different_short,
+            "the value is ignored entirely, so it is fully predictable"
+        );
+    }
+
+    #[test]
+    fn malformed_gbt_txid_errors_instead_of_panicking() {
+        // A txid that does not decode to exactly 32 bytes used to hit
+        // `copy_from_slice` with mismatched lengths, panicking inside the
+        // template engine's task and stopping all future job builds for the
+        // process lifetime. It must surface as a recoverable error instead.
+        let good = "a".repeat(64);
+        assert!(build_job(&gbt_with_txids(&[&good]), ADDR, "tag", 4, 4).is_ok());
+
+        for bad in ["", "abcd", "zz".repeat(32).as_str(), &"a".repeat(66)] {
+            let err = build_job(&gbt_with_txids(&[bad]), ADDR, "tag", 4, 4);
+            assert!(
+                err.is_err(),
+                "malformed txid {bad:?} should be rejected, not accepted"
+            );
+        }
+    }
 
     #[test]
     fn test_bip34_height_encoding() {

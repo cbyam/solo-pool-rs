@@ -28,11 +28,38 @@ use tracing::{debug, error, info, warn};
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// How many past jobs to remember for stale-share lookups
+/// How many past jobs to remember for stale-share lookups.
+///
+/// Each entry pins a whole `StratumJob`, including `transactions` — the full
+/// raw tx data needed to assemble a block if a winning share arrives against
+/// that job. On mainnet that is megabytes per entry, so this is a memory knob
+/// as much as a correctness one, and it must stay small enough for the
+/// single-board machines this pool targets.
+///
+/// At `NTIME_REFRESH_SECS` this covers roughly the last four minutes. Work
+/// older than that is rejected as job-not-found, which is accounted as a stale
+/// share and deliberately does NOT count toward the invalid-share disconnect
+/// counter (see `handle_submit`) — that accounting, not the window size, was
+/// what made an aged-out job disconnect an otherwise healthy miner.
 const JOB_HISTORY_DEPTH: usize = 8;
 
 /// Channel capacity for new-job broadcasts
 const JOB_BROADCAST_CAP: usize = 64;
+
+/// Whether the chain tip moved between the job being replaced and the new one.
+///
+/// A prevhash change must retire outstanding work even when the caller asked for
+/// a non-clean refresh. The periodic ntime tick calls `refresh(false)`, so a tip
+/// change first noticed there — a missed or late ZMQ signal — would otherwise go
+/// out as "you may keep your current work". Miners would keep grinding the dead
+/// prevhash, their shares would keep validating against the retired job, and a
+/// block found on it would be rejected by the node.
+///
+/// No current job (first refresh after boot) counts as moved: there is no
+/// outstanding work to preserve, and a clean job is the correct opening state.
+fn tip_moved(current_prev_hash: Option<&str>, new_prev_hash: &str) -> bool {
+    current_prev_hash != Some(new_prev_hash)
+}
 
 /// Broadcast payload: the new job plus whether miners should discard current work.
 #[derive(Clone, Debug)]
@@ -198,8 +225,25 @@ impl TemplateEngine {
                             "New job built"
                         );
 
-                        // Update current job
-                        *self.current_job.write().await = Some(job.clone());
+                        // Update current job. The write guard is held across the
+                        // compare-and-set so two concurrent refreshes cannot both
+                        // conclude the tip is unchanged.
+                        let mut current = self.current_job.write().await;
+                        let tip_changed = tip_moved(
+                            current.as_ref().map(|c| c.prev_hash.as_str()),
+                            &job.prev_hash,
+                        );
+                        let clean_jobs = clean_jobs || tip_changed;
+                        *current = Some(job.clone());
+                        drop(current);
+
+                        if tip_changed {
+                            info!(
+                                height = job.height,
+                                prev_hash = %job.prev_hash,
+                                "Chain tip changed — broadcasting clean job"
+                            );
+                        }
 
                         // Push into history
                         let mut history = self.job_history.write().await;
@@ -375,5 +419,44 @@ fn archive_found_block(dir: &str, height: u64, hash_hex: &str, block_hex: &str) 
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tip_moved;
+
+    const A: &str = "00000000000000000001b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607";
+    const B: &str = "00000000000000000002c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718";
+
+    #[test]
+    fn tip_change_forces_a_clean_job_even_on_a_non_clean_refresh() {
+        // The 30s ntime tick calls refresh(false). If ZMQ missed the block, this
+        // is the only thing standing between miners and a dead prevhash.
+        assert!(tip_moved(Some(A), B), "a moved tip must retire old work");
+        assert!(!tip_moved(Some(A), A), "an unchanged tip must not");
+    }
+
+    /// Mirrors how `refresh` combines the caller's request with the tip check.
+    fn clean_for(requested: bool, current: Option<&str>, new: &str) -> bool {
+        requested || tip_moved(current, new)
+    }
+
+    #[test]
+    fn clean_escalation_is_one_way() {
+        // The ntime tick asks for a non-clean refresh; a tip change overrides it.
+        assert!(clean_for(false, Some(A), B), "ntime tick must escalate");
+        // A steady tip on the ntime tick stays non-clean, so miners keep working.
+        assert!(
+            !clean_for(false, Some(A), A),
+            "steady tip must not escalate"
+        );
+        // An explicit clean request is never downgraded.
+        assert!(clean_for(true, Some(A), A), "explicit clean is preserved");
+    }
+
+    #[test]
+    fn first_job_after_boot_is_clean() {
+        assert!(tip_moved(None, A));
     }
 }

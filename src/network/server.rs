@@ -44,6 +44,23 @@ const TCP_KEEPALIVE_RETRIES: u32 = 3;
 /// ballpark.
 const TCP_USER_TIMEOUT_SECS: u64 = 90;
 
+/// Owns one reserved slot of the global connection budget and releases it on
+/// drop, so an unwinding session task cannot leak it.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl ConnectionSlot {
+    /// Takes ownership of a slot the caller has already reserved.
+    fn new(active_count: Arc<AtomicUsize>) -> Self {
+        Self(active_count)
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 pub async fn run(
     config: Arc<Config>,
     engine: Arc<TemplateEngine>,
@@ -158,6 +175,13 @@ pub async fn run(
         let active_count = active_count.clone();
 
         tokio::spawn(async move {
+            // Release the reserved slot on every exit path, including a panic.
+            // The decrements used to be straight-line code, so a panic anywhere
+            // in session or protocol handling killed the task with the slot
+            // still held: enough of those and max_connections is exhausted and
+            // the pool silently refuses every miner until it is restarted.
+            let _slot = ConnectionSlot::new(active_count);
+
             // Auto-detect the protocol from the first byte without consuming it:
             // SV1 is JSON ('{'); SV2 frames start with a binary extension_type
             // (0x00 for the standard mining protocol's SetupConnection).
@@ -173,18 +197,15 @@ pub async fn run(
             let is_sv1 = match peek {
                 Err(_) => {
                     warn!("Protocol-detect timeout for {peer}");
-                    active_count.fetch_sub(1, Ordering::Relaxed);
                     return;
                 }
                 Ok(Ok(0)) => {
                     // Connection closed before sending anything.
-                    active_count.fetch_sub(1, Ordering::Relaxed);
                     return;
                 }
                 Ok(Ok(_)) => first[0] == b'{',
                 Ok(Err(e)) => {
                     warn!("Peek failed for {peer}: {e}");
-                    active_count.fetch_sub(1, Ordering::Relaxed);
                     return;
                 }
             };
@@ -196,7 +217,50 @@ pub async fn run(
             } else {
                 warn!("SV2 connection from {peer} rejected (sv2.enabled = false)");
             }
-            active_count.fetch_sub(1, Ordering::Relaxed);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectionSlot;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[tokio::test]
+    async fn a_panicking_session_still_releases_its_slot() {
+        // Before the guard, the decrement was straight-line code after the
+        // session call: a panic skipped it and the slot was gone for the life
+        // of the process, silently shrinking max_connections toward zero.
+        let active = Arc::new(AtomicUsize::new(0));
+
+        active.fetch_add(1, Ordering::Relaxed);
+        let handle = {
+            let active = Arc::clone(&active);
+            tokio::spawn(async move {
+                let _slot = ConnectionSlot::new(active);
+                panic!("session blew up");
+            })
+        };
+
+        assert!(handle.await.is_err(), "task should have panicked");
+        assert_eq!(
+            active.load(Ordering::Relaxed),
+            0,
+            "slot leaked: a panicking session permanently consumed connection budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_normal_session_releases_its_slot_once() {
+        let active = Arc::new(AtomicUsize::new(0));
+        active.fetch_add(1, Ordering::Relaxed);
+        {
+            let _slot = ConnectionSlot::new(Arc::clone(&active));
+            assert_eq!(active.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(active.load(Ordering::Relaxed), 0);
     }
 }
