@@ -269,6 +269,47 @@ impl Config {
                  a zero total extranonce width underflows SV2 channel setup"
             );
         }
+
+        let en_total = self.pool.extranonce1_size + self.pool.extranonce2_size;
+
+        // SV2 carries both the pool prefix and the device extranonce as B0_32.
+        // A wider total encodes fine on SV1 but makes every SV2 channel open
+        // fail, so the pool would serve one protocol and not the other.
+        if en_total > 32 {
+            anyhow::bail!(
+                "[pool] extranonce1_size + extranonce2_size must be <= 32 (got {en_total}): \
+                 SV2 encodes the extranonce as B0_32 and channel open would always fail"
+            );
+        }
+
+        // Every SV1 session gets its own extranonce1 so miners search disjoint
+        // space. At zero they all share an empty prefix and duplicate work.
+        if self.pool.extranonce1_size == 0 {
+            anyhow::bail!(
+                "[pool] extranonce1_size must be >= 1: with no pool-assigned prefix \
+                 every miner searches the same extranonce space"
+            );
+        }
+
+        // Consensus caps the coinbase scriptSig at 100 bytes (bad-cb-length).
+        // build_coinbase lays it out as BIP34 height push + coinbase_tag +
+        // extranonce region, where the region is at least the 4-byte sentinel.
+        // Share validation only checks header PoW, so an oversized scriptSig
+        // stays invisible until a block is found and the node rejects it —
+        // the same silent-until-blockfound class as the prevhash byte-order bug.
+        // 5 bytes covers the height push for any height this will ever see.
+        const MAX_SCRIPT_SIG: usize = 100;
+        const HEIGHT_PUSH_MAX: usize = 5;
+        let script_sig_len = HEIGHT_PUSH_MAX + self.pool.coinbase_tag.len() + en_total.max(4);
+        if script_sig_len > MAX_SCRIPT_SIG {
+            anyhow::bail!(
+                "[pool] coinbase scriptSig would be {script_sig_len} bytes, over the \
+                 {MAX_SCRIPT_SIG}-byte consensus limit: shorten coinbase_tag \
+                 (currently {} bytes) or reduce the extranonce width ({en_total} bytes). \
+                 Every block found would be rejected with bad-cb-length.",
+                self.pool.coinbase_tag.len()
+            );
+        }
         if self.sv2.enabled
             && self.sv2.persist_authority_key
             && self.sv2.authority_key_file.trim().is_empty()
@@ -393,7 +434,46 @@ pub(crate) fn expand_tilde(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_env_overrides;
+    use super::{apply_env_overrides, Config};
+
+    fn example_config() -> Config {
+        let src = include_str!("../config.toml.example");
+        let value: toml::Value = toml::from_str(src).expect("example config must parse as TOML");
+        value.try_into().expect("example config must match Config")
+    }
+
+    #[test]
+    fn shipped_example_config_passes_validation() {
+        // The example is what operators copy, so it must satisfy every guard.
+        example_config().validate().expect("example must validate");
+    }
+
+    #[test]
+    fn oversized_coinbase_scriptsig_is_rejected() {
+        // Consensus caps scriptSig at 100 bytes. Without this guard the pool runs
+        // and validates shares normally, and only the found block is rejected.
+        let mut cfg = example_config();
+        cfg.pool.coinbase_tag = "x".repeat(95);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("bad-cb-length"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn extranonce_wider_than_sv2_allows_is_rejected() {
+        let mut cfg = example_config();
+        cfg.pool.extranonce1_size = 24;
+        cfg.pool.extranonce2_size = 16;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("<= 32"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn zero_extranonce1_is_rejected() {
+        let mut cfg = example_config();
+        cfg.pool.extranonce1_size = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("extranonce1_size"), "unexpected error: {err}");
+    }
 
     // Fixtures pass vars directly instead of mutating the process environment,
     // so tests stay parallel-safe.
