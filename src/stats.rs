@@ -1003,6 +1003,7 @@ mod tests {
     #[test]
     fn best_hashrate_is_persisted_across_instances() {
         let db_path = make_temp_db();
+        let expected;
 
         {
             let stats = PoolStats::new_with_store(Some(db_path.clone()));
@@ -1021,11 +1022,21 @@ mod tests {
                 4_000_000_000_000.0,
                 4_000_000_000_000.0,
             );
-            assert_eq!(stats.snapshot().best_hashrate_hps, 10_000_000_000_000.0);
+            // Both workers are offline here, so their stored estimates decay by
+            // `window_overlap`. If these two updates straddle a wall-clock second
+            // the total lands just under 10 TH/s — so assert the watermark is in
+            // range and carry the observed value across the restart, rather than
+            // pinning an exact figure that depends on second boundaries.
+            let live = stats.snapshot().best_hashrate_hps;
+            assert!(
+                (9_900_000_000_000.0..=10_000_000_000_000.0).contains(&live),
+                "unexpected watermark before restart: {live}"
+            );
+            expected = live;
         }
 
         let stats = PoolStats::new_with_store(Some(db_path.clone()));
-        assert_eq!(stats.snapshot().best_hashrate_hps, 10_000_000_000_000.0);
+        assert_eq!(stats.snapshot().best_hashrate_hps, expected);
 
         std::fs::remove_file(db_path).ok();
     }
