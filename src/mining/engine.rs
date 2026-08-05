@@ -28,7 +28,19 @@ use tracing::{debug, error, info, warn};
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// How many past jobs to remember for stale-share lookups
+/// How many past jobs to remember for stale-share lookups.
+///
+/// Each entry pins a whole `StratumJob`, including `transactions` — the full
+/// raw tx data needed to assemble a block if a winning share arrives against
+/// that job. On mainnet that is megabytes per entry, so this is a memory knob
+/// as much as a correctness one, and it must stay small enough for the
+/// single-board machines this pool targets.
+///
+/// At `NTIME_REFRESH_SECS` this covers roughly the last four minutes. Work
+/// older than that is rejected as job-not-found, which is accounted as a stale
+/// share and deliberately does NOT count toward the invalid-share disconnect
+/// counter (see `handle_submit`) — that accounting, not the window size, was
+/// what made an aged-out job disconnect an otherwise healthy miner.
 const JOB_HISTORY_DEPTH: usize = 8;
 
 /// Channel capacity for new-job broadcasts
