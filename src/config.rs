@@ -311,18 +311,12 @@ impl Config {
                 self.pool.coinbase_tag.len()
             );
         }
-        // The timeout now genuinely bounds every RPC, submitblock included. A
-        // very short value risks aborting a submission mid-validation; the
-        // retrier recovers (the node answers `duplicate`), but there is no
-        // reason to court it.
-        if self.bitcoin_rpc.timeout_secs < 5 {
-            anyhow::bail!(
-                "[bitcoin_rpc] timeout_secs must be >= 5 (got {}): it bounds every RPC \
-                 including submitblock, and block validation on a full node can take \
-                 seconds",
-                self.bitcoin_rpc.timeout_secs
-            );
-        }
+        // A too-low `timeout_secs` is raised to a floor with a warning rather
+        // than refused here: the value was inert before it started being
+        // applied, so a pool that had been running fine on, say, 2 would
+        // otherwise stop booting on upgrade. See `rpc::effective_timeout_secs`,
+        // which is also where the warning can actually be seen — this runs
+        // before tracing is initialised.
 
         if self.sv2.enabled
             && self.sv2.persist_authority_key
@@ -482,16 +476,17 @@ mod tests {
     }
 
     #[test]
-    fn too_short_rpc_timeout_is_rejected() {
-        // The timeout now bounds submitblock, so a 1s value could abort a
-        // submission while the node is still validating the block.
+    fn a_too_low_rpc_timeout_still_boots() {
+        // timeout_secs was inert until it started being applied, so a pool
+        // running a low value was working. Refusing to boot would break it on
+        // upgrade over a setting that had never done anything; the value is
+        // raised to a floor at client construction instead.
         let mut cfg = example_config();
         cfg.bitcoin_rpc.timeout_secs = 1;
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("timeout_secs"), "unexpected error: {err}");
-
-        cfg.bitcoin_rpc.timeout_secs = 5;
-        assert!(cfg.validate().is_ok(), "5s should be accepted");
+        assert!(
+            cfg.validate().is_ok(),
+            "a low timeout must not stop the pool from starting"
+        );
     }
 
     #[test]

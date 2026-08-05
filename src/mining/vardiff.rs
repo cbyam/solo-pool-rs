@@ -16,6 +16,15 @@ use std::{
 /// How far back the share ring buffer is kept for hashrate estimation.
 const SHARE_RETENTION: Duration = Duration::from_secs(86_400);
 
+/// Shortest observation period that yields a reportable hashrate.
+///
+/// The estimate divides accumulated share work by how long the session has been
+/// observed, so a session only milliseconds old would divide by ~0 and report an
+/// astronomical rate. Because the all-time watermark is a monotonic maximum
+/// persisted to SQLite, one such reading poisons it permanently. Report nothing
+/// until there is a real time base to divide by.
+const MIN_OBSERVATION: Duration = Duration::from_secs(30);
+
 pub struct Vardiff {
     cfg: VardiffConfig,
     /// Ring buffer of (arrival_time, assigned_difficulty) for hashrate estimation.
@@ -26,6 +35,9 @@ pub struct Vardiff {
     pub current: u64,
     /// Number of valid shares since last retarget
     shares_since_retarget: u64,
+    /// When this session started, so the hashrate estimate can divide by the
+    /// period actually observed rather than by the gap between two shares.
+    started_at: Instant,
     /// Whether a `mining.suggest_difficulty` has already been granted its one
     /// fresh retarget window this session.
     suggest_applied: bool,
@@ -39,6 +51,7 @@ impl Vardiff {
             share_times: VecDeque::with_capacity(8_192),
             last_retarget: Instant::now(),
             shares_since_retarget: 0,
+            started_at: Instant::now(),
             suggest_applied: false,
         }
     }
@@ -144,47 +157,48 @@ impl Vardiff {
     }
 
     /// Estimated hashrate in H/s over an arbitrary lookback `window`.
-    /// Returns 0.0 if fewer than two shares are present (not enough data to measure a rate).
+    ///
+    /// Divides the share work accumulated inside `window` by the length of the
+    /// period actually observed: the whole window once the session is at least
+    /// that old, and the session's age before then.
+    ///
+    /// The denominator deliberately does NOT come from the span between the
+    /// first and last share. Anchoring on shares makes the time base collapse
+    /// whenever a session submits a few shares close together and then goes
+    /// quiet: two shares 155us apart in a ten-minute window produced a reading
+    /// of ~2.3e17 H/s, which is how an all-time watermark ends up hundreds of
+    /// times above anything the hardware can produce. A fixed observation
+    /// period cannot collapse, so the estimate is bounded by the work actually
+    /// proven, and it can only read high if the shares were really submitted.
+    ///
+    /// Returns 0.0 before `MIN_OBSERVATION` has elapsed, and 0.0 when no shares
+    /// fall inside the window.
     pub fn estimated_hashrate_in_window(&self, window: std::time::Duration) -> f64 {
-        if self.share_times.len() < 2 {
+        let now = std::time::Instant::now();
+
+        // Observation period: the window, or the whole session if it is younger.
+        let observed = now.duration_since(self.started_at).min(window);
+        if observed < MIN_OBSERVATION.min(window) {
             return 0.0;
         }
 
-        let now = std::time::Instant::now();
+        // Every share inside the window counts. The n/(n-1) correction that a
+        // share-anchored interval needs does not apply here: the period is
+        // fixed independently of when the shares landed, so counting all of
+        // them is unbiased.
+        let sum_diff: u64 = self
+            .share_times
+            .iter()
+            .filter(|&&(ts, _)| now.duration_since(ts) <= window)
+            .map(|&(_, diff)| diff)
+            .sum();
 
-        let mut sum_diff: u64 = 0;
-        let mut oldest_ts = None;
-
-        // `now.duration_since(ts) <= window` rather than `ts >= now - window`,
-        // for the portability reason in `record_share`.
-        for &(ts, diff) in self.share_times.iter() {
-            if now.duration_since(ts) <= window {
-                if oldest_ts.is_none() {
-                    // The oldest in-window share defines the start of the
-                    // measurement interval, so the work it represents was
-                    // finished *before* that interval began. Counting it
-                    // inflates the estimate by n/(n-1): double at two shares in
-                    // window, +25% at five, negligible once there are hundreds.
-                    // The short windows are exactly where n is small.
-                    oldest_ts = Some(ts);
-                    continue;
-                }
-                sum_diff += diff;
-            }
-        }
-
-        let oldest_ts = match oldest_ts {
-            Some(ts) => ts,
-            None => return 0.0,
-        };
-
-        let elapsed = now.duration_since(oldest_ts).as_secs_f64();
-        if elapsed <= 0.0 {
+        if sum_diff == 0 {
             return 0.0;
         }
 
         // Standard Bitcoin hashrate formula: difficulty × 2³² hashes per share
-        (sum_diff as f64 * 4_294_967_296.0) / elapsed
+        (sum_diff as f64 * 4_294_967_296.0) / observed.as_secs_f64()
     }
 }
 
@@ -221,23 +235,72 @@ mod tests {
         assert_eq!(result, Some(50_000));
     }
 
+    /// Build a Vardiff whose session is old enough to report, with `shares`
+    /// entries of difficulty `diff` placed `spacing` apart ending now.
+    fn aged(diff: u64, shares: u64, spacing: Duration, age: Duration) -> Vardiff {
+        let mut vd = Vardiff::new(cfg(), diff);
+        vd.started_at = Instant::now().checked_sub(age).expect("test clock");
+        for i in 0..shares {
+            let back = spacing * ((shares - 1 - i) as u32);
+            let ts = Instant::now().checked_sub(back).expect("test clock");
+            vd.share_times.push_back((ts, diff));
+        }
+        vd
+    }
+
+    #[test]
+    fn a_burst_of_shares_cannot_produce_an_absurd_hashrate() {
+        // The real failure that poisoned a production all-time watermark: a
+        // session submitted two shares a fraction of a millisecond apart and
+        // then went quiet. Anchoring the denominator on those shares gave
+        // ~2.3e17 H/s, roughly 800x above anything the hardware could do, and
+        // the monotonic watermark kept it forever.
+        let vd = aged(
+            4096,
+            2,
+            Duration::from_micros(155),
+            Duration::from_secs(600),
+        );
+        let hps = vd.estimated_hashrate_in_window(Duration::from_secs(600));
+
+        // Two shares of difficulty 4096 over ten minutes is ~59 MH/s.
+        let expected = 2.0 * 4096.0 * 4_294_967_296.0 / 600.0;
+        assert!(
+            (hps - expected).abs() / expected < 0.01,
+            "expected ~{expected:.3e} H/s, got {hps:.3e}"
+        );
+        assert!(
+            hps < 1e12,
+            "a two-share burst must not report terahashes: {hps:.3e}"
+        );
+    }
+
+    #[test]
+    fn no_estimate_until_there_is_a_time_base() {
+        // A session milliseconds old would divide by ~0. Report nothing until
+        // the observation period is real.
+        let vd = aged(4096, 5, Duration::from_millis(1), Duration::from_millis(50));
+        assert_eq!(
+            vd.estimated_hashrate_in_window(Duration::from_secs(600)),
+            0.0
+        );
+    }
+
     #[test]
     fn hashrate_estimate_is_unbiased_for_a_steady_miner() {
         // A miner producing one share of difficulty D every second is doing
         // D * 2^32 hashes per second. Counting the boundary share used to
         // report n/(n-1) of that: +25% here, and double at two shares.
-        let mut vd = Vardiff::new(cfg(), 1_000);
-        let base = Instant::now();
-        for i in 0..5u64 {
-            // Oldest first, one second apart, the newest 0s ago.
-            let ts = base
-                .checked_sub(Duration::from_secs(4 - i))
-                .expect("test clock");
-            vd.share_times.push_back((ts, 1_000));
-        }
-
-        let hps = vd.estimated_hashrate_in_window(Duration::from_secs(100));
-        let expected = 1_000.0 * 4_294_967_296.0;
+        // 60 shares of difficulty 1000, one per second, over a 60s window that
+        // the session has fully covered: exactly 1000 * 2^32 H/s.
+        let vd = aged(
+            1_000,
+            60,
+            Duration::from_secs(1),
+            Duration::from_secs(3_600),
+        );
+        let hps = vd.estimated_hashrate_in_window(Duration::from_secs(60));
+        let expected = 60.0 * 1_000.0 * 4_294_967_296.0 / 60.0;
         let ratio = hps / expected;
         assert!(
             (0.98..=1.02).contains(&ratio),
@@ -276,13 +339,12 @@ mod tests {
         // `now - window` cutoff, which underflows on platforms whose `Instant` is
         // an unsigned counter. Passes either way on Linux — it documents the
         // intended behavior rather than reproducing a Linux failure.
-        let mut vd = Vardiff::new(cfg(), 100_000);
-        vd.record_share(100_000);
-        vd.record_share(100_000);
+        let vd = aged(100_000, 2, Duration::from_secs(1), Duration::from_secs(120));
 
         let century = Duration::from_secs(86_400 * 365 * 100);
-        // Every share falls inside the window, so this is a real (very large)
-        // rate rather than the "no data" zero.
+        // Both shares fall inside the window, and the denominator is the
+        // session's age rather than the century, so this is a real rate rather
+        // than the "no data" zero.
         assert!(vd.estimated_hashrate_in_window(century) > 0.0);
     }
 
