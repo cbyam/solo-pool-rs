@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-08-05
+
 ### Fixed
 - A chain tip that moved without a ZMQ notification no longer leaves miners
   working a dead prevhash. Two defects combined here. ZMQ's `connect` is lazy
@@ -50,8 +52,10 @@ everything else bumps the **patch** version.
 - `[bitcoin_rpc] timeout_secs` is applied. It was parsed and then never passed
   to the RPC client, so the transport default of roughly 15 seconds governed
   every call including the inline `submitblock` attempts, and tightening the
-  value did nothing. Boot now rejects values below 5 seconds, since the timeout
-  covers block submission and full-block validation can take seconds.
+  value did nothing. Values below 5 seconds are raised to that floor with a
+  warning rather than refused, so a pool that had been running on a low, inert
+  value keeps starting; the floor exists because the timeout now covers block
+  submission and full-block validation can take seconds.
 - A panic inside a miner session no longer leaks its connection slot. The
   global connection budget was released by straight-line code after the session
   returned, so an unwinding task kept its slot forever and `max_connections`
@@ -62,14 +66,33 @@ everything else bumps the **patch** version.
   clean job was already exempt, and an aged-out job returns the same error to
   the miner, but only the latter counted: a miner legitimately continuing on a
   non-clean job was disconnected after `max_invalid_shares` submissions.
-- The windowed hashrate estimate no longer overstates the rate. It summed every
-  in-window share's difficulty while measuring elapsed time from the oldest of
-  them, which counts work finished before the measured interval began and
-  inflates the result by a factor of n/(n-1): double at two shares in the
-  window, about 25% high at five, negligible once there are hundreds. Short
-  windows are where the share count is smallest, so the 60-second figure was
-  the most affected. Expect the short-window dashboard readings to drop; the
-  new figures are the correct ones.
+- The windowed hashrate estimate no longer divides by the gap between shares,
+  which could make it arbitrarily large. It measured elapsed time from the
+  oldest share inside the window, so a session that submitted a few shares
+  close together and then went quiet collapsed the time base: two shares 155
+  microseconds apart in the ten-minute window produce a reading of roughly
+  2.3e17 H/s. Because the all-time best-hashrate watermark is a monotonic
+  maximum written to SQLite, one such reading stood forever and no honest
+  measurement could ever reach it again. On the developer's own pool the stored
+  watermark was 814 times the highest rate observed across 17,614 recorded
+  samples.
+
+  The estimate now divides accumulated share work by the period actually
+  observed: the whole window once the session is that old, and the session's
+  age before then. A fixed observation period cannot collapse, so the figure is
+  bounded by the work genuinely proven and can only read high if the shares were
+  really submitted. Nothing is reported during the first 30 seconds of a
+  session, when there is not yet a meaningful time base.
+
+  Expect dashboard hashrate readings to change, most visibly on the short
+  windows. The new figures are the correct ones.
+- Added a `POST /api/reset-best-hashrate` endpoint to clear the all-time
+  best-hashrate watermark, gated behind `[metrics] allow_runtime_settings` like
+  the other mutating routes. Needed because the watermark only ever moves up, so
+  a value recorded from the estimator fault above cannot otherwise be cleared.
+  The reset is deliberately manual: silently rewriting an all-time record is not
+  something an upgrade should do on the operator's behalf. Best-share records
+  are untouched, being proof of work actually performed.
 - Repeated `mining.suggest_difficulty` messages can no longer postpone
   retargeting indefinitely. Each one reset the retarget window, so a client
   suggesting more often than `retarget_interval_secs` could pin itself at the
@@ -84,7 +107,9 @@ everything else bumps the **patch** version.
   accepting shares, until a block was finally found and rejected with
   `bad-cb-length`. The total extranonce width is also bounded at 32 bytes,
   which SV2 channel setup requires, and `extranonce1_size` must be non-zero so
-  sessions do not all search identical space.
+  sessions do not all search identical space. These three refuse only
+  configurations that could never produce a valid block or a working SV2
+  channel, so no working deployment is affected.
 
 ### Changed
 - The RPC tip poll now runs continuously alongside ZMQ rather than only after a
@@ -528,7 +553,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.0...v0.6.1

@@ -192,6 +192,19 @@ impl StatsStore {
         }
     }
 
+    /// Force the persisted watermark to `hps`, ignoring the monotonic guard on
+    /// `set_best_hashrate_hps`. Only for an operator-initiated reset: a
+    /// watermark recorded from a bad estimate can never be undone otherwise,
+    /// because every normal write path refuses to lower it.
+    fn force_best_hashrate_hps(&self, hps: f64) {
+        if let Err(e) = self.conn.lock().execute(
+            "UPDATE pool_stats SET best_hashrate_hps = ?1 WHERE id = 1",
+            params![hps],
+        ) {
+            warn!("Failed to reset best_hashrate_hps: {e}");
+        }
+    }
+
     fn record_hashrate_snapshot(&self, ts: u64, hps: f64) {
         let conn = self.conn.lock();
         if let Err(e) = conn.execute(
@@ -374,6 +387,27 @@ impl PoolStats {
         if let Some(store) = &self.store {
             store.set_best_hashrate_hps(hps);
         }
+    }
+
+    /// Clear the all-time best-hashrate watermark, in memory and on disk.
+    ///
+    /// Operator-initiated only. The watermark is a monotonic maximum, so a
+    /// reading produced by a faulty estimate would otherwise stand forever and
+    /// no honest measurement could ever reach it. Deliberately not automatic:
+    /// silently rewriting an all-time record is not something an upgrade should
+    /// do on the operator's behalf.
+    ///
+    /// Leaves best-share records alone; those are proof of work actually done
+    /// and are never invalidated by an estimator change.
+    pub fn reset_best_hashrate(&self) {
+        self.best_hashrate_hps
+            .store(0f64.to_bits(), Ordering::Relaxed);
+        self.session_best_hashrate_hps
+            .store(0f64.to_bits(), Ordering::Relaxed);
+        if let Some(store) = &self.store {
+            store.force_best_hashrate_hps(0.0);
+        }
+        tracing::info!("All-time best-hashrate watermark reset by operator request");
     }
 
     pub fn miner_connected(&self) {
@@ -998,6 +1032,65 @@ mod tests {
         let id = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         path.push(format!("solo_pool_rs_stats_test_{}_{}.db", ts, id));
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn resetting_the_hashrate_watermark_beats_the_monotonic_guard() {
+        // The watermark only ever moves up, so a reading produced by a faulty
+        // estimate stands forever and no honest measurement can reach it. The
+        // reset has to defeat the SQL guard and survive a restart.
+        let db_path = make_temp_db();
+
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            // An absurd reading of the kind the old share-anchored estimator
+            // produced, hundreds of times above real hardware.
+            stats.update_worker_hashrate("ghost", 2.27e17, 2.27e17, 2.27e17, 2.27e17);
+            assert!(stats.snapshot().best_hashrate_hps > 1e17);
+
+            stats.reset_best_hashrate();
+            assert_eq!(
+                stats.snapshot().best_hashrate_hps,
+                0.0,
+                "reset must clear the in-memory watermark"
+            );
+        }
+
+        // And it must not come back on restart.
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        assert_eq!(
+            stats.snapshot().best_hashrate_hps,
+            0.0,
+            "reset must clear the persisted watermark, not just the in-memory one"
+        );
+
+        // A later honest reading still sets a fresh watermark.
+        stats.update_worker_hashrate("nerdqaxe", 4.0e13, 4.0e13, 4.0e13, 4.0e13);
+        assert!(stats.snapshot().best_hashrate_hps > 0.0);
+
+        std::fs::remove_file(db_path).ok();
+    }
+
+    #[test]
+    fn resetting_the_hashrate_watermark_keeps_best_shares() {
+        // Best shares are proof of work actually done; an estimator bug must
+        // not be an excuse to drop them.
+        let db_path = make_temp_db();
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        stats.worker_share_accepted("nerdqaxe", 794_568_949_760);
+        stats.share_accepted(794_568_949_760);
+
+        stats.reset_best_hashrate();
+
+        assert_eq!(stats.snapshot().best_share_difficulty, 794_568_949_760);
+        let states = stats.snapshot().worker_states;
+        assert!(
+            states
+                .iter()
+                .any(|w| w.best_share_difficulty == 794_568_949_760),
+            "worker best share must survive a hashrate reset"
+        );
+        std::fs::remove_file(db_path).ok();
     }
 
     #[test]

@@ -106,6 +106,10 @@ pub async fn start(
         .route("/history", get(history_json))
         .route("/chart", get(chart_json))
         .route("/api/settings", get(settings_get).post(settings_post))
+        .route(
+            "/api/reset-best-hashrate",
+            axum::routing::post(reset_best_hashrate_post),
+        )
         .route("/api/info", get(info_get))
         .route("/metrics", get(metrics_text))
         .with_state(state);
@@ -282,6 +286,28 @@ async fn settings_get(State(state): State<DashState>) -> Json<SettingsView> {
 #[derive(Deserialize)]
 struct SettingsUpdate {
     coinbase_address: String,
+}
+
+/// Clear the all-time best-hashrate watermark.
+///
+/// Gated behind `allow_runtime_settings` like every other mutating route. Exists
+/// because the watermark is a monotonic maximum: a value recorded from a faulty
+/// estimate can never be reached again by an honest measurement, so without an
+/// explicit reset the dashboard would show an unreachable all-time figure for
+/// the life of the database.
+async fn reset_best_hashrate_post(State(state): State<DashState>) -> Response {
+    if !state.allow_settings {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "runtime settings are disabled ([metrics] allow_runtime_settings = false)"
+            })),
+        )
+            .into_response();
+    }
+
+    state.stats.reset_best_hashrate();
+    Json(serde_json::json!({ "ok": true, "best_hashrate_hps": 0.0 })).into_response()
 }
 
 async fn settings_post(
