@@ -121,7 +121,17 @@ timeout_secs = 10
 # Enable in bitcoin.conf:  zmqpubhashblock=tcp://127.0.0.1:28332
 hashblock_endpoint = "tcp://127.0.0.1:28332"
 
-# Fall back to polling if ZMQ is unavailable
+# Poll the chain tip over RPC as a safety net alongside ZMQ.
+#
+# This runs continuously rather than only after a ZMQ failure, because a ZMQ
+# subscription cannot be proven live from this side: connect() succeeds even
+# when nothing is listening (wrong port, node without -zmqpubhashblock,
+# firewall) and the socket then stays silent forever. The poll only signals
+# when the tip hash actually changes, so with healthy ZMQ it costs one
+# getbestblockhash per interval and changes nothing else.
+#
+# Leave this on. With it off, a silently dead subscription means new blocks
+# are only noticed by the periodic template refresh.
 poll_fallback = true
 poll_interval_ms = 1000
 

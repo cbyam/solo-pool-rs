@@ -202,16 +202,21 @@ pub async fn run(
                     }
                     Ok(Ok(Some(_len))) => {
                         last_inbound = tokio::time::Instant::now();
+                        // Take ownership of the completed line and reset the
+                        // accumulator here: `read_line_bounded` deliberately does
+                        // not clear, so that a line still in flight survives this
+                        // `select!` cancelling the read arm.
                         let line = match std::str::from_utf8(&line_buf) {
-                            Ok(s) => s,
+                            Ok(s) => s.to_owned(),
                             Err(_) => {
                                 debug!("Non-UTF8 line from {peer} — disconnecting");
                                 break;
                             }
                         };
+                        line_buf.clear();
 
                         tracing::trace!(peer = %peer, raw = %line, "← miner");
-                        let response = handle_line(&mut session, line, &engine, &ban_list).await;
+                        let response = handle_line(&mut session, &line, &engine, &ban_list).await;
 
                         match response {
                             HandleResult::Messages(msgs) => {
@@ -360,12 +365,18 @@ async fn send_messages(
 /// Returns `Ok(None)` on EOF with no buffered data, `Ok(Some(len))` with the
 /// line bytes in `buf` (trailing `\r` stripped), or an `InvalidData` error when
 /// the line exceeds `max`.
+///
+/// Cancellation safety: this appends to `buf` and never clears it, because bytes
+/// are consumed from the `BufReader` before the newline arrives. The session
+/// loop races this against job broadcasts in `select!`, so the future is dropped
+/// mid-line routinely; clearing here would discard the consumed prefix and
+/// corrupt the next parse. **The caller must clear `buf` once it has taken a
+/// completed line**, and must not reuse a buffer across different readers.
 async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     max: usize,
 ) -> std::io::Result<Option<usize>> {
-    buf.clear();
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
@@ -675,17 +686,58 @@ async fn handle_submit(
         )]);
     }
 
+    // The miner must send exactly the extranonce2 width it was given at
+    // subscribe. `assemble_coinbase` returns the template with the extranonce
+    // region still zeroed when the widths disagree, which means a wrong-length
+    // submit reconstructs a coinbase the miner can predict: one low-difficulty
+    // share can then be replayed under unlimited distinct extranonce2 values,
+    // each hashing identically, each passing the target check, and each getting
+    // a different dedup key. It also turns mis-sized firmware into a stream of
+    // "low difficulty" rejects rather than a diagnosable error. The SV2 path
+    // already guards this; SV1 did not.
+    if params.extranonce2.len() != session.extranonce2_size {
+        warn!(
+            peer = %session.peer,
+            worker = worker,
+            got = params.extranonce2.len(),
+            expected = session.extranonce2_size,
+            "Submit has wrong extranonce2 length — rejecting"
+        );
+        metrics::share_rejected("bad_extranonce", worker);
+        session.stats.share_rejected();
+        session
+            .stats
+            .worker_share_rejected(worker, "bad_extranonce");
+        if session.guard.invalid_shares.record_invalid() {
+            return HandleResult::Disconnect("too many invalid shares".into());
+        }
+        return HandleResult::Messages(vec![ResponseBuilder::err(
+            &req.id,
+            PoolError::BadExtranonceSize {
+                got: params.extranonce2.len(),
+                expected: session.extranonce2_size,
+            }
+            .to_stratum_error(),
+        )]);
+    }
+
     let submit_start = Instant::now();
 
     let job_entry = match engine.find_job(&params.job_id).await {
         Some(entry) => entry,
         None => {
+            // Not counted toward the invalid-share disconnect counter, for the
+            // same reason a superseded job is not: the miner submitted work
+            // that simply is not current any more, which is expected rather
+            // than malicious. A job that aged out of the history window is if
+            // anything more benign than one explicitly retired by a clean job,
+            // yet this path used to be the only one of the two that counted —
+            // so a miner legitimately continuing on a non-clean job was
+            // disconnected after max_invalid_shares (default 5) submissions.
+            // The miner already gets the same StaleJob error either way.
             metrics::share_rejected("job_not_found", worker);
             session.stats.share_rejected();
             session.stats.worker_share_rejected(worker, "job_not_found");
-            if session.guard.invalid_shares.record_invalid() {
-                return HandleResult::Disconnect("too many invalid shares".into());
-            }
             return HandleResult::Messages(vec![ResponseBuilder::err(
                 &req.id,
                 PoolError::StaleJob(params.job_id.clone()).to_stratum_error(),
@@ -729,12 +781,17 @@ async fn handle_submit(
 
     // Duplicates are only *checked* here; the key is inserted after validation
     // passes, so invalid submissions cannot occupy dedup slots.
+    // Key off `share_params`, not the raw request: when version rolling was not
+    // negotiated, `version_bits` is dropped before validation, so keying on the
+    // raw field would let a miner replay one share under version_bits 1, 2,
+    // 3... Each replay builds the identical header, passes validation, and
+    // lands a distinct dedup key.
     let share_key = validator::ShareKey::new(
-        &params.job_id,
-        &params.extranonce2,
-        params.ntime,
-        params.nonce,
-        params.version_bits.unwrap_or(0),
+        &share_params.job_id,
+        &share_params.extranonce2,
+        share_params.ntime,
+        share_params.nonce,
+        share_params.version_bits.unwrap_or(0),
     );
     if session.share_set.contains(&share_key) {
         metrics::share_rejected("duplicate", worker);
@@ -795,7 +852,7 @@ async fn handle_submit(
             debug!(
                 worker = worker,
                 job = %params.job_id,
-                hash = %hex::encode(hash),
+                hash = %validator::hash_display_hex(&hash),
                 diff = assigned_difficulty,
                 hash_diff = hash_difficulty,
                 latency_ms = latency_ms,
@@ -821,7 +878,7 @@ async fn handle_submit(
             let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
             metrics::share_validation_time(validation_duration_ms);
 
-            let block_hash_hex = hex::encode(hash);
+            let block_hash_hex = validator::hash_display_hex(&hash);
             let submit_result = engine
                 .submit_found_block(
                     job_height,
@@ -835,7 +892,7 @@ async fn handle_submit(
                 Ok(_) => {
                     metrics::block_found();
                     metrics::block_submission_success();
-                    session.stats.block_found(worker, &hex::encode(hash));
+                    session.stats.block_found(worker, &block_hash_hex);
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(hash_difficulty);
@@ -843,7 +900,7 @@ async fn handle_submit(
                     session.stats.mark_worker_submit(worker);
                     info!(
                         "🏆 Block submitted! worker={worker} hash={}",
-                        hex::encode(hash)
+                        block_hash_hex
                     );
                     HandleResult::Messages(vec![ResponseBuilder::ok(
                         &req.id,
@@ -949,17 +1006,55 @@ mod tests {
         let mut r = BufReader::new(&data[..]);
         let mut buf = Vec::new();
 
+        // The caller owns clearing between lines (see the cancellation-safety
+        // note on `read_line_bounded`).
         assert_eq!(
             read_line_bounded(&mut r, &mut buf, 64).await.unwrap(),
             Some(5)
         );
         assert_eq!(&buf, b"hello");
+        buf.clear();
         assert_eq!(
             read_line_bounded(&mut r, &mut buf, 64).await.unwrap(),
             Some(5)
         );
         assert_eq!(&buf, b"world");
+        buf.clear();
         assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn partial_line_survives_a_cancelled_read() {
+        // The session loop runs this inside `select!` against job broadcasts, so
+        // the read future is dropped whenever a notify wins the race. A submit
+        // split across TCP segments must not lose the bytes already consumed
+        // from the BufReader.
+        let mock = tokio_test::io::Builder::new()
+            .read(b"{\"id\":1,\"me")
+            .wait(std::time::Duration::from_millis(50))
+            .read(b"thod\":\"mining.submit\"}\n")
+            .build();
+        let mut r = BufReader::new(mock);
+        let mut buf = Vec::new();
+
+        // First attempt: consumes the first segment, then is cancelled while
+        // awaiting the rest — exactly what a concurrent job broadcast does.
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            _ = read_line_bounded(&mut r, &mut buf, 8192) => {
+                panic!("read should still have been pending");
+            }
+        }
+
+        // Second attempt: must return the whole line, not just the tail.
+        let n = read_line_bounded(&mut r, &mut buf, 8192).await.unwrap();
+        assert_eq!(
+            std::str::from_utf8(&buf).unwrap(),
+            "{\"id\":1,\"method\":\"mining.submit\"}",
+            "bytes consumed before cancellation were dropped"
+        );
+        assert_eq!(n, Some(33));
     }
 
     #[tokio::test]

@@ -34,6 +34,9 @@ pub enum PoolError {
     #[error("Invalid block header")]
     InvalidHeader,
 
+    #[error("Wrong extranonce2 size: got {got} bytes, expected {expected}")]
+    BadExtranonceSize { got: usize, expected: usize },
+
     // ── Bitcoin RPC ──────────────────────────────────────────────────────────
     #[error("RPC error: {0}")]
     Rpc(#[from] bitcoincore_rpc::Error),

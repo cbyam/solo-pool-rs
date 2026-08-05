@@ -734,7 +734,7 @@ async fn handle_submit(
         }) => {
             metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
             debug!(
-                worker = %worker, hash = %hex::encode(hash), diff = assigned_difficulty,
+                worker = %worker, hash = %crate::mining::validator::hash_display_hex(&hash), diff = assigned_difficulty,
                 hash_diff = hash_difficulty, latency_ms = submit_start.elapsed().as_millis(),
                 "SV2 share accepted"
             );
@@ -755,7 +755,7 @@ async fn handle_submit(
             hash,
         }) => {
             metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
-            let block_hash_hex = hex::encode(hash);
+            let block_hash_hex = crate::mining::validator::hash_display_hex(&hash);
             match engine
                 .submit_found_block(
                     job_entry.job.height,
@@ -769,7 +769,7 @@ async fn handle_submit(
                 Ok(_) => {
                     metrics::block_found();
                     metrics::block_submission_success();
-                    session.stats.block_found(&worker, &hex::encode(hash));
+                    session.stats.block_found(&worker, &block_hash_hex);
                     session.shares_accepted += 1;
                     session.vardiff.record_share(session.difficulty);
                     session.stats.share_accepted(hash_difficulty);
@@ -779,7 +779,7 @@ async fn handle_submit(
                     session.stats.mark_worker_submit(&worker);
                     info!(
                         "🏆 Block submitted (SV2)! worker={worker} hash={}",
-                        hex::encode(hash)
+                        block_hash_hex
                     );
                     accept(session, writer, submit.sequence_number).await
                 }
