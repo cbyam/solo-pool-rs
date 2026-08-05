@@ -73,8 +73,39 @@ fn build_client(url: &str, auth: bitcoincore_rpc::Auth, timeout_secs: u64) -> Re
     ))
 }
 
+/// Floor for the RPC timeout, in seconds.
+///
+/// The timeout bounds every call including the inline `submitblock` attempts,
+/// and full-block validation on a busy node takes on the order of seconds, so a
+/// very low value risks aborting submissions that were about to succeed.
+const MIN_TIMEOUT_SECS: u64 = 5;
+
+/// Raise a too-low configured timeout to the floor, warning if it was raised.
+///
+/// Deliberately not a boot failure. `timeout_secs` was parsed and ignored until
+/// it started being applied, so any deployment running a low value had a
+/// working pool; refusing to start would break it on upgrade over a setting
+/// that had never done anything.
+fn effective_timeout_secs(configured: u64) -> u64 {
+    if configured < MIN_TIMEOUT_SECS {
+        warn!(
+            "[bitcoin_rpc] timeout_secs = {configured} is below the {MIN_TIMEOUT_SECS}s floor; \
+             using {MIN_TIMEOUT_SECS}s. It bounds every RPC including submitblock, and block \
+             validation can take seconds."
+        );
+        MIN_TIMEOUT_SECS
+    } else {
+        configured
+    }
+}
+
 impl RpcClient {
     pub fn new(cfg: &RpcConfig) -> Result<Self> {
+        // Normalise once so the cookie-rotation rebuild reuses the same value
+        // without re-warning on every rotation.
+        let mut cfg = cfg.clone();
+        cfg.timeout_secs = effective_timeout_secs(cfg.timeout_secs);
+
         let cookie = cfg.read_cookie().ok();
         let auth = cfg.rpc_auth()?;
         let client = build_client(&cfg.url, auth, cfg.timeout_secs)?;
@@ -83,7 +114,7 @@ impl RpcClient {
             cfg.url, cfg.timeout_secs
         );
         Ok(Self {
-            cfg: cfg.clone(),
+            cfg,
             state: RwLock::new(Inner { client, cookie }),
         })
     }
@@ -332,4 +363,21 @@ fn value_as_u32(v: &Value, key: &str) -> Result<u32, PoolError> {
             "getblocktemplate field out of range for u32: {key}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effective_timeout_secs, MIN_TIMEOUT_SECS};
+
+    #[test]
+    fn a_too_low_timeout_is_raised_to_the_floor_not_rejected() {
+        // Values below the floor are clamped rather than fatal, so upgrading
+        // cannot stop a pool that was running on an inert low value.
+        assert_eq!(effective_timeout_secs(0), MIN_TIMEOUT_SECS);
+        assert_eq!(effective_timeout_secs(2), MIN_TIMEOUT_SECS);
+        // At or above the floor the operator's value is honoured exactly.
+        assert_eq!(effective_timeout_secs(MIN_TIMEOUT_SECS), MIN_TIMEOUT_SECS);
+        assert_eq!(effective_timeout_secs(10), 10);
+        assert_eq!(effective_timeout_secs(600), 600);
+    }
 }
