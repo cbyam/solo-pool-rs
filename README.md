@@ -35,7 +35,7 @@ The fair question for any young pool is *"how do I know a found block actually
 gets submitted and pays my address?"* You don't have to take my word for it. The
 proof is in the repo and runs on every change:
 
-- **An end-to-end block-acceptance test runs on every push and PR.** It boots a
+- **An end-to-end block-acceptance test runs on every PR and every push to main.** It boots a
   real `bitcoind -regtest`, launches the actual pool binary, connects over the
   live Stratum socket exactly as a miner would, grinds a real share that is also
   a valid block, submits it, and **asserts the node accepted it onto the chain
@@ -47,8 +47,8 @@ proof is in the repo and runs on every change:
   [`e2e.yml`](.github/workflows/e2e.yml) workflow. A green badge above means the
   full `getblocktemplate` → coinbase → `submitblock` pipeline passed on the
   latest commit.
-- **Every PR and release goes through CI before merge** (fmt, clippy, tests,
-  release build). See [`ci.yml`](.github/workflows/ci.yml).
+- **Every PR goes through CI before merge** (fmt, clippy, tests, release
+  build). See [`ci.yml`](.github/workflows/ci.yml).
 - **Run it yourself.** The regtest harness is one command (see
   [Development](#development)); on regtest you can mine real blocks through the
   pool in seconds. If something breaks there, that's exactly the bug report I
@@ -173,7 +173,6 @@ server=1
 
 # Recommended: ZMQ for instant block notifications
 zmqpubhashblock=tcp://127.0.0.1:28332
-zmqpubrawtx=tcp://127.0.0.1:28333
 
 # Allow RPC from localhost (default)
 rpcbind=127.0.0.1
@@ -279,8 +278,12 @@ With `prometheus_addr` set (default `0.0.0.0:9090`), an HTTP server exposes:
 
 | Route | Description |
 |---|---|
-| `GET /` | HTML dashboard: hashrate chart, workers, network difficulty + estimated next-retarget move, probability, uptime (auto-refreshes) |
+| `GET /` | HTML dashboard: hashrate chart, workers, network difficulty + estimated next-retarget move, probability, market card, uptime (auto-refreshes) |
 | `GET /stats` | JSON snapshot of current pool state |
+| `GET /history` | JSON hashrate history (`?since=<unix-ts>` for increments) |
+| `GET /chart` | Hashrate chart as an ECharts option spec (`?window=36h\|1w\|1m\|6m`) |
+| `GET /api/info` | Pool version, stratum port, SV2 status and authority pubkey |
+| `GET/POST /api/settings` | Read or change the payout address at runtime (POST requires `[metrics] allow_runtime_settings = true`) |
 | `GET /metrics` | Prometheus text exposition |
 
 Key Prometheus metrics:
@@ -340,8 +343,9 @@ cargo fmt --all -- --check
 cargo test --release --test block_acceptance -- --ignored --nocapture
 ```
 
-CI runs fmt, clippy, tests, and a release build on every push and PR; the
-separate E2E workflow runs the block-acceptance test on every push and PR too.
+CI runs fmt, clippy, tests, and a release build on every PR and every push to
+main; the separate E2E workflow runs the block-acceptance test on the same
+triggers.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks a PR must pass, and
 commit/PR conventions.
@@ -374,10 +378,10 @@ git push && git push origin v0.3.1
 
 Pushing a `v*` tag triggers two workflows automatically:
 
-- **`release.yml`** builds the Linux x86_64 binary, packages a tarball
-  (binary + `config.toml.example` + README), and publishes a GitHub Release with
-  auto-generated notes.
-- **`docker.yml`** builds and pushes the image to
+- **`release.yml`** builds Linux x86_64 and aarch64 binaries on native runners,
+  packages a tarball per architecture (binary + `config.toml.example` + README),
+  and publishes a GitHub Release with auto-generated notes.
+- **`docker.yml`** builds and pushes a multi-arch (amd64 + arm64) image to
   `ghcr.io/cbyam/solo-pool-rs:<tag>`.
 
 So the only manual steps are the changelog promotion, the version bump, and the
