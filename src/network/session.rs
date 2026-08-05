@@ -726,12 +726,18 @@ async fn handle_submit(
     let job_entry = match engine.find_job(&params.job_id).await {
         Some(entry) => entry,
         None => {
+            // Not counted toward the invalid-share disconnect counter, for the
+            // same reason a superseded job is not: the miner submitted work
+            // that simply is not current any more, which is expected rather
+            // than malicious. A job that aged out of the history window is if
+            // anything more benign than one explicitly retired by a clean job,
+            // yet this path used to be the only one of the two that counted —
+            // so a miner legitimately continuing on a non-clean job was
+            // disconnected after max_invalid_shares (default 5) submissions.
+            // The miner already gets the same StaleJob error either way.
             metrics::share_rejected("job_not_found", worker);
             session.stats.share_rejected();
             session.stats.worker_share_rejected(worker, "job_not_found");
-            if session.guard.invalid_shares.record_invalid() {
-                return HandleResult::Disconnect("too many invalid shares".into());
-            }
             return HandleResult::Messages(vec![ResponseBuilder::err(
                 &req.id,
                 PoolError::StaleJob(params.job_id.clone()).to_stratum_error(),
