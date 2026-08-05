@@ -114,13 +114,31 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let interval = tokio::time::Duration::from_secs(30);
             loop {
-                match rpc.network_hashrate(None, None) {
-                    Ok(network_hps) => stats.set_network_hashrate(network_hps),
-                    Err(e) => tracing::warn!("Failed to poll network hash rate: {e}"),
-                }
-                match rpc.estimate_difficulty_change_pct() {
-                    Ok(pct) => stats.set_est_difficulty_change_pct(pct),
-                    Err(e) => tracing::warn!("Failed to estimate difficulty change: {e}"),
+                // bitcoincore-rpc is synchronous. Left unwrapped, a hung node
+                // parks a runtime worker for the full transport timeout every
+                // 30s — precisely when miners are also struggling.
+                let poll = {
+                    let rpc = rpc.clone();
+                    tokio::task::spawn_blocking(move || {
+                        (
+                            rpc.network_hashrate(None, None),
+                            rpc.estimate_difficulty_change_pct(),
+                        )
+                    })
+                    .await
+                };
+                match poll {
+                    Ok((hashrate, difficulty)) => {
+                        match hashrate {
+                            Ok(network_hps) => stats.set_network_hashrate(network_hps),
+                            Err(e) => tracing::warn!("Failed to poll network hash rate: {e}"),
+                        }
+                        match difficulty {
+                            Ok(pct) => stats.set_est_difficulty_change_pct(pct),
+                            Err(e) => tracing::warn!("Failed to estimate difficulty change: {e}"),
+                        }
+                    }
+                    Err(e) => tracing::warn!("Network stats poll task failed: {e}"),
                 }
                 tokio::time::sleep(interval).await;
             }
