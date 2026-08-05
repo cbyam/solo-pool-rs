@@ -87,6 +87,26 @@ async fn main() -> Result<()> {
         });
     }
 
+    // ── Prometheus hashrate refresh for offline workers ──────────────────────
+    // The per-worker gauge is pushed from the session loop, so it only moves
+    // while a miner is delivering traffic. Re-push decayed values for offline
+    // workers so scrapes match the dashboard instead of holding the last
+    // live value until the exporter's idle timeout. Pushing stops once the
+    // pruner evicts the worker from stats, after which the idle timeout
+    // expires the series.
+    if prometheus_handle.is_some() {
+        let stats = stats.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                for (worker, hps) in stats.offline_worker_hashrates_10m() {
+                    metrics::update_hashrate(hps, &worker);
+                }
+            }
+        });
+    }
+
     // ── Network hash rate poll ───────────────────────────────────────────────
     {
         let stats = stats.clone();
