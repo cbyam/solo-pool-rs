@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly local block-acceptance test for solo-pool-rs
+Documentation=https://github.com/cbyam/solo-pool-rs
+
+[Timer]
+# Weekly, early Monday. Randomised so it does not land on the same minute as
+# every other timer on the box.
+OnCalendar=Mon *-*-* 04:30:00
+RandomizedDelaySec=30min
+# Run on next boot if the machine was off when it was due.
+Persistent=true
+Unit=solo-pool-rs-e2e.service
+
+[Install]
+WantedBy=timers.target

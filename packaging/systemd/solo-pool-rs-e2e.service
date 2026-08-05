@@ -1,0 +1,36 @@
+[Unit]
+Description=solo-pool-rs local block-acceptance test (regtest)
+Documentation=https://github.com/cbyam/solo-pool-rs
+# Needs a bitcoind binary, not the running node: the test starts its own regtest
+# instance on a throwaway datadir. Deliberately NOT ordered after the pool
+# service, so a failure here can never affect mining.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=cbyam
+Group=bitstack
+WorkingDirectory=/opt/solo-pool-rs
+ExecStart=/opt/solo-pool-rs/packaging/systemd/solo-pool-rs-e2e.sh
+
+# Building and running a regtest node is slow on small hardware; give it room.
+TimeoutStartSec=45min
+
+# Keep the build off the repo's target dir, which /usr/local/bin/solo-pool-rs
+# symlinks into. Without this, a scheduled test run would replace the binary the
+# live pool starts on its next restart.
+Environment=CARGO_TARGET_DIR=/var/tmp/solo-pool-rs-e2e-target
+
+# Never let the test disturb the running pool.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# It only needs to read the repo and write its own target/datadir.
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

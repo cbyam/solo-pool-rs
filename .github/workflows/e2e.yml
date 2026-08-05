@@ -4,37 +4,73 @@ name: E2E block acceptance
 # through the pool and have a real bitcoind accept it onto the chain. Guards the
 # bugs that are invisible until a block is actually found (prev-hash byte order,
 # BIP34 height, merkle root, witness commitment, the submit path).
+#
+# Runs against Bitcoin Knots, not Core, because that is what the pool is actually
+# deployed against and it is the node whose acceptance decides whether a found
+# block counts. Knots enforces rules Core does not (BIP110/RDTS among them), so a
+# green run against Core would not have told us the block is acceptable to the
+# node that matters. The matrix keeps Core as a second target so a divergence
+# shows up as one job failing rather than as silence.
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so a node-side rule change is caught without waiting for a push.
+    - cron: "40 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  BITCOIN_VERSION: "28.0"
 
 jobs:
   block-acceptance:
-    name: Mine a block, require node acceptance
+    name: "Mine a block, require ${{ matrix.node.name }} acceptance"
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          # The deployed build. Its verdict on a found block is the one that
+          # actually decides whether a block counts, so it leads the matrix.
+          # RDTS is opt-in on this build.
+          - name: Knots 29.3 (deployed, RDTS opt-in)
+            url: https://bitcoinknots.org/files/29.x/29.3.knots20260507/bitcoin-29.3.knots20260507-x86_64-linux-gnu.tar.gz
+            dir: bitcoin-29.3.knots20260507
+          # The next Knots build, where opting out of RDTS is no longer
+          # possible. This is the forward guard: it answers "does the pool still
+          # build acceptable blocks after the node upgrade" *before* the upgrade
+          # happens, rather than at the moment a block is found and rejected.
+          # Bump both of these together as new Knots builds land.
+          - name: Knots 29.3 (next, RDTS mandatory)
+            url: https://bitcoinknots.org/files/29.x/29.3.knots20260508/bitcoin-29.3.knots20260508-x86_64-linux-gnu.tar.gz
+            dir: bitcoin-29.3.knots20260508
+          # A current Core, as a cross-implementation sanity check. Not the
+          # deployment target, so it tracks the latest release rather than being
+          # pinned to whatever was current when this was written.
+          - name: Core 31.1
+            url: https://bitcoincore.org/bin/bitcoin-core-31.1/bitcoin-31.1-x86_64-linux-gnu.tar.gz
+            dir: bitcoin-31.1
     steps:
       - uses: actions/checkout@v5
 
       - name: Install libzmq
         run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
 
-      - name: Install Bitcoin Core (bitcoind + bitcoin-cli)
+      - name: Install ${{ matrix.node.name }} (bitcoind + bitcoin-cli)
         run: |
           set -euo pipefail
-          url="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
-          curl -fsSL "$url" -o bitcoin.tar.gz
+          curl -fsSL "${{ matrix.node.url }}" -o bitcoin.tar.gz
           tar -xzf bitcoin.tar.gz
-          echo "BITCOIND=$PWD/bitcoin-${BITCOIN_VERSION}/bin/bitcoind" >> "$GITHUB_ENV"
-          echo "BITCOIN_CLI=$PWD/bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli" >> "$GITHUB_ENV"
+          echo "BITCOIND=$PWD/${{ matrix.node.dir }}/bin/bitcoind" >> "$GITHUB_ENV"
+          echo "BITCOIN_CLI=$PWD/${{ matrix.node.dir }}/bin/bitcoin-cli" >> "$GITHUB_ENV"
+
+      - name: Record which node is under test
+        run: "$BITCOIND -version | head -1"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

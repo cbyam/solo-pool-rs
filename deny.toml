@@ -1,0 +1,58 @@
+# cargo-deny configuration.
+#
+# Runs daily in .github/workflows/security.yml, not only on pull requests: an
+# advisory can land against a crate nobody has touched in months, so a check that
+# only fires on a push goes stale exactly when it matters.
+#
+# Note what this cannot see. SQLite is linked from the system library
+# (libsqlite3.so), so SQLite fixes arrive through OS updates and never appear
+# here. libzmq is compiled into the binary by zeromq-src and is not a crates.io
+# package, so no advisory feed covers it either. Those two are the parts of the
+# runtime that a green report says nothing about.
+
+[graph]
+all-features = false
+
+[advisories]
+# Fail on any advisory in the dependency tree.
+yanked = "deny"
+ignore = [
+  # Unsoundness in anyhow's Error::downcast_mut(). Not reachable: nothing in
+  # this codebase calls downcast_mut or downcast_ref on an anyhow::Error.
+  # Revisit when anyhow ships a fix so this can be dropped.
+  { id = "RUSTSEC-2026-0190", reason = "downcast_mut is never called from this codebase" },
+]
+
+[licenses]
+# Permissive licences only. Anything outside this list needs a deliberate
+# decision rather than silently entering the tree.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "CC0-1.0",
+  # MIT with a no-false-attribution clause, used by hex_lit (via the bitcoin
+  # crate). Permissive; listed explicitly so it is a decision rather than a
+  # surprise.
+  "MITNFA",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate major versions are noise rather than a defect in a tree this size,
+# so warn instead of failing the build.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Every dependency must come from crates.io. This is the property that makes the
+# advisory database meaningful: a git or path dependency would silently opt out
+# of it. The tree currently has none, and this keeps it that way.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

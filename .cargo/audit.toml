@@ -1,0 +1,18 @@
+# cargo-audit configuration.
+#
+# Kept in step with deny.toml: the two tools do not share config, so an
+# exception recorded in one and not the other means CI disagrees with itself.
+# If you drop an entry here, drop it there too.
+
+[advisories]
+ignore = [
+  # Unsoundness in anyhow's Error::downcast_mut().
+  #
+  # Not reachable from this codebase: nothing calls downcast_mut or
+  # downcast_ref on an anyhow::Error (checked with a tree-wide grep). anyhow is
+  # used purely as an error carrier, and the unsound API is never touched.
+  #
+  # Drop this entry once anyhow ships a fixed release, so the exception does not
+  # outlive the reason for it.
+  "RUSTSEC-2026-0190",
+]
