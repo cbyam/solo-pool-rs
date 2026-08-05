@@ -349,9 +349,21 @@ fn header_prefix(job: &Notify, extranonce1: &[u8], extranonce2: &[u8]) -> [u8; 7
     hdr
 }
 
+/// Cap on a single nonce sweep. The pool re-broadcasts a job every 30 s
+/// (ntime refresh) and keeps 8 jobs of history, so a job id is forgotten
+/// about 4 minutes after broadcast; a share ground for longer than that is
+/// rejected with "Job not found" no matter how valid it is (the cause of a
+/// long-standing CI flake on slow runners). Each sweep starts on a freshly
+/// synced job and gives up after 2 minutes, comfortably inside the window.
+/// Aborting costs nothing statistically: every nonce is an independent
+/// trial, so restarting on a fresh job preserves the expected time to find
+/// a share.
+const GRIND_CHUNK: Duration = Duration::from_secs(120);
+
 /// Multi-threaded grind for a nonce whose sha256d(header) meets diff-1. Returns
-/// the nonce, or None if the whole 2^32 space holds no solution (~37%).
-fn grind_diff1(prefix: &[u8; 76]) -> Option<u32> {
+/// the nonce, or None if the deadline passes or the whole 2^32 space holds no
+/// solution (~37%).
+fn grind_diff1(prefix: &[u8; 76], deadline: Instant) -> Option<u32> {
     let nthreads = std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(4);
@@ -381,9 +393,12 @@ fn grind_diff1(prefix: &[u8; 76]) -> Option<u32> {
                 let mut n = tid;
                 let mut counter = 0u32;
                 loop {
-                    // Check the stop flag occasionally, not every iteration.
+                    // Check the stop flag and deadline occasionally, not
+                    // every iteration.
                     counter = counter.wrapping_add(1);
-                    if counter % 8192 == 0 && stop.load(Ordering::Relaxed) {
+                    if counter % 8192 == 0
+                        && (stop.load(Ordering::Relaxed) || Instant::now() >= deadline)
+                    {
                         return;
                     }
                     blk2[12..16].copy_from_slice(&n.to_le_bytes());
@@ -415,6 +430,23 @@ fn grind_diff1(prefix: &[u8; 76]) -> Option<u32> {
     });
     let f = found.load(Ordering::SeqCst);
     (f >= 0).then_some(f as u32)
+}
+
+/// The chunk deadline must abort a sweep promptly, or a slow runner is back
+/// to grinding past the pool's job retention window. An already-expired
+/// deadline gives the grinder no time at all: it must come back empty within
+/// the per-thread check interval, not after sweeping 2^32 nonces.
+#[test]
+fn grind_respects_deadline() {
+    let prefix = [0u8; 76];
+    let t0 = Instant::now();
+    let result = grind_diff1(&prefix, Instant::now());
+    assert!(result.is_none(), "expired deadline still returned a nonce");
+    assert!(
+        t0.elapsed() < Duration::from_secs(5),
+        "grind ran {:?} past an expired deadline",
+        t0.elapsed()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -549,13 +581,13 @@ json = false
     let t0 = Instant::now();
     let mut en2: u32 = 0;
     let mut accepted = false;
-    while t0.elapsed() < Duration::from_secs(600) {
+    while t0.elapsed() < Duration::from_secs(900) {
         job = refresh_job(&mut reader, job);
         en2 += 1;
         let e2_bytes = en2.to_be_bytes()[4 - en2_size..].to_vec();
         let prefix = header_prefix(&job, &extranonce1, &e2_bytes);
-        let Some(nonce) = grind_diff1(&prefix) else {
-            continue; // no solution in this 2^32 sweep; roll extranonce2
+        let Some(nonce) = grind_diff1(&prefix, Instant::now() + GRIND_CHUNK) else {
+            continue; // sweep exhausted or chunk deadline hit; re-sync and roll
         };
         eprintln!(
             "found diff-1 nonce {nonce} in {:.0}s (job {}, en2 #{en2})",
@@ -583,7 +615,7 @@ json = false
     }
     assert!(
         accepted,
-        "pool never accepted a submitted block within 10 min"
+        "pool never accepted a submitted block within 15 min"
     );
 
     // ── Verify on-chain ───────────────────────────────────────────────────────
