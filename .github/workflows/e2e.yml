@@ -35,14 +35,26 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          # Keep this pinned to the deployed node version. It is the one whose
-          # verdict on a found block is the only one that matters.
-          - name: Knots 29.3
+          # The deployed build. Its verdict on a found block is the one that
+          # actually decides whether a block counts, so it leads the matrix.
+          # RDTS is opt-in on this build.
+          - name: Knots 29.3 (deployed, RDTS opt-in)
             url: https://bitcoinknots.org/files/29.x/29.3.knots20260507/bitcoin-29.3.knots20260507-x86_64-linux-gnu.tar.gz
             dir: bitcoin-29.3.knots20260507
-          - name: Core 28.0
-            url: https://bitcoincore.org/bin/bitcoin-core-28.0/bitcoin-28.0-x86_64-linux-gnu.tar.gz
-            dir: bitcoin-28.0
+          # The next Knots build, where opting out of RDTS is no longer
+          # possible. This is the forward guard: it answers "does the pool still
+          # build acceptable blocks after the node upgrade" *before* the upgrade
+          # happens, rather than at the moment a block is found and rejected.
+          # Bump both of these together as new Knots builds land.
+          - name: Knots 29.3 (next, RDTS mandatory)
+            url: https://bitcoinknots.org/files/29.x/29.3.knots20260508/bitcoin-29.3.knots20260508-x86_64-linux-gnu.tar.gz
+            dir: bitcoin-29.3.knots20260508
+          # A current Core, as a cross-implementation sanity check. Not the
+          # deployment target, so it tracks the latest release rather than being
+          # pinned to whatever was current when this was written.
+          - name: Core 31.1
+            url: https://bitcoincore.org/bin/bitcoin-core-31.1/bitcoin-31.1-x86_64-linux-gnu.tar.gz
+            dir: bitcoin-31.1
     steps:
       - uses: actions/checkout@v5
 
