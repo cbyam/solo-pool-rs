@@ -900,6 +900,7 @@ impl PoolStats {
             current_block_transaction_count: self
                 .current_block_transaction_count
                 .load(Ordering::Relaxed),
+            template_version: 0,
             best_share_difficulty: self.best_share_difficulty.load(Ordering::Relaxed),
             session_best_share_difficulty: self
                 .session_best_share_difficulty
@@ -948,6 +949,11 @@ pub struct StatsSnapshot {
     pub current_height: u64,
     pub current_coinbase_value: u64,
     pub current_block_transaction_count: u64,
+    /// Block version of the current template. PoolStats does not track this;
+    /// the dashboard fills it from the TemplateEngine (the single writer of
+    /// template state) when serving /stats, so it stays 0 elsewhere. Version
+    /// bits reflect the node's soft-fork signaling (bit 4 = BIP110/RDTS).
+    pub template_version: u32,
     pub best_share_difficulty: u64,
     pub session_best_share_difficulty: u64,
     pub best_hashrate_hps: f64,
