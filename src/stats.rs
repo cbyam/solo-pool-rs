@@ -554,6 +554,31 @@ impl PoolStats {
         )
     }
 
+    /// Decayed 10m hashrate for every offline worker still tracked in stats.
+    ///
+    /// The per-worker Prometheus gauge is pushed from the session loop, so it
+    /// would otherwise freeze at its last value when a miner disconnects. The
+    /// background metrics task re-pushes these decayed values to keep the
+    /// scrape surface in line with the dashboard. Online workers are excluded:
+    /// their sessions refresh the gauge on every message, and a periodic push
+    /// could overwrite a fresher session value with a stale one.
+    pub fn offline_worker_hashrates_10m(&self) -> Vec<(String, f64)> {
+        let now = Self::now_secs();
+        let workers: Vec<String> = self
+            .worker_hashrates_10m
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        workers
+            .into_iter()
+            .filter(|w| !self.worker_states.get(w).map(|s| s.online).unwrap_or(false))
+            .map(|w| {
+                let (_, hr_10m, _, _) = self.worker_hashrates(&w, now);
+                (w, hr_10m)
+            })
+            .collect()
+    }
+
     /// Record the connection protocol ("sv1" / "sv2") for a worker.
     pub fn set_worker_protocol(&self, worker: &str, protocol: &str) {
         self.worker_protocol
@@ -1171,6 +1196,30 @@ mod tests {
         assert_eq!(ss.total_hashrate_10m, TH);
         assert_eq!(ss.total_hashrate_3h, TH);
         assert_eq!(ss.total_hashrate_24h, TH);
+    }
+
+    #[test]
+    fn offline_worker_hashrates_10m_decays_and_skips_online_workers() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("gone", 1024);
+        stats.update_worker_hashrate("gone", TH, TH, TH, TH);
+        stats.mark_worker_offline("gone");
+        stats.mark_worker_online("live", 1024);
+        stats.update_worker_hashrate("live", TH, TH, TH, TH);
+
+        // 300s offline: halfway through the 10m window.
+        backdate_hashrate_update(&stats, "gone", 300);
+
+        let rows = stats.offline_worker_hashrates_10m();
+        assert_eq!(rows.len(), 1);
+        let (worker, hps) = &rows[0];
+        assert_eq!(worker, "gone");
+        let tol = 3.0 * TH / HASHRATE_WINDOW_10M as f64;
+        assert!((hps - 0.5 * TH).abs() < tol);
+
+        // Past the window the reported value bottoms out at zero.
+        backdate_hashrate_update(&stats, "gone", HASHRATE_WINDOW_10M + 60);
+        assert_eq!(stats.offline_worker_hashrates_10m()[0].1, 0.0);
     }
 
     #[test]

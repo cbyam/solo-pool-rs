@@ -10,6 +10,12 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Fixed
+- The per-worker Prometheus hashrate gauge (`pool_hashrate_estimated_hps`) no
+  longer freezes at its last value when a miner disconnects. A background task
+  re-pushes the same decayed 10-minute estimate the dashboard shows, so the
+  gauge reads zero within ten minutes of a worker going offline instead of
+  holding its last live value until the exporter's 24-hour idle timeout.
+  Grafana graphs built on the gauge now match the dashboard.
 - SV2 setup rejections now answer with a spec-compliant `SetupConnection.Error`
   before disconnecting, covering all three spec error codes:
   `unsupported-protocol` for non-mining sub-protocols (such as a Job
