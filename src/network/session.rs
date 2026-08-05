@@ -686,6 +686,41 @@ async fn handle_submit(
         )]);
     }
 
+    // The miner must send exactly the extranonce2 width it was given at
+    // subscribe. `assemble_coinbase` returns the template with the extranonce
+    // region still zeroed when the widths disagree, which means a wrong-length
+    // submit reconstructs a coinbase the miner can predict: one low-difficulty
+    // share can then be replayed under unlimited distinct extranonce2 values,
+    // each hashing identically, each passing the target check, and each getting
+    // a different dedup key. It also turns mis-sized firmware into a stream of
+    // "low difficulty" rejects rather than a diagnosable error. The SV2 path
+    // already guards this; SV1 did not.
+    if params.extranonce2.len() != session.extranonce2_size {
+        warn!(
+            peer = %session.peer,
+            worker = worker,
+            got = params.extranonce2.len(),
+            expected = session.extranonce2_size,
+            "Submit has wrong extranonce2 length — rejecting"
+        );
+        metrics::share_rejected("bad_extranonce", worker);
+        session.stats.share_rejected();
+        session
+            .stats
+            .worker_share_rejected(worker, "bad_extranonce");
+        if session.guard.invalid_shares.record_invalid() {
+            return HandleResult::Disconnect("too many invalid shares".into());
+        }
+        return HandleResult::Messages(vec![ResponseBuilder::err(
+            &req.id,
+            PoolError::BadExtranonceSize {
+                got: params.extranonce2.len(),
+                expected: session.extranonce2_size,
+            }
+            .to_stratum_error(),
+        )]);
+    }
+
     let submit_start = Instant::now();
 
     let job_entry = match engine.find_job(&params.job_id).await {
@@ -740,12 +775,17 @@ async fn handle_submit(
 
     // Duplicates are only *checked* here; the key is inserted after validation
     // passes, so invalid submissions cannot occupy dedup slots.
+    // Key off `share_params`, not the raw request: when version rolling was not
+    // negotiated, `version_bits` is dropped before validation, so keying on the
+    // raw field would let a miner replay one share under version_bits 1, 2,
+    // 3... Each replay builds the identical header, passes validation, and
+    // lands a distinct dedup key.
     let share_key = validator::ShareKey::new(
-        &params.job_id,
-        &params.extranonce2,
-        params.ntime,
-        params.nonce,
-        params.version_bits.unwrap_or(0),
+        &share_params.job_id,
+        &share_params.extranonce2,
+        share_params.ntime,
+        share_params.nonce,
+        share_params.version_bits.unwrap_or(0),
     );
     if session.share_set.contains(&share_key) {
         metrics::share_rejected("duplicate", worker);

@@ -672,6 +672,36 @@ mod tests {
     }
 
     #[test]
+    fn wrong_length_extranonce2_yields_one_predictable_coinbase() {
+        // Why the session layer must reject a wrong-length extranonce2 before it
+        // gets here: on a width mismatch this returns the template with the
+        // extranonce region still zeroed, so every wrong-length value maps to the
+        // SAME coinbase — and therefore the same merkle root and header hash.
+        // Since the dedup key includes the raw extranonce2 bytes, one valid share
+        // could otherwise be replayed indefinitely under different lengths.
+        let job = build_job(&gbt_with_txids(&[]), ADDR, "tag", 4, 4).unwrap();
+        let en1 = [0xAAu8; 4];
+
+        let correct = job.assemble_coinbase(&en1, &[1, 2, 3, 4]);
+        let too_short = job.assemble_coinbase(&en1, &[1, 2, 3]);
+        let too_long = job.assemble_coinbase(&en1, &[1, 2, 3, 4, 5]);
+        let different_short = job.assemble_coinbase(&en1, &[9, 9, 9]);
+
+        assert_ne!(
+            correct, too_short,
+            "a correctly sized extranonce2 must actually be spliced in"
+        );
+        assert_eq!(
+            too_short, too_long,
+            "mismatched widths collapse to the same coinbase"
+        );
+        assert_eq!(
+            too_short, different_short,
+            "the value is ignored entirely, so it is fully predictable"
+        );
+    }
+
+    #[test]
     fn malformed_gbt_txid_errors_instead_of_panicking() {
         // A txid that does not decode to exactly 32 bytes used to hit
         // `copy_from_slice` with mismatched lengths, panicking inside the
