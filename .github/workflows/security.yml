@@ -22,6 +22,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
+      - ".cargo/audit.toml"
       - ".github/workflows/security.yml"
   workflow_dispatch:
 
