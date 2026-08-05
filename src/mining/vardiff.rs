@@ -13,6 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// How far back the share ring buffer is kept for hashrate estimation.
+const SHARE_RETENTION: Duration = Duration::from_secs(86_400);
+
 pub struct Vardiff {
     cfg: VardiffConfig,
     /// Ring buffer of (arrival_time, assigned_difficulty) for hashrate estimation.
@@ -55,9 +58,17 @@ impl Vardiff {
         self.shares_since_retarget += 1;
         let now = Instant::now();
         self.share_times.push_back((now, assigned_difficulty));
-        // Evict old entries (keep only last 24 hours)
-        let cutoff = now - Duration::from_secs(86_400);
-        while self.share_times.front().is_some_and(|&(t, _)| t < cutoff) {
+        // Evict old entries (keep only the retention window). Compare elapsed
+        // durations rather than deriving a `now - RETENTION` cutoff: on platforms
+        // where `Instant` is an unsigned counter, subtracting a window wider than
+        // the process/host clock underflows and panics. Linux stores a signed
+        // timespec and tolerates it, so this is portability hygiene, not a live
+        // bug fix.
+        while self
+            .share_times
+            .front()
+            .is_some_and(|&(t, _)| now.duration_since(t) > SHARE_RETENTION)
+        {
             self.share_times.pop_front();
         }
     }
@@ -125,13 +136,14 @@ impl Vardiff {
         }
 
         let now = std::time::Instant::now();
-        let cutoff = now - window;
 
         let mut sum_diff: u64 = 0;
         let mut oldest_ts = None;
 
+        // `now.duration_since(ts) <= window` rather than `ts >= now - window`,
+        // for the portability reason in `record_share`.
         for &(ts, diff) in self.share_times.iter() {
-            if ts >= cutoff {
+            if now.duration_since(ts) <= window {
                 if oldest_ts.is_none() {
                     oldest_ts = Some(ts);
                 }
@@ -185,6 +197,22 @@ mod tests {
         vd.last_retarget = Instant::now() - Duration::from_secs(120);
         let result = vd.check_retarget();
         assert_eq!(result, Some(50_000));
+    }
+
+    #[test]
+    fn window_wider_than_the_clock_counts_every_share() {
+        // Guards the elapsed-duration comparison against regressing to a
+        // `now - window` cutoff, which underflows on platforms whose `Instant` is
+        // an unsigned counter. Passes either way on Linux — it documents the
+        // intended behavior rather than reproducing a Linux failure.
+        let mut vd = Vardiff::new(cfg(), 100_000);
+        vd.record_share(100_000);
+        vd.record_share(100_000);
+
+        let century = Duration::from_secs(86_400 * 365 * 100);
+        // Every share falls inside the window, so this is a real (very large)
+        // rate rather than the "no data" zero.
+        assert!(vd.estimated_hashrate_in_window(century) > 0.0);
     }
 
     #[test]

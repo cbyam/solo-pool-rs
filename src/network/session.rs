@@ -202,16 +202,21 @@ pub async fn run(
                     }
                     Ok(Ok(Some(_len))) => {
                         last_inbound = tokio::time::Instant::now();
+                        // Take ownership of the completed line and reset the
+                        // accumulator here: `read_line_bounded` deliberately does
+                        // not clear, so that a line still in flight survives this
+                        // `select!` cancelling the read arm.
                         let line = match std::str::from_utf8(&line_buf) {
-                            Ok(s) => s,
+                            Ok(s) => s.to_owned(),
                             Err(_) => {
                                 debug!("Non-UTF8 line from {peer} — disconnecting");
                                 break;
                             }
                         };
+                        line_buf.clear();
 
                         tracing::trace!(peer = %peer, raw = %line, "← miner");
-                        let response = handle_line(&mut session, line, &engine, &ban_list).await;
+                        let response = handle_line(&mut session, &line, &engine, &ban_list).await;
 
                         match response {
                             HandleResult::Messages(msgs) => {
@@ -360,12 +365,18 @@ async fn send_messages(
 /// Returns `Ok(None)` on EOF with no buffered data, `Ok(Some(len))` with the
 /// line bytes in `buf` (trailing `\r` stripped), or an `InvalidData` error when
 /// the line exceeds `max`.
+///
+/// Cancellation safety: this appends to `buf` and never clears it, because bytes
+/// are consumed from the `BufReader` before the newline arrives. The session
+/// loop races this against job broadcasts in `select!`, so the future is dropped
+/// mid-line routinely; clearing here would discard the consumed prefix and
+/// corrupt the next parse. **The caller must clear `buf` once it has taken a
+/// completed line**, and must not reuse a buffer across different readers.
 async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     max: usize,
 ) -> std::io::Result<Option<usize>> {
-    buf.clear();
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
@@ -949,17 +960,55 @@ mod tests {
         let mut r = BufReader::new(&data[..]);
         let mut buf = Vec::new();
 
+        // The caller owns clearing between lines (see the cancellation-safety
+        // note on `read_line_bounded`).
         assert_eq!(
             read_line_bounded(&mut r, &mut buf, 64).await.unwrap(),
             Some(5)
         );
         assert_eq!(&buf, b"hello");
+        buf.clear();
         assert_eq!(
             read_line_bounded(&mut r, &mut buf, 64).await.unwrap(),
             Some(5)
         );
         assert_eq!(&buf, b"world");
+        buf.clear();
         assert_eq!(read_line_bounded(&mut r, &mut buf, 64).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn partial_line_survives_a_cancelled_read() {
+        // The session loop runs this inside `select!` against job broadcasts, so
+        // the read future is dropped whenever a notify wins the race. A submit
+        // split across TCP segments must not lose the bytes already consumed
+        // from the BufReader.
+        let mock = tokio_test::io::Builder::new()
+            .read(b"{\"id\":1,\"me")
+            .wait(std::time::Duration::from_millis(50))
+            .read(b"thod\":\"mining.submit\"}\n")
+            .build();
+        let mut r = BufReader::new(mock);
+        let mut buf = Vec::new();
+
+        // First attempt: consumes the first segment, then is cancelled while
+        // awaiting the rest — exactly what a concurrent job broadcast does.
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            _ = read_line_bounded(&mut r, &mut buf, 8192) => {
+                panic!("read should still have been pending");
+            }
+        }
+
+        // Second attempt: must return the whole line, not just the tail.
+        let n = read_line_bounded(&mut r, &mut buf, 8192).await.unwrap();
+        assert_eq!(
+            std::str::from_utf8(&buf).unwrap(),
+            "{\"id\":1,\"method\":\"mining.submit\"}",
+            "bytes consumed before cancellation were dropped"
+        );
+        assert_eq!(n, Some(33));
     }
 
     #[tokio::test]
