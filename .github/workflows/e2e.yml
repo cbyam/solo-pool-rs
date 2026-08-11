@@ -37,23 +37,18 @@ jobs:
         node:
           # The deployed build. Its verdict on a found block is the one that
           # actually decides whether a block counts, so it leads the matrix.
-          # RDTS is opt-in on this build. Pinned deliberately: this is the
-          # newest Knots build that follows the majority chain (see next entry).
+          # Pinned deliberately: this is the newest Knots build that follows
+          # the majority chain. The RDTS-mandatory 20260508 build used to sit
+          # here as a forward guard for a planned upgrade, but RDTS failed on
+          # mainnet in August 2026 (enforcing nodes split off at height 961,632
+          # and their chain stalled two blocks later), so that upgrade is off
+          # and its entry is gone: the E2E block is coinbase-only, so the job
+          # never exercised RDTS rules, only the acceptance verdict of a build
+          # that will now never be deployed. When Knots ships a release worth
+          # deploying, add it back here as the candidate build.
           - name: Knots 29.3 (deployed, RDTS opt-in)
             url: https://bitcoinknots.org/files/29.x/29.3.knots20260507/bitcoin-29.3.knots20260507-x86_64-linux-gnu.tar.gz
             dir: bitcoin-29.3.knots20260507
-          # The RDTS-mandatory build. This entry began as a forward guard for a
-          # planned upgrade; that upgrade is now on hold indefinitely. RDTS
-          # failed on mainnet in August 2026: enforcing nodes split off at
-          # height 961,632 and their chain stalled two blocks later, so
-          # deploying this build would leave the pool building templates on a
-          # dead chain. The job stays because it proves in regtest that the
-          # pool's blocks are acceptable under RDTS rules, which keeps both
-          # doors open. Bump this entry only when Knots ships a release without
-          # mandatory RDTS that is actually worth deploying.
-          - name: Knots 29.3 (next, RDTS mandatory)
-            url: https://bitcoinknots.org/files/29.x/29.3.knots20260508/bitcoin-29.3.knots20260508-x86_64-linux-gnu.tar.gz
-            dir: bitcoin-29.3.knots20260508
           # A current Core, as a cross-implementation sanity check. Not the
           # deployment target, so it tracks the latest release rather than being
           # pinned to whatever was current when this was written.
