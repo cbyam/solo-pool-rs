@@ -16,12 +16,7 @@ all-features = false
 [advisories]
 # Fail on any advisory in the dependency tree.
 yanked = "deny"
-ignore = [
-  # Unsoundness in anyhow's Error::downcast_mut(). Not reachable: nothing in
-  # this codebase calls downcast_mut or downcast_ref on an anyhow::Error.
-  # Revisit when anyhow ships a fix so this can be dropped.
-  { id = "RUSTSEC-2026-0190", reason = "downcast_mut is never called from this codebase" },
-]
+ignore = []
 
 [licenses]
 # Permissive licences only. Anything outside this list needs a deliberate
