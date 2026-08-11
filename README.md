@@ -179,6 +179,35 @@ rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 ```
 
+### Which node build: BIP110/RDTS
+
+The pool copies its block template from the node, so it mines whatever chain
+the node follows. Node choice started deciding real money in August 2026:
+BIP110 (RDTS) entered mandatory signaling at block 961,632 with under 3% miner
+support, and enforcing nodes split onto a minority chain that stalled two
+blocks later.
+
+- **Knots 29.3.knots20260507 and earlier**: RDTS off by default. Follows the
+  majority chain. This is what the pool is deployed and tested against.
+- **Knots 29.3.knots20260508 and later**: RDTS enforcement is mandatory. These
+  builds reject the majority chain at 961,632 and follow the stalled minority
+  chain. **Do not point the pool at one**: every block found there is worthless
+  on the majority chain.
+- **Bitcoin Core**: does not implement BIP110. Follows the majority chain.
+  Tested in CI as a second target.
+
+If you run Knots for its stricter data-carrier policy, none of this takes that
+away. Policy shapes what enters your node's mempool and therefore what goes
+into the templates your pool mines, so a non-enforcing Knots still mines
+blocks without the data you filter. Only consensus enforcement, rejecting
+other miners' blocks, is what strands a node.
+
+As of August 2026 Knots has not announced dropping mandatory enforcement, so
+hold node upgrades at 20260507 until a release without it exists. You can
+verify which side your node is on yourself: the dashboard's BIP110/RDTS card
+reads version bit 4 live from the current template, and a stranded node also
+shows a frozen tip height (compare `getblockcount` against any block explorer).
+
 ---
 
 ## Configuration
