@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-08-11
+
 ### Changed
 - The README documents node-build choice after the August 2026 BIP110/RDTS
   split: which builds follow the majority chain, why RDTS-mandatory Knots
@@ -573,7 +575,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.1...v0.6.2
