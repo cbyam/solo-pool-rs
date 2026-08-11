@@ -9,6 +9,26 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- The README documents node-build choice after the August 2026 BIP110/RDTS
+  split: which builds follow the majority chain, why RDTS-mandatory Knots
+  builds (20260508 and later) must not be deployed while the minority chain is
+  stalled, and the distinction that matters for data filtering: policy shapes
+  your own templates on any build, only consensus enforcement strands a node.
+- The E2E matrix no longer tests the RDTS-mandatory Knots build. The entry
+  existed to pre-clear a node upgrade that is now off, and the coinbase-only
+  test block never exercised RDTS rules anyway. Deployed Knots and current
+  Core remain.
+
+### Security
+- serde_with bumped from 3.18.0 to 3.21.0 for GHSA-7gcf-g7xr-8hxj, a panic in
+  KeyValueMap serialization on empty entries. Reached transitively through
+  charming; nothing in this codebase or in charming uses KeyValueMap, so there
+  was no live exposure. Lockfile-only.
+- anyhow bumped to 1.0.104, which ships the fix for RUSTSEC-2026-0190, and the
+  ignore entries for that advisory are dropped from audit.toml and deny.toml.
+  cargo audit now runs with an empty ignore list.
+
 ## [0.6.4] - 2026-08-05
 
 ### Fixed
