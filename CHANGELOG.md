@@ -9,6 +9,13 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Security
+- h2 bumped from 0.4.13 to 0.4.16 for RUSTSEC-2026-0258, unbounded processing
+  of empty DATA frames sent by a peer. Reached transitively through hyper,
+  which serves the dashboard and metrics endpoints; axum's server accepts
+  cleartext HTTP/2, so a LAN client could exercise the flaw against port 9090.
+  The stratum ports do not use hyper and were never affected. Lockfile-only.
+
 ## [0.6.5] - 2026-08-11
 
 ### Changed
