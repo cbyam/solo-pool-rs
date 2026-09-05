@@ -10,6 +10,18 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Fixed
+- Share validation no longer throws away a consensus-valid block. Two
+  ordering problems on the block-found path: the ntime floor was the
+  template's `curtime` rather than the consensus floor (GBT `mintime`,
+  median-time-past + 1), so a miner whose clock lagged the pool's by a few
+  seconds had any block found in that gap rejected as "ntime out of range"
+  before the hash was computed; and the pool's share target was checked
+  before the network target, which on regtest and signet (where the network
+  target can be the easier of the two) reported a block as "low difficulty".
+  The floor is now `mintime`, the ceiling stays `curtime + 7200`, and the
+  network target is checked first. The regtest block-acceptance test now
+  mines with ntime one second below curtime so a real node proves the
+  relaxed floor.
 - Duplicate-share detection now keys on the 80-byte header hash instead of
   the submitted fields. The old key included the job id, but the 30 s ntime
   refresh mints a new job id over byte-identical template content and the

@@ -20,6 +20,8 @@ pub struct GbtResult {
     pub prev_hash: String,
     pub bits: String,
     pub cur_time: u32,
+    /// Earliest block time the node will accept (median-time-past + 1).
+    pub min_time: u32,
     pub height: u64,
     pub coinbase_value: u64,
     pub transactions: Vec<GbtTransaction>,
@@ -204,6 +206,10 @@ impl RpcClient {
             prev_hash: value_as_string(&result, "previousblockhash")?,
             bits: value_as_string(&result, "bits")?,
             cur_time: value_as_u32(&result, "curtime")?,
+            // Every Core/Knots GBT carries mintime; fall back to curtime so an
+            // unusual node only tightens the share window, never breaks it.
+            min_time: value_as_u32(&result, "mintime")
+                .unwrap_or_else(|_| value_as_u32(&result, "curtime").unwrap_or(0)),
             height: value_as_u64(&result, "height")?,
             coinbase_value: value_as_u64(&result, "coinbasevalue")?,
             transactions,

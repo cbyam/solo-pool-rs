@@ -238,6 +238,7 @@ fn meets_diff1(d: &[u8; 32]) -> bool {
 // Stratum miner
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct Notify {
     job_id: String,
     prev_internal: [u8; 32],
@@ -585,7 +586,14 @@ json = false
         job = refresh_job(&mut reader, job);
         en2 += 1;
         let e2_bytes = en2.to_be_bytes()[4 - en2_size..].to_vec();
-        let prefix = header_prefix(&job, &extranonce1, &e2_bytes);
+        // Mine with ntime one second below the template's curtime. That is
+        // consensus-valid (block 1's mintime is the genesis time + 1) and is
+        // what a miner whose clock lags the pool's produces; the pool used to
+        // reject it as out of range before hashing, losing the block. The
+        // node's acceptance below proves the relaxed floor is still sound.
+        let mut ground = job.clone();
+        ground.ntime = job.ntime - 1;
+        let prefix = header_prefix(&ground, &extranonce1, &e2_bytes);
         let Some(nonce) = grind_diff1(&prefix, Instant::now() + GRIND_CHUNK) else {
             continue; // sweep exhausted or chunk deadline hit; re-sync and roll
         };
@@ -600,7 +608,7 @@ json = false
                 r#"{{"id":100,"method":"mining.submit","params":["e2e.worker","{}","{}","{:08x}","{:08x}"]}}"#,
                 job.job_id,
                 hex::encode(&e2_bytes),
-                job.ntime,
+                ground.ntime,
                 nonce,
             ),
         );

@@ -84,6 +84,10 @@ pub struct StratumJob {
     /// Template time advertised to miners in mining.notify
     pub cur_time: u32,
 
+    /// Earliest ntime consensus accepts for this template (GBT `mintime`,
+    /// median-time-past + 1). The share-validation floor.
+    pub min_time: u32,
+
     /// Block height (for BIP34 and logging)
     pub height: u64,
 
@@ -223,6 +227,7 @@ pub fn build_job(
         version: gbt.version,
         bits: gbt.bits.clone(),
         cur_time: gbt.cur_time,
+        min_time: gbt.min_time,
         height: gbt.height,
         network_target,
         coinbase_template: coinbase_bytes,
@@ -653,6 +658,7 @@ mod tests {
                 .to_string(),
             bits: "1d00ffff".to_string(),
             cur_time: 1_700_000_000,
+            min_time: 1_699_999_000,
             height: 900_000,
             coinbase_value: 312_500_000,
             transactions: txids
