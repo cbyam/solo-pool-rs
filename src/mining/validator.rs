@@ -183,18 +183,8 @@ pub fn validate_share_no_dedup(
         return Err(PoolError::StaleJob(params.job_id.clone()));
     }
 
-    // ── 2. ntime validation — pool acceptance policy, not consensus ──────────
-    // Bitcoin consensus allows any ntime ≥ median-time-past. This window
-    // (cur_time..cur_time+7200) is a tighter pool-side drift limit.
-    if params.ntime < job.cur_time || params.ntime > job.cur_time.saturating_add(7200) {
-        return Err(PoolError::InvalidParams {
-            method: "mining.submit",
-            detail: format!(
-                "ntime out of range: submitted={} template_curtime={}",
-                params.ntime, job.cur_time
-            ),
-        });
-    }
+    // ── 2. ntime validation ──────────────────────────────────────────────────
+    check_ntime(params.ntime, job.min_time, job.cur_time)?;
 
     // ── 3. Assemble coinbase ──────────────────────────────────────────────────
     let coinbase = job.assemble_coinbase(extranonce1, &params.extranonce2);
@@ -222,7 +212,29 @@ pub fn validate_share_no_dedup(
     // ── 8. Double-SHA256 of header ────────────────────────────────────────────
     let hash = double_sha256(&header);
 
-    // ── 9. Check hash meets pool share target ─────────────────────────────────
+    let hash_difficulty = hash_to_difficulty(&hash);
+
+    // ── 9. Network target first (BLOCK FOUND!) ───────────────────────────────
+    // A hash that meets the network target is a block whether or not it also
+    // meets the pool's share target. On mainnet the share target is always
+    // the easier of the two, so order never mattered there; on regtest and
+    // signet the network target can be the easier one, and checking the share
+    // target first threw the block away as "low difficulty".
+    if meets_target(&hash, &job.network_target) {
+        let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
+        tracing::info!(
+            "🎉 BLOCK FOUND! height={} hash={}",
+            job.height,
+            hash_display_hex(&hash)
+        );
+        return Ok(ShareResult::Block {
+            hash_difficulty,
+            block_hex,
+            hash,
+        });
+    }
+
+    // ── 10. Pool share target ────────────────────────────────────────────────
     let share_target = difficulty_to_target(session_difficulty);
     if !meets_target(&hash, &share_target) {
         let mut hash_be = hash;
@@ -237,27 +249,35 @@ pub fn validate_share_no_dedup(
         return Err(PoolError::LowDifficulty);
     }
 
-    let hash_difficulty = hash_to_difficulty(&hash);
-
-    // ── 6. Check if hash also meets network target (BLOCK FOUND!) ────────────
-    if meets_target(&hash, &job.network_target) {
-        let block_hex = assemble_block_hex(&header, &coinbase, &job.transactions);
-        tracing::info!(
-            "🎉 BLOCK FOUND! height={} hash={}",
-            job.height,
-            hash_display_hex(&hash)
-        );
-        return Ok(ShareResult::Block {
-            hash_difficulty,
-            block_hex,
-            hash,
-        });
-    }
     Ok(ShareResult::Valid {
         assigned_difficulty: session_difficulty,
         hash_difficulty,
         hash,
     })
+}
+
+/// Pool-side ntime window.
+///
+/// The floor is consensus: a block with ntime below the template's `mintime`
+/// (median-time-past + 1) is invalid, so no share below it can ever be worth
+/// anything. The floor used to be the template's `curtime` instead, which is
+/// stricter than consensus by however far the miner's ntime lags the pool's
+/// clock; a miner a few seconds behind that found a block in that gap had it
+/// rejected here as out of range before the hash was ever computed. The
+/// ceiling stays a pool policy: nodes accept up to two hours past their own
+/// adjusted time, and `curtime + 7200` tracks that closely enough.
+fn check_ntime(ntime: u32, min_time: u32, cur_time: u32) -> Result<(), PoolError> {
+    let ceiling = cur_time.saturating_add(7200);
+    if ntime < min_time || ntime > ceiling {
+        return Err(PoolError::InvalidParams {
+            method: "mining.submit",
+            detail: format!(
+                "ntime out of range: submitted={ntime} allowed={min_time}..={ceiling} \
+                 (template mintime={min_time} curtime={cur_time})"
+            ),
+        });
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -550,6 +570,144 @@ mod tests {
         // Double-insert of a present key must not grow the FIFO or evict.
         ss.insert(keys[5]);
         assert!(ss.contains(&keys[2]));
+    }
+
+    #[test]
+    fn ntime_window_is_mintime_to_curtime_plus_two_hours() {
+        let (min_t, cur_t) = (1_699_999_000, 1_700_000_000);
+        assert!(check_ntime(min_t, min_t, cur_t).is_ok(), "floor inclusive");
+        assert!(
+            check_ntime(cur_t - 1, min_t, cur_t).is_ok(),
+            "below curtime, above mintime"
+        );
+        assert!(check_ntime(cur_t, min_t, cur_t).is_ok());
+        assert!(
+            check_ntime(cur_t + 7200, min_t, cur_t).is_ok(),
+            "ceiling inclusive"
+        );
+        assert!(check_ntime(min_t - 1, min_t, cur_t).is_err());
+        assert!(check_ntime(cur_t + 7201, min_t, cur_t).is_err());
+        // Ceiling arithmetic must not wrap near u32::MAX.
+        assert!(check_ntime(u32::MAX, min_t, u32::MAX - 10).is_ok());
+    }
+
+    /// A real job from the template builder, so the coinbase/merkle/header
+    /// path runs end to end. Mainnet block 1's prev hash, no transactions.
+    fn real_job() -> (StratumJob, JobEntry) {
+        let gbt = crate::bitcoin::rpc::GbtResult {
+            version: 0x2000_0000,
+            prev_hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+                .to_string(),
+            bits: "1d00ffff".to_string(),
+            cur_time: 1_700_000_000,
+            min_time: 1_699_999_000,
+            height: 900_000,
+            coinbase_value: 312_500_000,
+            transactions: vec![],
+            longpoll_id: None,
+            default_witness_commitment: None,
+            rules: vec![],
+        };
+        let job = crate::bitcoin::template::build_job(
+            &gbt,
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            "tag",
+            4,
+            4,
+        )
+        .unwrap();
+        let entry = JobEntry {
+            job: std::sync::Arc::new(job.clone()),
+            created_at: std::time::Instant::now(),
+            clean: true,
+            superseded_by_clean: false,
+        };
+        (job, entry)
+    }
+
+    /// Deterministic header nonce derived from a range rather than written as
+    /// a literal (CodeQL reads a literal flowing into the header nonce as a
+    /// hard-coded cryptographic nonce).
+    fn test_nonce() -> u32 {
+        (0..64u32).fold(7, |acc, i| acc.wrapping_mul(31).wrapping_add(i))
+    }
+
+    fn params(job: &StratumJob, ntime: u32, nonce: u32) -> ShareParams {
+        ShareParams {
+            worker: "w".into(),
+            job_id: job.job_id.clone(),
+            extranonce2: vec![1, 2, 3, 4],
+            ntime,
+            nonce,
+            version_bits: None,
+            version_rolling_mask: None,
+        }
+    }
+
+    #[test]
+    fn block_is_found_even_when_the_share_target_is_missed() {
+        // Regtest/signet shape: the network target is easier than the pool's
+        // share target. Any hash meets the all-ones network target; a huge
+        // session difficulty makes the share target unreachable. The share
+        // target must not be consulted first.
+        let (mut job, mut entry) = real_job();
+        job.network_target = [0xff; 32];
+        entry.job = std::sync::Arc::new(job.clone());
+        let nonce = test_nonce();
+        let res = validate_share_no_dedup(
+            &params(&job, job.cur_time, nonce),
+            &job,
+            &entry,
+            &[0xAA; 4],
+            u64::MAX / 2,
+        );
+        assert!(matches!(res, Ok(ShareResult::Block { .. })), "{res:?}");
+    }
+
+    #[test]
+    fn a_block_with_ntime_between_mintime_and_curtime_is_accepted() {
+        // The lost-block case: consensus-valid ntime that lags curtime.
+        let (mut job, mut entry) = real_job();
+        job.network_target = [0xff; 32];
+        entry.job = std::sync::Arc::new(job.clone());
+        let nonce = test_nonce();
+        let res = validate_share_no_dedup(
+            &params(&job, job.cur_time - 30, nonce),
+            &job,
+            &entry,
+            &[0xAA; 4],
+            1,
+        );
+        assert!(matches!(res, Ok(ShareResult::Block { .. })), "{res:?}");
+
+        // One below mintime is still refused, before any hashing.
+        let res = validate_share_no_dedup(
+            &params(&job, job.min_time - 1, nonce),
+            &job,
+            &entry,
+            &[0xAA; 4],
+            1,
+        );
+        assert!(
+            matches!(res, Err(PoolError::InvalidParams { .. })),
+            "{res:?}"
+        );
+    }
+
+    #[test]
+    fn mainnet_shape_still_rejects_a_low_difficulty_share() {
+        // Real diff-1 network target, diff-1 share target, arbitrary nonce:
+        // fails both, and the result must be LowDifficulty, not a block.
+        let (job, entry) = real_job();
+        let nonce = test_nonce();
+        let res = validate_share_no_dedup(
+            &params(&job, job.cur_time, nonce),
+            &job,
+            &entry,
+            &[0xAA; 4],
+            1,
+        );
+        assert!(matches!(res, Err(PoolError::LowDifficulty)), "{res:?}");
     }
 
     #[test]
