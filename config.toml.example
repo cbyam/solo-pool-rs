@@ -196,6 +196,16 @@ stats_db_path = "pool_stats.sqlite"
 # proxy (Umbrel's app_proxy does this automatically).
 allow_runtime_settings = true
 
+# Extra hostnames accepted on the mutating dashboard routes (POST /api/settings
+# and POST /api/reset-best-hashrate). Those routes refuse any Host header that
+# public DNS could have produced, which stops a web page from re-pointing its
+# own domain at the pool's LAN address and changing the payout address from
+# inside the browser (DNS rebinding). IP addresses, localhost, single-label
+# names and local-only suffixes (.local, .lan, .home.arpa, .internal, ...) are
+# always accepted. List anything else the dashboard is reached by, such as a
+# Tailscale name or a split-horizon DNS name. Read-only routes are unaffected.
+allowed_hosts = []
+
 [logging]
 # Log level: trace | debug | info | warn | error
 level = "info"

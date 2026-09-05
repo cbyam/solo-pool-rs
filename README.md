@@ -312,8 +312,17 @@ With `prometheus_addr` set (default `0.0.0.0:9090`), an HTTP server exposes:
 | `GET /history` | JSON hashrate history (`?since=<unix-ts>` for increments) |
 | `GET /chart` | Hashrate chart as an ECharts option spec (`?window=36h\|1w\|1m\|6m`) |
 | `GET /api/info` | Pool version, stratum port, SV2 status and authority pubkey |
-| `GET/POST /api/settings` | Read or change the payout address at runtime (POST requires `[metrics] allow_runtime_settings = true`) |
+| `GET/POST /api/settings` | Read or change the payout address at runtime (POST requires `[metrics] allow_runtime_settings = true` and a local `Host`, see below) |
 | `GET /metrics` | Prometheus text exposition |
+
+The two `POST` routes (`/api/settings` and `/api/reset-best-hashrate`) refuse
+requests whose `Host` header is a public DNS name, or whose `Origin` names a
+different site. This stops DNS rebinding and cross-site form posts from
+changing the payout address through a browser on the LAN. IP addresses,
+`localhost`, single-label names and local-only suffixes (`.local`, `.lan`,
+`.home.arpa`, `.internal`) work without configuration. If you reach the
+dashboard by any other name, such as a Tailscale name, add it to
+`[metrics] allowed_hosts`.
 
 Key Prometheus metrics:
 
