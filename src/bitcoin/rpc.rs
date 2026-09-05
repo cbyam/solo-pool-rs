@@ -52,6 +52,22 @@ pub struct RpcClient {
     state: RwLock<Inner>,
 }
 
+/// The URL with any `user:password@` userinfo replaced, for log lines and
+/// error messages. Credentials belong in the cookie file or the `user` and
+/// `password` keys, but an operator who puts them in the URL should not find
+/// them in the journal or a pasted error.
+pub(crate) fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    match authority.rfind('@') {
+        Some(at) => format!("{scheme}://***@{}{path}", &authority[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
 /// Build a client that honours the configured timeout.
 ///
 /// `Client::new` builds the transport with its own default (15s) and gives no
@@ -66,7 +82,7 @@ fn build_client(url: &str, auth: bitcoincore_rpc::Auth, timeout_secs: u64) -> Re
     let (user, pass) = auth.get_user_pass()?;
     let transport = bitcoincore_rpc::jsonrpc::simple_http::SimpleHttpTransport::builder()
         .url(url)
-        .map_err(|e| anyhow::anyhow!("Parsing Bitcoin RPC url '{url}': {e}"))?
+        .map_err(|e| anyhow::anyhow!("Parsing Bitcoin RPC url '{}': {e}", redact_url(url)))?
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .auth(user.unwrap_or_default(), pass)
         .build();
@@ -113,7 +129,8 @@ impl RpcClient {
         let client = build_client(&cfg.url, auth, cfg.timeout_secs)?;
         info!(
             "Bitcoin RPC connected to {} (timeout {}s)",
-            cfg.url, cfg.timeout_secs
+            redact_url(&cfg.url),
+            cfg.timeout_secs
         );
         Ok(Self {
             cfg,
@@ -373,7 +390,23 @@ fn value_as_u32(v: &Value, key: &str) -> Result<u32, PoolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_timeout_secs, MIN_TIMEOUT_SECS};
+    use super::{effective_timeout_secs, redact_url, MIN_TIMEOUT_SECS};
+
+    #[test]
+    fn userinfo_is_redacted_from_urls() {
+        assert_eq!(
+            redact_url("http://alice:s3cret@127.0.0.1:8332/"),
+            "http://***@127.0.0.1:8332/"
+        );
+        assert_eq!(
+            redact_url("http://alice:p@ss@node.lan:8332/wallet/x"),
+            "http://***@node.lan:8332/wallet/x"
+        );
+        // No userinfo: unchanged. Paths and queries never count as userinfo.
+        assert_eq!(redact_url("http://127.0.0.1:8332"), "http://127.0.0.1:8332");
+        assert_eq!(redact_url("http://h/a@b"), "http://h/a@b");
+        assert_eq!(redact_url("not a url"), "not a url");
+    }
 
     #[test]
     fn a_too_low_timeout_is_raised_to_the_floor_not_rejected() {

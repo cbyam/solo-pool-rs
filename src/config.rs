@@ -402,6 +402,38 @@ impl Config {
     }
 }
 
+/// A warning to log once tracing is up when the config file holds explicit
+/// RPC credentials and other local users can read it. Cookie auth is the
+/// recommended path precisely because the cookie file is owner-only; a
+/// password pasted into a 0644 config undoes that.
+#[cfg(unix)]
+pub fn credential_exposure_warning(path: &str, cfg: &Config) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let has_password = cfg
+        .bitcoin_rpc
+        .password
+        .as_deref()
+        .is_some_and(|p| !p.is_empty());
+    let in_url = cfg.bitcoin_rpc.url.contains('@');
+    if !has_password && !in_url {
+        return None;
+    }
+    let mode = std::fs::metadata(path).ok()?.permissions().mode();
+    if mode & 0o077 == 0 {
+        return None;
+    }
+    Some(format!(
+        "{path} holds Bitcoin RPC credentials but is readable by other local users \
+         (mode {:03o}); run `chmod 600 {path}` or switch to cookie_path",
+        mode & 0o777
+    ))
+}
+
+#[cfg(not(unix))]
+pub fn credential_exposure_warning(_path: &str, _cfg: &Config) -> Option<String> {
+    None
+}
+
 pub fn load(path: &str) -> Result<Config> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("Opening config file: {path}"))?;
@@ -558,6 +590,39 @@ mod tests {
             cfg.validate().is_ok(),
             "a low timeout must not stop the pool from starting"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_warning_fires_only_for_readable_files_with_a_password() {
+        use super::credential_exposure_warning;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("solo-pool-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let path_str = path.to_str().unwrap();
+
+        let mut cfg = example_config();
+        cfg.bitcoin_rpc.password = Some("hunter2".into());
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let warning = credential_exposure_warning(path_str, &cfg).expect("0644 must warn");
+        assert!(warning.contains("chmod 600"), "{warning}");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(credential_exposure_warning(path_str, &cfg).is_none());
+
+        // Cookie auth with a readable config is fine: nothing secret in it.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        cfg.bitcoin_rpc.password = None;
+        assert!(credential_exposure_warning(path_str, &cfg).is_none());
+
+        // Credentials in the URL count too.
+        cfg.bitcoin_rpc.url = "http://u:p@127.0.0.1:8332".into();
+        assert!(credential_exposure_warning(path_str, &cfg).is_some());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
