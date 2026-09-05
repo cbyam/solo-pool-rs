@@ -10,10 +10,15 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     groups:
+      # The metrics crates pin each other's minors (the exporter depends on
+      # the same metrics-util minor the pool imports for MetricKindMask), so
+      # a bump to any one of them alone cannot compile. Move them together.
+      metrics-stack:
+        patterns: ["metrics", "metrics-*"]
       # Patch and minor bumps are lockfile-only and land together.
       minor-and-patch:
         update-types: [minor, patch]
-    # Majors stay one PR each so a breaking API change is reviewed alone.
+    # Other majors stay one PR each so a breaking API change is reviewed alone.
   - package-ecosystem: github-actions
     directory: /
     schedule:
