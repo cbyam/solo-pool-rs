@@ -317,9 +317,13 @@ struct SettingsUpdate {
 // curl and the dashboard's own fetches (same origin, or no Origin at all)
 // untouched.
 
-/// Domain suffixes that public DNS never resolves (RFC 6762 appendix G,
-/// RFC 8375, ICANN's `.internal` reservation), so a Host ending in one cannot
-/// have been rebound from outside the LAN.
+/// Domain suffixes that public DNS does not resolve, so a Host ending in one
+/// cannot have been rebound from outside the LAN. `.localhost`, `.local`,
+/// `.home.arpa` and `.internal` are formally reserved (RFC 6761, RFC 6762,
+/// RFC 8375, ICANN 2024). `.lan`, `.home`, `.intranet` and `.private` are not
+/// reserved, only undelegated in the public root (RFC 6762 appendix G lists
+/// them as common private-use names); accepting them is a judgement call for
+/// this threat model.
 const LOCAL_SUFFIXES: &[&str] = &[
     ".localhost",
     ".local",

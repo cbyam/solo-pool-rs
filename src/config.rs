@@ -274,6 +274,19 @@ pub struct LoggingConfig {
 impl Config {
     /// Reject configurations that would later panic or misbehave at runtime.
     fn validate(&self) -> Result<()> {
+        // An entry like "http://pool.ts.net/" would never match an incoming
+        // Host header, so the operator would be locked out of settings with no
+        // hint why. Refuse it here where the message is visible.
+        for entry in &self.metrics.allowed_hosts {
+            let entry = entry.trim();
+            if entry.is_empty() || entry.contains("://") || entry.contains('/') {
+                anyhow::bail!(
+                    "[metrics] allowed_hosts entry '{entry}' must be a bare hostname \
+                     (optionally with :port), without scheme or path"
+                );
+            }
+        }
+
         // SV2 `OpenExtendedMiningChannel` derives `prefix_len` as
         // `extranonce_total - granted` (granted >= 1). A zero total underflows
         // that `usize` subtraction, so refuse it at boot rather than per-channel.
@@ -340,7 +353,6 @@ impl Config {
                  persist_authority_key = true"
             );
         }
-
         Ok(())
     }
 }
@@ -501,6 +513,22 @@ mod tests {
             cfg.validate().is_ok(),
             "a low timeout must not stop the pool from starting"
         );
+    }
+
+    #[test]
+    fn allowed_hosts_with_scheme_or_path_are_rejected() {
+        for bad in ["http://pool.ts.net", "pool.ts.net/", ""] {
+            let mut cfg = example_config();
+            cfg.metrics.allowed_hosts = vec![bad.to_string()];
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("allowed_hosts"),
+                "'{bad}': unexpected error: {err}"
+            );
+        }
+        let mut cfg = example_config();
+        cfg.metrics.allowed_hosts = vec!["pool.ts.net:9090".to_string()];
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]
