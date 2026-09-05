@@ -10,18 +10,18 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Fixed
-- The SV2 authority key file is written through an owner-only sibling
-  scratch file that is fsynced and then linked into place, so the key path
-  only ever holds a complete key or nothing. A crash between create and
-  write used to leave an empty or partial file that parsed as a corrupt key
-  and failed every later boot until deleted by hand. An existing key is never
-  overwritten.
 - `[vardiff]` is validated at boot. An inverted `min_difficulty > max_difficulty`
   pair previously passed config loading and then panicked inside `u64::clamp`
   on every retarget and every `mining.suggest_difficulty`, dropping each miner
   shortly after it connected. A zero floor, a zero target share time or
   retarget interval, and a `max_retarget_factor` that is below 1.0 or not
   finite are now refused with a message naming the key.
+- The SV2 authority key file is written through an owner-only sibling
+  scratch file that is fsynced and then linked into place, so the key path
+  only ever holds a complete key or nothing. A crash between create and
+  write used to leave an empty or partial file that parsed as a corrupt key
+  and failed every later boot until deleted by hand. An existing key is never
+  overwritten.
 
 ### Security
 - The mutating dashboard routes (`POST /api/settings`, which changes the
