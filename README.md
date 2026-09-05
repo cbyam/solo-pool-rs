@@ -71,7 +71,7 @@ and exercised on every commit, so you can check it rather than trust it.
 | Coinbase | BIP34 height, configurable tag, SegWit witness commitment, reward to your address |
 | Share validation | Header reconstruction, double-SHA256, meets-target check, duplicate detection, ntime drift check |
 | Block submission | `submitblock` on valid block, immediate with latency logging |
-| Security | Per-IP connection rate limiting, per-session share rate limiting (token bucket), invalid-share counting, IP ban list with TTL, message size limit |
+| Security | Per-IP connection rate limiting, per-session share rate limiting (token bucket), invalid-share counting, message size limit with a short IP ban for oversize messages (rate limits refuse but never ban) |
 | Metrics | Prometheus endpoint (`/metrics`): hashrate, share counts, block finds, connected miners |
 | Logging | Structured JSON or human-readable via `tracing` |
 

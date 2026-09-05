@@ -223,7 +223,7 @@ pub async fn run(
                         line_buf.clear();
 
                         tracing::trace!(peer = %peer, raw = %line, "← miner");
-                        let response = handle_line(&mut session, &line, &engine, &ban_list).await;
+                        let response = handle_line(&mut session, &line, &engine).await;
 
                         match response {
                             HandleResult::Messages(msgs) => {
@@ -436,23 +436,25 @@ async fn handle_line(
     session: &mut Session,
     line: &str,
     engine: &Arc<TemplateEngine>,
-    ban_list: &Arc<BanList>,
 ) -> HandleResult {
-    // One token per inbound message, not just submits: authorize/configure/
-    // subscribe floods are as cheap to send as shares and feed the same
-    // per-message stats work, so they share the same bucket.
-    if !session.guard.share_rate.try_consume() {
-        metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
-        ban_list.ban(session.peer.ip(), "message rate exceeded");
-        return HandleResult::Disconnect("rate limited".into());
-    }
-
     // Blank / whitespace-only lines (e.g. firmware keepalive newlines) aren't
     // errors — ignore them instead of letting the empty string fail JSON parsing
-    // and drop the connection. They still consumed a rate-limit token above, so a
-    // blank-line flood stays bounded.
+    // and drop the connection. They cost nothing to handle, so they draw no
+    // rate-limit token either: a talkative but honest device must not pay for
+    // keepalives. A blank-line flood stays bounded by the pre-auth deadline
+    // and the bounded line reader.
     if line.trim().is_empty() {
         return HandleResult::Messages(vec![]);
+    }
+
+    // One token per inbound message, not just submits: authorize/configure/
+    // subscribe floods are as cheap to send as shares and feed the same
+    // per-message stats work, so they share the same bucket. Disconnect, do
+    // not ban: a reconnecting miner flushing queued shares after a pool
+    // restart trips this too, and the disconnect is already the defense.
+    if !session.guard.share_rate.try_consume() {
+        metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
+        return HandleResult::Disconnect("rate limited".into());
     }
 
     let req = match StratumRequest::parse(line) {

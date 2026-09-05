@@ -117,6 +117,7 @@ pub async fn run(
             let current = active_count.load(Ordering::Relaxed);
             if current >= max_connections {
                 warn!("Connection limit reached ({max_connections}), dropping {peer}");
+                crate::metrics::connection_refused("capacity");
                 break false;
             }
             match active_count.compare_exchange(
@@ -136,14 +137,21 @@ pub async fn run(
         // ── IP ban check ─────────────────────────────────────────────────────
         if ban_list.is_banned(&peer.ip()) {
             warn!("Rejected banned IP: {peer}");
+            crate::metrics::connection_refused("banned");
             active_count.fetch_sub(1, Ordering::Relaxed);
             continue;
         }
 
         // ── Per-IP rate limit ────────────────────────────────────────────────
+        // Refuse, do not ban. The limiter is self-enforcing: the address stays
+        // refused until its cadence drops below the window. A ban on top only
+        // added lockout time, and the thing that trips this limit is honest
+        // firmware retrying after a pool restart or a flaky link: the retry
+        // burst tripped the limit, the ban expired, the queued retries tripped
+        // it again, and a miner with one bad minute looked permanently banned.
         if !conn_limiter.check_and_record(peer.ip()) {
             warn!("Connection rate limit exceeded for {}", peer.ip());
-            ban_list.ban(peer.ip(), "connection rate limit exceeded");
+            crate::metrics::connection_refused("rate_limit");
             active_count.fetch_sub(1, Ordering::Relaxed);
             continue;
         }

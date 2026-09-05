@@ -37,6 +37,18 @@ pub fn init(addr: &str) -> Option<PrometheusHandle> {
 
 // ── Counters & gauges ─────────────────────────────────────────────────────────
 
+/// A connection refused at accept time, before any session work.
+/// `reason`: "banned", "rate_limit", "capacity".
+pub fn connection_refused(reason: &'static str) {
+    counter!("pool_connections_refused_total", "reason" => reason).increment(1);
+}
+
+/// An address added to the ban list. `reason` is the short label passed to
+/// `BanList::ban`, so a future incident is a panel query, not a journal grep.
+pub fn ban(reason: &str) {
+    counter!("pool_bans_total", "reason" => reason.to_string()).increment(1);
+}
+
 pub fn miner_connected() {
     gauge!("pool_connected_miners").increment(1.0);
 }
