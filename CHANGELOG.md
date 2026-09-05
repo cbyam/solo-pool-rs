@@ -18,6 +18,12 @@ everything else bumps the **patch** version.
   finite are now refused with a message naming the key.
 
 ### Security
+- The dashboard's ECharts script tag now carries a Subresource Integrity
+  hash and the page is served with a Content-Security-Policy. Before this, a
+  compromised CDN or an on-path rewrite of the cleartext script could run
+  JavaScript with the dashboard origin's access to the mutating routes.
+  Scripts are limited to this origin and jsDelivr (with the hash pinned),
+  XHR to this origin and CoinGecko, and no site may frame the page.
 - The mutating dashboard routes (`POST /api/settings`, which changes the
   payout address, and `POST /api/reset-best-hashrate`) now refuse requests
   whose `Host` header is a public DNS name, and requests whose `Origin` names
