@@ -165,10 +165,22 @@ fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<(
         f.write_all(contents.as_bytes())?;
         f.write_all(b"\n")?;
         f.sync_all()?;
-        std::fs::hard_link(&tmp, path)
+        link_into_place(&tmp, path)
     })();
     let _ = std::fs::remove_file(&tmp);
     result
+}
+
+/// Publish `tmp` at `path` without overwriting. `hard_link` refuses an
+/// existing target atomically; on a filesystem that cannot link (some
+/// container bind mounts) fall back to `rename`, which the kernel still
+/// applies atomically.
+fn link_into_place(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::hard_link(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => std::fs::rename(tmp, path),
+    }
 }
 
 #[cfg(not(unix))]
@@ -176,7 +188,7 @@ fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<(
     let tmp = key_tmp_path(path);
     let _ = std::fs::remove_file(&tmp);
     let result =
-        std::fs::write(&tmp, format!("{contents}\n")).and_then(|_| std::fs::hard_link(&tmp, path));
+        std::fs::write(&tmp, format!("{contents}\n")).and_then(|_| link_into_place(&tmp, path));
     let _ = std::fs::remove_file(&tmp);
     result
 }
