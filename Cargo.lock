@@ -2316,7 +2316,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "socket2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tmq",
  "tokio",
  "tokio-stream",
