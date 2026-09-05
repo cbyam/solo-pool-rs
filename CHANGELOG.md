@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-09-05
+
 ### Added
 - Found blocks whose submission was never confirmed are replayed at the next
   start. The pool already archived every found block's hex before the first
@@ -22,6 +24,23 @@ everything else bumps the **patch** version.
   final hashrate snapshot is written (up to ten minutes of history used to be
   lost to the snapshot cadence), and any inline block submission gets five
   seconds to reach the node before the process exits.
+
+### Changed
+- Dependabot now opens weekly PRs for Cargo and GitHub Actions updates,
+  grouping minor and patch bumps and keeping each major bump separate, so
+  version drift is handled incrementally rather than at the next advisory.
+- Rate-limit violations no longer ban. Exceeding the per-IP connection rate
+  is refused and exceeding the per-session message rate disconnects, as
+  before, but neither adds the address to the ban list. Both limits are
+  self-enforcing, and what trips them is honest firmware reconnecting after
+  a pool restart: the retry burst tripped the limit, the ban expired, the
+  queued retries tripped it again, and a miner with one bad minute looked
+  permanently banned. Only an oversize SV1 line or SV2 frame bans now, which
+  no honest firmware sends, so `ban_duration_secs` is safe to set to a short
+  value again; the example config uses 300. Blank keepalive lines no longer
+  draw a message-rate token. New Prometheus counters `pool_bans_total{reason}`
+  and `pool_connections_refused_total{reason}` make the next incident a
+  dashboard query rather than a journal grep.
 
 ### Fixed
 - Pool writes to the stats database wait up to five seconds for a lock held
@@ -67,23 +86,6 @@ everything else bumps the **patch** version.
   write used to leave an empty or partial file that parsed as a corrupt key
   and failed every later boot until deleted by hand. An existing key is never
   overwritten.
-
-### Changed
-- Dependabot now opens weekly PRs for Cargo and GitHub Actions updates,
-  grouping minor and patch bumps and keeping each major bump separate, so
-  version drift is handled incrementally rather than at the next advisory.
-- Rate-limit violations no longer ban. Exceeding the per-IP connection rate
-  is refused and exceeding the per-session message rate disconnects, as
-  before, but neither adds the address to the ban list. Both limits are
-  self-enforcing, and what trips them is honest firmware reconnecting after
-  a pool restart: the retry burst tripped the limit, the ban expired, the
-  queued retries tripped it again, and a miner with one bad minute looked
-  permanently banned. Only an oversize SV1 line or SV2 frame bans now, which
-  no honest firmware sends, so `ban_duration_secs` is safe to set to a short
-  value again; the example config uses 300. Blank keepalive lines no longer
-  draw a message-rate token. New Prometheus counters `pool_bans_total{reason}`
-  and `pool_connections_refused_total{reason}` make the next incident a
-  dashboard query rather than a journal grep.
 
 ### Security
 - The stats SQLite file is set to mode 0600 on open. SQLite created it under
@@ -700,7 +702,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.2...v0.6.3
