@@ -66,7 +66,9 @@ pub async fn run(
     engine: Arc<TemplateEngine>,
     ban_list: Arc<BanList>,
     stats: Arc<PoolStats>,
+    shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
+    tokio::pin!(shutdown);
     let listener = TcpListener::bind(&config.pool.listen_addr).await?;
     if config.sv2.enabled {
         info!(
@@ -98,7 +100,15 @@ pub async fn run(
     }
 
     loop {
-        let (stream, peer) = match listener.accept().await {
+        let accepted = tokio::select! {
+            biased;
+            _ = &mut shutdown => {
+                info!("Stratum listener stopping: shutdown requested");
+                return Ok(());
+            }
+            accepted = listener.accept() => accepted,
+        };
+        let (stream, peer) = match accepted {
             Ok(conn) => conn,
             Err(e) => {
                 // accept() returns transient, per-connection errors (peer RST

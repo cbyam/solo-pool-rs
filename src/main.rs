@@ -160,6 +160,14 @@ async fn main() -> Result<()> {
         tokio::spawn(engine.run(new_block_rx));
     }
 
+    // Replay any found block whose submission was never confirmed (crash or
+    // restart mid-retry). Off the boot path so a slow node cannot delay
+    // accepting miners; "duplicate" from the node counts as success.
+    {
+        let engine = engine.clone();
+        tokio::spawn(async move { engine.replay_archived_blocks().await });
+    }
+
     // ── SV2 Noise authority (before the dashboard, which shows the pubkey) ────
     let sv2_authority_pubkey = if config.sv2.enabled {
         let pubkey = protocol::sv2::init_noise_authority(&config.sv2)
@@ -194,9 +202,62 @@ async fn main() -> Result<()> {
     let ban_list = BanList::new(config.security.ban_duration_secs);
 
     // ── TCP server ────────────────────────────────────────────────────────────
-    network::server::run(config, engine, ban_list, stats).await?;
+    network::server::run(
+        config,
+        engine.clone(),
+        ban_list,
+        stats.clone(),
+        shutdown_signal(),
+    )
+    .await?;
 
+    // ── Graceful shutdown ─────────────────────────────────────────────────────
+    // The listener has closed. Persist what would otherwise be lost to the
+    // ten-minute snapshot cadence, then give any inline block submission a
+    // few seconds to reach the node. A block still unconfirmed after that is
+    // in the archive and replays on the next boot.
+    info!("Shutting down: writing final hashrate snapshot");
+    stats.record_hashrate_snapshot();
+    if !engine
+        .wait_for_inflight_submits(std::time::Duration::from_secs(5))
+        .await
+    {
+        tracing::warn!(
+            "Shutdown proceeding with a block submission still in flight; \
+             it is archived and will be replayed at next start"
+        );
+    }
+    info!("Shutdown complete");
     Ok(())
+}
+
+/// Resolves on SIGTERM (what `systemctl stop` and Docker send) or Ctrl-C.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::warn!("Ctrl-C handler failed: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!("SIGTERM handler failed: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("Received Ctrl-C"),
+        _ = terminate => info!("Received SIGTERM"),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -127,10 +127,64 @@ impl Drop for Regtest {
 struct Pool {
     child: Child,
 }
+impl Pool {
+    fn start(cfg_path: &Path, stratum_port: u16) -> Self {
+        let pool = Pool {
+            child: Command::new(env!("CARGO_BIN_EXE_solo-pool-rs"))
+                .arg(cfg_path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn pool"),
+        };
+        assert!(
+            wait_for_port(stratum_port, Duration::from_secs(20)),
+            "pool stratum port never opened"
+        );
+        pool
+    }
+
+    /// Send SIGTERM (what `systemctl stop` sends) and wait for the process to
+    /// exit on its own. Returns the exit status, or None if it did not exit
+    /// within `timeout`.
+    #[cfg(unix)]
+    fn stop_gracefully(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+}
 impl Drop for Pool {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Wait up to `timeout` for a `.hex` file to appear in `dir`.
+fn wait_for_hex_file(dir: &Path, timeout: Duration) -> Option<PathBuf> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            if let Some(p) = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .find(|p| p.extension().is_some_and(|x| x == "hex"))
+            {
+                return Some(p);
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -532,18 +586,7 @@ json = false
     )
     .unwrap();
 
-    let pool = Pool {
-        child: Command::new(env!("CARGO_BIN_EXE_solo-pool-rs"))
-            .arg(&cfg_path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn pool"),
-    };
-    assert!(
-        wait_for_port(stratum_port, Duration::from_secs(20)),
-        "pool stratum port never opened"
-    );
+    let mut pool = Pool::start(&cfg_path, stratum_port);
 
     // ── Connect as an SV1 miner ───────────────────────────────────────────────
     let stream = TcpStream::connect(("127.0.0.1", stratum_port)).unwrap();
@@ -654,12 +697,48 @@ json = false
         "block-1 coinbase scriptSig should start with OP_1 (0x51): {script_sig}"
     );
 
-    let archived = std::fs::read_dir(tmp.join("found-blocks"))
-        .map(|d| d.count())
-        .unwrap_or(0);
-    assert!(archived >= 1, "found-block hex was not archived");
+    // ── Archive lifecycle: confirmed block filed under submitted/ ─────────────
+    let found_dir = tmp.join("found-blocks");
+    let submitted = wait_for_hex_file(&found_dir.join("submitted"), Duration::from_secs(10))
+        .expect("confirmed block's archive file was not moved to submitted/");
+    assert!(
+        wait_for_hex_file(&found_dir, Duration::from_secs(1)).is_none(),
+        "a confirmed block must not remain at the archive top level"
+    );
 
     eprintln!("✅ block 1 accepted by node; coinbase pays {paid}");
+
+    // ── Graceful shutdown + boot-time replay ─────────────────────────────────
+    // Re-seed the archive as if the pool had died before confirming the
+    // block, stop the pool the way systemd does, and start it again: the
+    // replay must resubmit (the node answers "duplicate", which is success)
+    // and file the block under submitted/ once more.
+    #[cfg(unix)]
+    {
+        let reseeded = found_dir.join(submitted.file_name().unwrap());
+        std::fs::copy(&submitted, &reseeded).unwrap();
+        std::fs::remove_file(&submitted).unwrap();
+
+        let status = pool
+            .stop_gracefully(Duration::from_secs(10))
+            .expect("pool did not exit within 10 s of SIGTERM");
+        assert!(
+            status.success(),
+            "pool exited abnormally on SIGTERM: {status}"
+        );
+        eprintln!("✅ pool exited cleanly on SIGTERM");
+
+        let pool = Pool::start(&cfg_path, stratum_port);
+        let replayed = wait_for_hex_file(&found_dir.join("submitted"), Duration::from_secs(20))
+            .expect("replayed block was not filed under submitted/ after restart");
+        assert_eq!(replayed.file_name(), reseeded.file_name());
+        assert!(
+            !reseeded.exists(),
+            "replayed block must leave the top level"
+        );
+        eprintln!("✅ archived block replayed on restart and confirmed by node");
+        drop(pool);
+    }
 
     drop(pool);
     drop(node);

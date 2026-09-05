@@ -9,6 +9,20 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Found blocks whose submission was never confirmed are replayed at the next
+  start. The pool already archived every found block's hex before the first
+  `submitblock`, but nothing read the archive back: a restart during the
+  two-hour retry window left the block on disk until someone submitted it by
+  hand. Now a confirmed block's file moves to `found-blocks/submitted/`, a
+  block the node rejects outright moves to `rejected/`, and anything still at
+  the top level on boot is resubmitted, off the boot path. The node answers
+  "duplicate" for a block it already has, so the replay is safe to repeat.
+- Graceful shutdown on SIGTERM and Ctrl-C. The listener stops accepting, a
+  final hashrate snapshot is written (up to ten minutes of history used to be
+  lost to the snapshot cadence), and any inline block submission gets five
+  seconds to reach the node before the process exits.
+
 ### Fixed
 - Share validation no longer throws away a consensus-valid block. Two
   ordering problems on the block-found path: the ntime floor was the
