@@ -1,0 +1,32 @@
+[package]
+name = "solo-pool-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.solo-pool-rs]
+path = ".."
+
+# Fuzz targets are binaries libFuzzer drives; they are not tests or examples.
+[[bin]]
+name = "sv1_line"
+path = "fuzz_targets/sv1_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sv2_messages"
+path = "fuzz_targets/sv2_messages.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

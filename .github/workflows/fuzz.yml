@@ -1,0 +1,61 @@
+name: Fuzz
+
+# The SV1 line parser and the SV2 message decoders face unauthenticated
+# peers. A short libFuzzer run on every change to them, and a longer weekly
+# one, is cheap insurance for the bug class a bounds check can miss.
+on:
+  pull_request:
+    paths:
+      - "src/protocol/**"
+      - "src/lib.rs"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [sv1_line, sv2_messages]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install libzmq
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz ${{ matrix.target }}
+        # 90 s per target on a pull request; the weekly run gets 15 minutes.
+        run: |
+          secs=90
+          if [ "${{ github.event_name }}" = "schedule" ]; then secs=900; fi
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=$secs -timeout=10
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

@@ -9,6 +9,13 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Fuzz targets for the two parsers that face unauthenticated peers: the
+  Stratum V1 line parser and dispatch, and the three Stratum V2 message
+  decoders. A CI job runs each for 90 seconds on any change to the protocol
+  code and for 15 minutes weekly. To support them the crate now also builds
+  as a library; the binary is unchanged.
+
 ### Changed
 - The regtest block-acceptance test grinds to the job's own network target
   instead of a difficulty-1 share. The pool checks the network target before
