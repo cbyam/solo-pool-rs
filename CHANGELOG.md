@@ -9,6 +9,16 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- The regtest block-acceptance test grinds to the job's own network target
+  instead of a difficulty-1 share. The pool checks the network target before
+  the share target, so on regtest about one hash in two is a block and the
+  test finishes in seconds. The difficulty-1 grind cost 2^32 hashes and timed
+  out on slow CI runners, the source of the long-standing rerun-passes flake.
+- Dependencies: tmq 0.5, toml 1.1, thiserror 2, and the grouped minor and
+  patch bumps (tokio 1.53, bitcoin 0.32.102, and others); GitHub Actions
+  checkout v7, upload-artifact v7, download-artifact v8, github-script v9.
+
 ### Fixed
 - The hashrate estimate credits each share with the difficulty threshold it
   is known to have been mined against instead of the session's assigned
@@ -23,16 +33,6 @@ everything else bumps the **patch** version.
   that follow `set_difficulty` see no change. An all-time best hashrate
   recorded under the old accounting is not recomputed; clear it with
   `POST /api/reset-best-hashrate` if it looks implausible.
-
-### Changed
-- Dependencies: tmq 0.5, toml 1.1, thiserror 2, and the grouped minor and
-  patch bumps (tokio 1.53, bitcoin 0.32.102, and others); GitHub Actions
-  checkout v7, upload-artifact v7, download-artifact v8, github-script v9.
-- The regtest block-acceptance test grinds to the job's own network target
-  instead of a difficulty-1 share. The pool checks the network target before
-  the share target, so on regtest about one hash in two is a block and the
-  test finishes in seconds. The difficulty-1 grind cost 2^32 hashes and timed
-  out on slow CI runners, the source of the long-standing rerun-passes flake.
 
 ## [0.6.6] - 2026-09-05
 
