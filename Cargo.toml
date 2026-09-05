@@ -39,8 +39,7 @@ tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 #
 # SV1 is still spoken via the hand-rolled layer in protocol/sv1.rs — both
 # protocols are auto-detected on the same listen port (see network/server.rs).
-#
-# Phase 2 (Noise encryption) will add codec_sv2 (noise_sv2 feature) + noise_sv2.
+# Noise encryption is live: codec_sv2 (noise_sv2 feature) + noise_sv2 below.
 const_sv2 = "4.0.1"            # shared SV2 message-type / channel-bit constants
 binary_sv2 = "5.0.1"           # SV2 binary message (de)serialization
 framing_sv2 = "6.0.1"          # SV2 frame header (extension_type, msg_type, length)

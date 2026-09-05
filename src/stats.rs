@@ -67,6 +67,12 @@ impl StatsStore {
     fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         restrict_to_owner(path);
+        // An operator poking at the file with the sqlite3 CLI holds a write
+        // lock for the length of their transaction. Without this, every pool
+        // write in that window fails immediately with SQLITE_BUSY (logged,
+        // not fatal, but a lost best-share update is still lost). Wait a
+        // little instead.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pool_stats (
              id INTEGER PRIMARY KEY CHECK(id = 1),

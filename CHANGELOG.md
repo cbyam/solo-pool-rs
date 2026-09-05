@@ -24,6 +24,9 @@ everything else bumps the **patch** version.
   seconds to reach the node before the process exits.
 
 ### Fixed
+- Pool writes to the stats database wait up to five seconds for a lock held
+  by another process (an operator in the `sqlite3` CLI) instead of failing
+  at once.
 - Share validation no longer throws away a consensus-valid block. Two
   ordering problems on the block-found path: the ntime floor was the
   template's `curtime` rather than the consensus floor (GBT `mintime`,
@@ -64,6 +67,11 @@ everything else bumps the **patch** version.
   write used to leave an empty or partial file that parsed as a corrupt key
   and failed every later boot until deleted by hand. An existing key is never
   overwritten.
+
+### Changed
+- Dependabot now opens weekly PRs for Cargo and GitHub Actions updates,
+  grouping minor and patch bumps and keeping each major bump separate, so
+  version drift is handled incrementally rather than at the next advisory.
 
 ### Security
 - The stats SQLite file is set to mode 0600 on open. SQLite created it under

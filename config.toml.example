@@ -153,7 +153,10 @@ max_difficulty = 65536
 max_retarget_factor = 4.0
 
 [security]
-# Rate-limit: max new TCP connections per IP per minute
+# Rate-limit: max new TCP connections per IP per minute. Count every device
+# that shares one address (a proxy, a rack behind NAT) and add headroom for a
+# power-cycle reconnect burst; 8 suits a rack of a few miners. Exceeding it
+# refuses the connection and bans the address for ban_duration_secs.
 max_connections_per_ip = 5
 
 # Max share submissions per second per connection before banning
