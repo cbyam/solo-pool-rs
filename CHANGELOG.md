@@ -38,6 +38,12 @@ everything else bumps the **patch** version.
   shortly after it connected. A zero floor, a zero target share time or
   retarget interval, and a `max_retarget_factor` that is below 1.0 or not
   finite are now refused with a message naming the key.
+- An SV2 `OpenExtendedMiningChannel` that is refused for asking more
+  extranonce than the pool reserves now leaves the session untouched. It
+  used to clear the worker identity and consume an authorization slot before
+  checking the request, so a refused re-open on a live channel left the
+  channel open with no worker: shares validated under "?", and the stats
+  maps marked the real worker offline.
 - The SV2 authority key file is written through an owner-only sibling
   scratch file that is fsynced and then linked into place, so the key path
   only ever holds a complete key or nothing. A crash between create and
