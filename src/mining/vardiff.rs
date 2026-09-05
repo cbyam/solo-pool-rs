@@ -33,6 +33,10 @@ pub struct Vardiff {
     last_retarget: Instant,
     /// Current difficulty assigned to this session
     pub current: u64,
+    /// The difficulty assigned before the most recent change, so a share the
+    /// miner started before a retarget is still credited with the target it
+    /// was mined against rather than falling through to the floor.
+    previous: u64,
     /// Number of valid shares since last retarget
     shares_since_retarget: u64,
     /// When this session started, so the hashrate estimate can divide by the
@@ -47,6 +51,7 @@ impl Vardiff {
     pub fn new(cfg: VardiffConfig, initial_difficulty: u64) -> Self {
         Self {
             current: initial_difficulty,
+            previous: initial_difficulty,
             cfg,
             share_times: VecDeque::with_capacity(8_192),
             last_retarget: Instant::now(),
@@ -62,7 +67,7 @@ impl Vardiff {
     /// full authority afterwards — this only sets the starting point.
     pub fn suggest(&mut self, difficulty: u64) -> u64 {
         let clamped = difficulty.clamp(self.cfg.min_difficulty, self.cfg.max_difficulty);
-        self.current = clamped;
+        self.set_current(clamped);
         // The fresh window is granted once. Clearing `shares_since_retarget`
         // without also moving `last_retarget` would let the next retarget judge
         // an empty share count over a long elapsed and halve the difficulty, so
@@ -79,9 +84,46 @@ impl Vardiff {
         clamped
     }
 
+    fn set_current(&mut self, difficulty: u64) {
+        if difficulty != self.current {
+            self.previous = self.current;
+            self.current = difficulty;
+        }
+    }
+
+    /// The difficulty to credit a validated share with in the hashrate
+    /// estimate, given the difficulty its hash actually reached.
+    ///
+    /// A share is evidence of `D × 2³²` expected hashes only for the target
+    /// `D` the miner was working against, so the credit must be a threshold
+    /// the miner was aiming at, never the hash's own difficulty: the expected
+    /// difficulty of a hash that clears `D` is far above `D`, and crediting it
+    /// would inflate the estimate many times over.
+    ///
+    /// Shares are accepted at the pool floor because some hardware fixes its
+    /// threshold at connect time and never follows `set_difficulty`. For such
+    /// a device the assigned difficulty is not what it mined against, and
+    /// crediting it anyway (as the pool used to) overstated the device by
+    /// assigned/floor, up to 256× with the default range, and pushed that
+    /// figure into the persisted all-time best-hashrate watermark. So: a hash
+    /// that clears the assigned difficulty is credited with it; one that only
+    /// clears the previous assignment (in-flight work across a retarget) is
+    /// credited with that; anything else can only be known to have cleared the
+    /// floor, and is credited with the floor.
+    pub fn credit_for(&self, hash_difficulty: u64) -> u64 {
+        if hash_difficulty >= self.current {
+            self.current
+        } else if hash_difficulty >= self.previous {
+            self.previous
+        } else {
+            self.cfg.min_difficulty
+        }
+    }
+
     /// Record a valid share submission.
-    /// `assigned_difficulty` is the difficulty this session had assigned when the share arrived.
-    /// This is used to estimate hashrate: H/s ≈ Σ(assigned_diff) × 2³² / elapsed.
+    /// `assigned_difficulty` is the difficulty credited to this share (see
+    /// `credit_for`). This is used to estimate hashrate:
+    /// H/s ≈ Σ(credited_diff) × 2³² / elapsed.
     pub fn record_share(&mut self, assigned_difficulty: u64) {
         self.shares_since_retarget += 1;
         let now = Instant::now();
@@ -120,7 +162,7 @@ impl Vardiff {
             // gets an easier target on reconnect, flooring at min_difficulty.
             let new_diff = (self.current / 2).max(self.cfg.min_difficulty);
             if new_diff != self.current {
-                self.current = new_diff;
+                self.set_current(new_diff);
                 return Some(new_diff);
             }
             return None;
@@ -149,7 +191,7 @@ impl Vardiff {
                 actual_sps = format!("{:.1}", actual_sps),
                 "vardiff retarget"
             );
-            self.current = new_diff;
+            self.set_current(new_diff);
             Some(new_diff)
         } else {
             None
@@ -214,6 +256,47 @@ mod tests {
             max_difficulty: 1_000_000_000,
             max_retarget_factor: 4.0,
         }
+    }
+
+    #[test]
+    fn credit_is_the_threshold_the_share_cleared_never_the_hash() {
+        let mut vd = Vardiff::new(cfg(), 100_000);
+        // Clears the assignment: credited with the assignment, not the hash.
+        assert_eq!(vd.credit_for(100_000), 100_000);
+        assert_eq!(vd.credit_for(u64::MAX), 100_000);
+        // Below the assignment, above the floor: this miner is not following
+        // set_difficulty, so only the floor is known to have been targeted.
+        assert_eq!(vd.credit_for(50_000), 1024);
+        assert_eq!(vd.credit_for(1024), 1024);
+        // After a raise, work started under the old assignment is still
+        // credited with the old assignment rather than the floor.
+        vd.set_current(400_000);
+        assert_eq!(vd.credit_for(400_000), 400_000);
+        assert_eq!(vd.credit_for(100_000), 100_000);
+        assert_eq!(vd.credit_for(99_999), 1024);
+    }
+
+    #[test]
+    fn floor_only_miner_is_estimated_at_the_floor() {
+        // A device fixed at the floor keeps submitting floor shares while
+        // vardiff raises its assignment. Crediting the assignment made its
+        // hashrate read assignment/floor times too high.
+        let mut vd = Vardiff::new(cfg(), 262_144);
+        let ts = Instant::now() - Duration::from_secs(600);
+        vd.started_at = ts;
+        // Shares strictly inside the window: the first one sits a second in
+        // from the edge so clock skew cannot drop it.
+        for i in 0..40u64 {
+            let credited = vd.credit_for(1500); // clears 1024, not 262_144
+            vd.share_times
+                .push_back((ts + Duration::from_secs(1 + i * 14), credited));
+        }
+        let hps = vd.estimated_hashrate_in_window(Duration::from_secs(600));
+        let expected = 40.0 * 1024.0 * 4_294_967_296.0 / 600.0;
+        assert!(
+            (hps - expected).abs() / expected < 0.01,
+            "{hps} vs {expected}"
+        );
     }
 
     #[test]
