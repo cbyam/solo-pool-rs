@@ -696,26 +696,6 @@ async fn handle_submit(
         version_rolling_mask: Some(mask),
     };
 
-    // Duplicate detection (same key as SV1). Only *checked* here; the key is
-    // inserted after validation passes, so invalid submissions cannot occupy
-    // dedup slots.
-    let share_key = validator::ShareKey::new(
-        &share_params.job_id,
-        &submit.extranonce,
-        submit.ntime,
-        submit.nonce,
-        submit.version & mask,
-    );
-    if session.share_set.contains(&share_key) {
-        metrics::share_rejected("duplicate", &worker);
-        session.stats.share_rejected();
-        session.stats.worker_share_rejected(&worker, "duplicate");
-        if session.guard.invalid_shares.record_invalid() {
-            return Flow::Disconnect("too many invalid shares".into());
-        }
-        return reject(session, writer, submit.sequence_number, "duplicate-share").await;
-    }
-
     // Accept any share meeting the configured floor — matches SV1 policy so a
     // fixed hardware submission threshold isn't penalised by vardiff raises.
     let accept_difficulty = session.vardiff_cfg.min_difficulty;
@@ -741,10 +721,9 @@ async fn handle_submit(
             return Flow::Disconnect("internal error".into());
         }
     };
-    // Record for dedup only now that the share proved itself (Valid or Block).
-    if validation_result.is_ok() {
-        session.share_set.insert(share_key);
-    }
+    // Dedup on the header hash (same set semantics as SV1); a replay becomes
+    // DuplicateShare and takes the Err arm below.
+    let validation_result = session.share_set.dedup(validation_result);
 
     match validation_result {
         Ok(ShareResult::Valid {
