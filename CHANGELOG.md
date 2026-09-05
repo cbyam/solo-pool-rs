@@ -31,6 +31,10 @@ everything else bumps the **patch** version.
   checkout v7, upload-artifact v7, download-artifact v8, github-script v9.
 
 ### Fixed
+- The Docker image builds again. The dependency-caching stage stubbed only
+  `src/main.rs`; with the crate now also a library, Cargo needs `src/lib.rs`
+  to exist too, and the `:edge` build broke on the first push after that
+  change. Tagged releases were not affected.
 - The hashrate estimate credits each share with the difficulty threshold it
   is known to have been mined against instead of the session's assigned
   difficulty regardless. Shares are accepted at the pool floor because some
