@@ -7,6 +7,10 @@ authors = []
 description = "Solo BTC mining pool for ASIC miners — Stratum V1 and Noise-encrypted Stratum V2, auto-detected on a single port"
 license = "MIT OR Apache-2.0"
 
+[lib]
+name = "solo_pool_rs"
+path = "src/lib.rs"
+
 [[bin]]
 name = "solo-pool-rs"
 path = "src/main.rs"

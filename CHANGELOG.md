@@ -9,6 +9,13 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Fuzz targets for the two parsers that face unauthenticated peers: the
+  Stratum V1 line parser and dispatch, and the three Stratum V2 message
+  decoders. A CI job runs each for 90 seconds on any change to the protocol
+  code and for 15 minutes weekly. To support them the crate now also builds
+  as a library; the binary is unchanged.
+
 ### Changed
 - The dashboard's worker table is built with DOM calls and `textContent`
   instead of HTML strings. Worker names are miner-supplied; building nodes

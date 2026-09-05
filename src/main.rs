@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 /// solo-pool-rs — Solo BTC mining pool (Stratum V1 + V2, auto-detected on one port)
 ///
 /// Startup sequence:
@@ -8,24 +9,15 @@
 ///   5. Start ZMQ block-notification listener (or RPC poll fallback)
 ///   6. Bootstrap the template engine and build first job
 ///   7. Start the TCP accept loop
-mod bitcoin;
-mod config;
-mod error;
-mod metrics;
-mod mining;
-mod network;
-mod protocol;
-mod security;
-mod settings;
-mod stats;
-
-use crate::{
+use solo_pool_rs::{
     bitcoin::{rpc::RpcClient, zmq},
+    config, metrics,
     mining::engine::TemplateEngine,
+    network, protocol,
     security::BanList,
+    settings,
     stats::PoolStats,
 };
-use anyhow::{Context, Result};
 use std::sync::Arc;
 use tracing::info;
 

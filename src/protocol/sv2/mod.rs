@@ -15,7 +15,7 @@
 //! SV1 is served by [`crate::network::session`]; the two are auto-detected on a
 //! single port in [`crate::network::server`].
 mod job;
-mod messages;
+pub mod messages;
 mod noise;
 
 pub use noise::init as init_noise_authority;
