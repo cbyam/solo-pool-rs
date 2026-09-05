@@ -193,6 +193,10 @@ pub struct VardiffConfig {
 pub struct SecurityConfig {
     pub max_connections_per_ip: u32,
     pub max_shares_per_sec: u32,
+    /// How long an address stays banned after an unambiguous protocol
+    /// violation (an oversize SV1 line or SV2 frame). Rate-limit violations
+    /// are refused or disconnected but never banned, because honest firmware
+    /// trips them when reconnecting after a restart. 0 disables bans.
     pub ban_duration_secs: u64,
     pub max_invalid_shares: u32,
     pub max_message_bytes: usize,

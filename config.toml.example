@@ -162,8 +162,13 @@ max_connections_per_ip = 5
 # Max share submissions per second per connection before banning
 max_shares_per_sec = 500
 
-# Ban duration (seconds) after policy violation
-ban_duration_secs = 600
+# How long (seconds) an address stays banned after an unambiguous protocol
+# violation: an oversize SV1 line or SV2 frame, which no honest firmware
+# sends. Rate-limit violations (connections per minute, messages per second)
+# are refused or disconnected but never banned, because honest firmware trips
+# them when it reconnects after a pool restart. Keep this short; the ban only
+# saves the cost of repeated reconnects. 0 disables bans entirely.
+ban_duration_secs = 300
 
 # Maximum genuinely invalid shares (bad nonce/duplicate) before disconnect (0 = disabled)
 # Low-difficulty and stale shares are NOT counted — they're expected during transitions.

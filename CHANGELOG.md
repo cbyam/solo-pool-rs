@@ -72,6 +72,18 @@ everything else bumps the **patch** version.
 - Dependabot now opens weekly PRs for Cargo and GitHub Actions updates,
   grouping minor and patch bumps and keeping each major bump separate, so
   version drift is handled incrementally rather than at the next advisory.
+- Rate-limit violations no longer ban. Exceeding the per-IP connection rate
+  is refused and exceeding the per-session message rate disconnects, as
+  before, but neither adds the address to the ban list. Both limits are
+  self-enforcing, and what trips them is honest firmware reconnecting after
+  a pool restart: the retry burst tripped the limit, the ban expired, the
+  queued retries tripped it again, and a miner with one bad minute looked
+  permanently banned. Only an oversize SV1 line or SV2 frame bans now, which
+  no honest firmware sends, so `ban_duration_secs` is safe to set to a short
+  value again; the example config uses 300. Blank keepalive lines no longer
+  draw a message-rate token. New Prometheus counters `pool_bans_total{reason}`
+  and `pool_connections_refused_total{reason}` make the next incident a
+  dashboard query rather than a journal grep.
 
 ### Security
 - The stats SQLite file is set to mode 0600 on open. SQLite created it under

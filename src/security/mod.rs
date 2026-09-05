@@ -56,6 +56,7 @@ impl BanList {
 
     pub fn ban(&self, ip: IpAddr, reason: &str) {
         warn!("Banning {ip} for {:?}: {reason}", self.ban_duration);
+        crate::metrics::ban(reason);
         if self.entries.len() >= self.max_entries && !self.entries.contains_key(&ip) {
             self.prune();
             if self.entries.len() >= self.max_entries {

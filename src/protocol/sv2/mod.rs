@@ -288,7 +288,7 @@ pub async fn run(
                 }
                 tracing::trace!(peer = %peer, msg_type, len = payload.len(), "← sv2 miner");
 
-                match handle_message(&mut session, &mut writer, msg_type, &mut payload, &engine, &ban_list).await {
+                match handle_message(&mut session, &mut writer, msg_type, &mut payload, &engine).await {
                     Flow::Continue => {}
                     Flow::Disconnect(reason) => {
                         if let Some(worker) = &session.worker {
@@ -392,14 +392,13 @@ async fn handle_message(
     msg_type: u8,
     payload: &mut [u8],
     engine: &Arc<TemplateEngine>,
-    ban_list: &Arc<BanList>,
 ) -> Flow {
     // One token per inbound frame, not just submits: setup/open-channel floods
     // are as cheap to send as shares and feed the same per-message stats work,
-    // so they share the same bucket (mirrors the SV1 dispatch).
+    // so they share the same bucket (mirrors the SV1 dispatch). Disconnect,
+    // do not ban, for the reason given there.
     if !session.guard.share_rate.try_consume() {
         metrics::share_rejected("rate_limited", session.worker.as_deref().unwrap_or("?"));
-        ban_list.ban(session.peer.ip(), "message rate exceeded");
         return Flow::Disconnect("rate limited".into());
     }
 
