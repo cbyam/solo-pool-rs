@@ -9,6 +9,14 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- `[vardiff]` is validated at boot. An inverted `min_difficulty > max_difficulty`
+  pair previously passed config loading and then panicked inside `u64::clamp`
+  on every retarget and every `mining.suggest_difficulty`, dropping each miner
+  shortly after it connected. A zero floor, a zero target share time or
+  retarget interval, and a `max_retarget_factor` that is below 1.0 or not
+  finite are now refused with a message naming the key.
+
 ### Security
 - h2 bumped from 0.4.13 to 0.4.16 for RUSTSEC-2026-0258, unbounded processing
   of empty DATA frames sent by a peer. Reached transitively through hyper,
