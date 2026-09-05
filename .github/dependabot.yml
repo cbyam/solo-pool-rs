@@ -1,0 +1,21 @@
+# Keep Cargo and Actions dependencies moving in small steps so a major-version
+# bump is one reviewable PR rather than a forced big-bang upgrade at the next
+# advisory. Advisories themselves are still caught daily by security.yml.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Patch and minor bumps are lockfile-only and land together.
+      minor-and-patch:
+        update-types: [minor, patch]
+    # Majors stay one PR each so a breaking API change is reviewed alone.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
