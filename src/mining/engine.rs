@@ -15,7 +15,10 @@ use crate::{
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -116,6 +119,27 @@ pub struct TemplateEngine {
 
     /// Broadcast channel — sessions subscribe on connect
     job_tx: broadcast::Sender<JobBroadcast>,
+
+    /// Inline `submitblock` attempts currently in progress. Shutdown waits
+    /// for this to drain so a block found seconds before `systemctl stop`
+    /// still reaches the node.
+    inflight_submits: AtomicUsize,
+}
+
+/// RAII count of an in-progress inline submission.
+struct InflightSubmit<'a>(&'a AtomicUsize);
+
+impl<'a> InflightSubmit<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for InflightSubmit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl TemplateEngine {
@@ -132,7 +156,86 @@ impl TemplateEngine {
             current_job: RwLock::new(None),
             job_history: RwLock::new(VecDeque::with_capacity(JOB_HISTORY_DEPTH)),
             job_tx,
+            inflight_submits: AtomicUsize::new(0),
         })
+    }
+
+    /// Wait up to `timeout` for inline block submissions to finish. Called on
+    /// shutdown; returns whether the count reached zero.
+    pub async fn wait_for_inflight_submits(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.inflight_submits.load(Ordering::SeqCst) > 0 {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        true
+    }
+
+    /// Resubmit every archived block whose acceptance was never confirmed.
+    ///
+    /// `submit_found_block` archives the hex before the first attempt and
+    /// moves the file to `submitted/` once the node has it. Anything still at
+    /// the top level when the pool boots is a block whose confirmation this
+    /// process never saw: a crash mid-submit, a restart while the two-hour
+    /// retrier was still trying, or a node that was down. `submitblock` on a
+    /// block the node already has answers "duplicate", which counts as
+    /// success, so the replay can be dumb and safe. Blocks the node rejects
+    /// outright move to `rejected/` so they are not retried forever.
+    ///
+    /// Replayed blocks are not credited to the dashboard's block counter:
+    /// most will be duplicates of blocks that were counted before the
+    /// restart, and the counter is in-memory only.
+    pub async fn replay_archived_blocks(self: &Arc<Self>) {
+        let dir = self.pool_cfg.found_block_dir.clone();
+        let pending = {
+            let dir = dir.clone();
+            task::spawn_blocking(move || list_archived_blocks(&dir))
+                .await
+                .unwrap_or_default()
+        };
+        if pending.is_empty() {
+            return;
+        }
+        warn!(
+            "{} archived block(s) in {dir} were never confirmed submitted; replaying",
+            pending.len()
+        );
+        for path in pending {
+            let (height, hash_hex) =
+                parse_archive_name(&path).unwrap_or_else(|| (0, path.display().to_string()));
+            let block_hex = match std::fs::read_to_string(&path) {
+                Ok(h) => Arc::new(h.trim().to_string()),
+                Err(e) => {
+                    error!("Cannot read archived block {}: {e}", path.display());
+                    continue;
+                }
+            };
+            match self.try_submit(block_hex.clone()).await {
+                Ok(()) => {
+                    info!(
+                        "Replayed archived block {hash_hex} (height {height}): \
+                         node has it"
+                    );
+                    file_archived_block(&dir, &path, "submitted");
+                }
+                Err(e) if is_permanent_reject(&e) || is_node_side_error(&e) => {
+                    error!(
+                        "Archived block {hash_hex} (height {height}) rejected on \
+                         replay: {e}; filing under rejected/"
+                    );
+                    file_archived_block(&dir, &path, "rejected");
+                }
+                Err(e) => {
+                    warn!(
+                        "Replay of archived block {hash_hex} (height {height}) \
+                         failed: {e}; retrying in the background"
+                    );
+                    self.spawn_resubmit_task(height, hash_hex, block_hex, None);
+                }
+            }
+        }
     }
 
     /// Build and broadcast a fresh clean job immediately — used after a
@@ -299,10 +402,16 @@ impl TemplateEngine {
             task::spawn_blocking(move || archive_found_block(&dir, height, &hash, &hex));
         }
 
+        let _inflight = InflightSubmit::new(&self.inflight_submits);
         let mut last_err = None;
         for attempt in 1..=SUBMIT_INLINE_ATTEMPTS {
             match self.try_submit(block_hex.clone()).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    // After the submit, never before it: the archive file is
+                    // moved aside so a later boot does not replay it.
+                    self.mark_archived_submitted(height, hash_hex);
+                    return Ok(());
+                }
                 Err(e) if is_permanent_reject(&e) => return Err(e),
                 Err(e) => {
                     warn!(
@@ -321,8 +430,7 @@ impl TemplateEngine {
             height,
             hash_hex.to_owned(),
             block_hex,
-            worker.to_owned(),
-            stats,
+            Some((worker.to_owned(), stats)),
         );
         Err(last_err
             .unwrap_or_else(|| PoolError::Other(anyhow::anyhow!("submitblock never attempted"))))
@@ -336,16 +444,36 @@ impl TemplateEngine {
             .map_err(|e| PoolError::Other(anyhow::anyhow!("submitblock task panicked: {e}")))?
     }
 
+    /// Move the archive file for a confirmed block into `submitted/` on a
+    /// blocking thread. Never awaited on the block-found path.
+    fn mark_archived_submitted(&self, height: u64, hash_hex: &str) {
+        let dir = self.pool_cfg.found_block_dir.clone();
+        let path = archive_path(&dir, height, hash_hex);
+        task::spawn_blocking(move || {
+            // The archive write runs on its own blocking thread and can land a
+            // moment after a fast submit; give it a beat before giving up. A
+            // file that is still missed here is simply replayed on the next
+            // boot, where the node answers "duplicate".
+            if !path.exists() {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            if path.exists() {
+                file_archived_block(&dir, &path, "submitted");
+            }
+        });
+    }
+
     /// Keep resubmitting a found block in the background after the in-line
     /// attempts failed — e.g. while bitcoind restarts. `submit_block` treats
     /// "duplicate" as success, so racing an earlier attempt is harmless.
+    /// `credit` is the worker and stats to credit on success; `None` for a
+    /// boot-time replay, which must not count a block twice.
     fn spawn_resubmit_task(
         self: &Arc<Self>,
         height: u64,
         hash_hex: String,
         block_hex: Arc<String>,
-        worker: String,
-        stats: Arc<crate::stats::PoolStats>,
+        credit: Option<(String, Arc<crate::stats::PoolStats>)>,
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
@@ -356,11 +484,14 @@ impl TemplateEngine {
                 attempt += 1;
                 match engine.try_submit(block_hex.clone()).await {
                     Ok(()) => {
-                        metrics::block_found();
-                        metrics::block_submission_success();
-                        // Mirror the inline-success path so the dashboard's
-                        // block count / last-block panel agree with Prometheus.
-                        stats.block_found(&worker, &hash_hex);
+                        engine.mark_archived_submitted(height, &hash_hex);
+                        if let Some((worker, stats)) = &credit {
+                            metrics::block_found();
+                            metrics::block_submission_success();
+                            // Mirror the inline-success path so the dashboard's
+                            // block count / last-block panel agree with Prometheus.
+                            stats.block_found(worker, &hash_hex);
+                        }
                         info!(
                             "🏆 Block {hash_hex} (height {height}) accepted on \
                              retry attempt {attempt}"
@@ -399,13 +530,74 @@ fn is_permanent_reject(e: &PoolError) -> bool {
     matches!(e, PoolError::SubmitBlockRejected(_))
 }
 
+/// The node answered with a JSON-RPC error object (for example -22, block
+/// decode failed) rather than the call failing in transport. Only the
+/// boot-time replay treats this as permanent: hex the pool built itself never
+/// fails to decode, but a truncated or hand-edited archive file would, and
+/// retrying it for two hours on every boot helps nobody.
+fn is_node_side_error(e: &PoolError) -> bool {
+    matches!(
+        e,
+        PoolError::Rpc(bitcoincore_rpc::Error::JsonRpc(
+            bitcoincore_rpc::jsonrpc::Error::Rpc(_)
+        ))
+    )
+}
+
+/// `<found_block_dir>/block_<height>_<hash>.hex`
+fn archive_path(dir: &str, height: u64, hash_hex: &str) -> PathBuf {
+    Path::new(dir).join(format!("block_{height}_{hash_hex}.hex"))
+}
+
+/// Recover `(height, hash)` from an archive file name; `None` if the name
+/// was not written by `archive_path`.
+fn parse_archive_name(path: &Path) -> Option<(u64, String)> {
+    let stem = path.file_name()?.to_str()?.strip_suffix(".hex")?;
+    let rest = stem.strip_prefix("block_")?;
+    let (height, hash) = rest.split_once('_')?;
+    let height = height.parse().ok()?;
+    (hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| (height, hash.to_string()))
+}
+
+/// Archive files at the top level of `dir`: blocks whose submission was never
+/// confirmed. `submitted/` and `rejected/` hold the ones already dealt with.
+fn list_archived_blocks(dir: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "hex"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// Move an archive file into `<dir>/<bucket>/`. Failure is logged; the file
+/// stays where it is and is retried on the next boot.
+fn file_archived_block(dir: &str, path: &Path, bucket: &str) {
+    let target_dir = Path::new(dir).join(bucket);
+    let Some(name) = path.file_name() else { return };
+    let target = target_dir.join(name);
+    if let Err(e) =
+        std::fs::create_dir_all(&target_dir).and_then(|_| std::fs::rename(path, &target))
+    {
+        warn!(
+            "Could not move archived block {} to {}: {e}",
+            path.display(),
+            target.display()
+        );
+    }
+}
+
 /// Write the block hex to `<found_block_dir>/block_<height>_<hash>.hex` so the
-/// block survives a crash or node outage and can be replayed by hand. Runs on
-/// a blocking thread in parallel with submission. Failure is loud but
-/// non-fatal — submission proceeds regardless.
+/// block survives a crash or node outage and is replayed on the next boot if
+/// its acceptance is never confirmed. Runs on a blocking thread in parallel
+/// with submission. Failure is loud but non-fatal — submission proceeds
+/// regardless.
 fn archive_found_block(dir: &str, height: u64, hash_hex: &str, block_hex: &str) -> Option<PathBuf> {
-    let dir = Path::new(dir);
-    let path = dir.join(format!("block_{height}_{hash_hex}.hex"));
+    let path = archive_path(dir, height, hash_hex);
     let res = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, block_hex));
     match res {
         Ok(()) => {
@@ -424,7 +616,67 @@ fn archive_found_block(dir: &str, height: u64, hash_hex: &str, block_hex: &str) 
 
 #[cfg(test)]
 mod tests {
-    use super::tip_moved;
+    use super::{
+        archive_found_block, archive_path, file_archived_block, list_archived_blocks,
+        parse_archive_name, tip_moved,
+    };
+
+    const H: &str = "00000000000000000001b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607";
+
+    fn temp_dir(name: &str) -> String {
+        let d =
+            std::env::temp_dir().join(format!("solo-pool-archive-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn archive_names_round_trip() {
+        let p = archive_path("d", 961_633, H);
+        assert_eq!(parse_archive_name(&p), Some((961_633, H.to_string())));
+        for bad in [
+            "notes.txt",
+            "block_x_y.hex",
+            "block_1_abc.hex",
+            "1_hash.hex",
+        ] {
+            assert_eq!(parse_archive_name(std::path::Path::new(bad)), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_unconfirmed_archives_are_listed_for_replay() {
+        // A boot sees the top-level files only; a block filed under
+        // submitted/ or rejected/ is done and must never be replayed.
+        let dir = temp_dir("list");
+        let a = archive_found_block(&dir, 1, H, "aa").unwrap();
+        let b = archive_found_block(&dir, 2, H, "bb").unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("README"), "not a block").unwrap();
+        assert_eq!(list_archived_blocks(&dir), vec![a.clone(), b.clone()]);
+
+        file_archived_block(&dir, &a, "submitted");
+        file_archived_block(&dir, &b, "rejected");
+        assert!(list_archived_blocks(&dir).is_empty());
+        assert!(std::path::Path::new(&dir)
+            .join("submitted")
+            .join(a.file_name().unwrap())
+            .exists());
+        assert_eq!(
+            std::fs::read_to_string(
+                std::path::Path::new(&dir)
+                    .join("rejected")
+                    .join(b.file_name().unwrap())
+            )
+            .unwrap(),
+            "bb"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn listing_a_missing_directory_is_empty_not_fatal() {
+        assert!(list_archived_blocks("/nonexistent/solo-pool-archive").is_empty());
+    }
 
     const A: &str = "00000000000000000001b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607";
     const B: &str = "00000000000000000002c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718";
