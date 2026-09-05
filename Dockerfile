@@ -8,16 +8,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Pre-build dependencies against a stub main so `cargo build` is cached across
-# source-only changes.
+# Pre-build dependencies against stub sources so `cargo build` is cached
+# across source-only changes. The package has a library target as well as
+# the binary, so both files must exist or Cargo stops at target resolution.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && : > src/lib.rs \
     && cargo build --release \
     && rm -rf src
 
 # Build the real binary.
 COPY src ./src
-RUN touch src/main.rs \
+RUN touch src/main.rs src/lib.rs \
     && cargo build --release \
     && strip target/release/solo-pool-rs
 
