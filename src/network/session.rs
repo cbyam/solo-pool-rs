@@ -779,33 +779,6 @@ async fn handle_submit(
         "Validating submitted share"
     );
 
-    // Duplicates are only *checked* here; the key is inserted after validation
-    // passes, so invalid submissions cannot occupy dedup slots.
-    // Key off `share_params`, not the raw request: when version rolling was not
-    // negotiated, `version_bits` is dropped before validation, so keying on the
-    // raw field would let a miner replay one share under version_bits 1, 2,
-    // 3... Each replay builds the identical header, passes validation, and
-    // lands a distinct dedup key.
-    let share_key = validator::ShareKey::new(
-        &share_params.job_id,
-        &share_params.extranonce2,
-        share_params.ntime,
-        share_params.nonce,
-        share_params.version_bits.unwrap_or(0),
-    );
-    if session.share_set.contains(&share_key) {
-        metrics::share_rejected("duplicate", worker);
-        session.stats.share_rejected();
-        session.stats.worker_share_rejected(worker, "duplicate");
-        if session.guard.invalid_shares.record_invalid() {
-            return HandleResult::Disconnect("too many invalid shares".into());
-        }
-        return HandleResult::Messages(vec![ResponseBuilder::err(
-            &req.id,
-            PoolError::DuplicateShare.to_stratum_error(),
-        )]);
-    }
-
     // Accept any share meeting the configured floor (min_difficulty), not the
     // current vardiff level.  For Avalon/cgminer hardware the hardware threshold
     // is set once via minimum-difficulty at configure time and never changes, so
@@ -835,10 +808,10 @@ async fn handle_submit(
             return HandleResult::Disconnect("internal error".into());
         }
     };
-    // Record for dedup only now that the share proved itself (Valid or Block).
-    if validation_result.is_ok() {
-        session.share_set.insert(share_key);
-    }
+    // Dedup on the header hash, known only now. A replay of an accepted
+    // share, under any job id or version-bits encoding, becomes
+    // DuplicateShare here and is handled by the Err arm below.
+    let validation_result = session.share_set.dedup(validation_result);
     match validation_result {
         Ok(ShareResult::Valid {
             assigned_difficulty,

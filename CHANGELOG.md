@@ -10,6 +10,16 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Fixed
+- Duplicate-share detection now keys on the 80-byte header hash instead of
+  the submitted fields. The old key included the job id, but the 30 s ntime
+  refresh mints a new job id over byte-identical template content and the
+  ntime window spans every live job, so one proof-of-work could be resubmitted
+  once per live job id (up to 8 credits) and inflate hashrate, vardiff, and
+  the persisted all-time best-hashrate watermark. Renegotiating the
+  version-rolling mask mid-session opened a smaller variant of the same gap.
+  No funds were at risk; a solo pool pays only on found blocks. The check now
+  runs after validation, when the hash is known, so replays cost the pool one
+  validation before rejection and count toward the invalid-share disconnect.
 - `[vardiff]` is validated at boot. An inverted `min_difficulty > max_difficulty`
   pair previously passed config loading and then panicked inside `u64::clamp`
   on every retarget and every `mining.suggest_difficulty`, dropping each miner

@@ -27,17 +27,25 @@ pub const VERSION_ROLLING_MASK: u32 = 0x1FFF_E000;
 // Share duplicate tracker
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Per-session duplicate-share tracker.
+/// Per-session duplicate-share tracker, keyed on the 80-byte header hash.
 ///
-/// Only *validated* shares are recorded (callers `contains`-check before
-/// validating and `insert` after it succeeds), so invalid submissions cannot
-/// occupy slots and later identical valid submits are judged on their own
-/// merits. Sessions `clear` the set on every clean-job broadcast — a clean job
-/// retires all outstanding jobs, so entries never need to outlive one — which
-/// keeps replay protection scoped to live jobs instead of depending on FIFO
-/// eviction. The FIFO cap remains as a memory backstop; filling it now takes
-/// real proof-of-work at the session floor difficulty within a single job
-/// generation, not free invalid submits.
+/// The header hash is the canonical identity of a share: two submissions
+/// that hash the same header are the same proof-of-work no matter how they
+/// were labelled. Keying on the submitted fields instead (job id, ntime,
+/// nonce, version bits, ...) left two ways to get one hash credited more
+/// than once. The 30 s ntime refresh mints a new job id over byte-identical
+/// template content, and the ntime window spans every live job, so one share
+/// could be resubmitted once per live job id. And renegotiating the
+/// version-rolling mask mid-session changed how the same rolled version was
+/// split into "bits", so one header could carry several key encodings.
+///
+/// Only *validated* shares are recorded (callers check and insert after
+/// validation succeeds, when the hash is known), so invalid submissions cannot
+/// occupy slots. Sessions `clear` the set on every clean-job broadcast: a
+/// clean job changes prev_hash, so no earlier hash can recur, and clearing
+/// keeps memory scoped to one job generation instead of relying on FIFO
+/// eviction. The FIFO cap remains as a backstop; filling it takes real
+/// proof-of-work at the session floor difficulty.
 #[derive(Clone, Default)]
 pub struct ShareSet {
     seen: HashSet<ShareKey>,
@@ -46,32 +54,8 @@ pub struct ShareSet {
     max_size: usize,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
-pub struct ShareKey {
-    job_id: String,
-    extranonce2: Vec<u8>,
-    ntime: u32,
-    nonce: u32,
-    version_bits: u32,
-}
-
-impl ShareKey {
-    pub fn new(
-        job_id: &str,
-        extranonce2: &[u8],
-        ntime: u32,
-        nonce: u32,
-        version_bits: u32,
-    ) -> Self {
-        Self {
-            job_id: job_id.to_string(),
-            extranonce2: extranonce2.to_vec(),
-            ntime,
-            nonce,
-            version_bits,
-        }
-    }
-}
+/// Raw SHA256d header hash, as produced by `validate_share_no_dedup`.
+pub type ShareKey = [u8; 32];
 
 impl ShareSet {
     pub fn new() -> Self {
@@ -82,7 +66,7 @@ impl ShareSet {
         }
     }
 
-    /// Whether this share was already accepted this job generation.
+    /// Whether this header hash was already accepted this job generation.
     pub fn contains(&self, key: &ShareKey) -> bool {
         self.seen.contains(key)
     }
@@ -98,8 +82,26 @@ impl ShareSet {
                 self.seen.remove(&oldest);
             }
         }
-        self.order.push_back(key.clone());
+        self.order.push_back(key);
         self.seen.insert(key);
+    }
+
+    /// Apply dedup to a validation outcome: a validated share whose header
+    /// hash was already accepted becomes `DuplicateShare`; a fresh one is
+    /// recorded and passed through. Errors pass through untouched, so an
+    /// invalid submission never occupies a slot.
+    pub fn dedup(
+        &mut self,
+        result: Result<ShareResult, PoolError>,
+    ) -> Result<ShareResult, PoolError> {
+        match result {
+            Ok(res) if self.contains(res.hash()) => Err(PoolError::DuplicateShare),
+            Ok(res) => {
+                self.insert(*res.hash());
+                Ok(res)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Drop all entries. Called on clean-job broadcasts: every outstanding job
@@ -148,6 +150,15 @@ pub enum ShareResult {
         block_hex: String,
         hash: [u8; 32],
     },
+}
+
+impl ShareResult {
+    /// The raw header hash this share proved.
+    pub fn hash(&self) -> &[u8; 32] {
+        match self {
+            ShareResult::Valid { hash, .. } | ShareResult::Block { hash, .. } => hash,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,13 +459,14 @@ mod tests {
         );
     }
 
-    /// Test keys with distinct header nonces. The nonces come from a range
-    /// rather than literals: CodeQL's hard-coded-cryptographic-value heuristic
-    /// reads the mining header nonce as a cryptographic nonce and flags any
-    /// constant flowing into it.
+    /// Distinct header hashes, derived from a counter.
     fn test_keys(count: u32) -> Vec<ShareKey> {
         (0..count)
-            .map(|n| ShareKey::new("job1", b"en2", 12345, n, 0))
+            .map(|n| {
+                let mut k = [0u8; 32];
+                k[..4].copy_from_slice(&n.to_le_bytes());
+                k
+            })
             .collect()
     }
 
@@ -463,14 +475,34 @@ mod tests {
         let mut ss = ShareSet::new();
         let keys = test_keys(2);
         assert!(!ss.contains(&keys[0]));
-        ss.insert(keys[0].clone());
+        ss.insert(keys[0]);
         assert!(ss.contains(&keys[0]));
-        // Different nonce should not be a duplicate
         assert!(!ss.contains(&keys[1]));
-        // Different version bits should also not be a duplicate
-        let mut other_bits = keys[0].clone();
-        other_bits.version_bits = 0x2000;
-        assert!(!ss.contains(&other_bits));
+    }
+
+    #[test]
+    fn dedup_rejects_a_second_validation_of_the_same_header() {
+        // The same proof-of-work arriving under a different job id (ntime
+        // refresh) or a different version-bits encoding (mask renegotiation)
+        // produces the same header hash, and that is what is keyed on.
+        let mut ss = ShareSet::new();
+        let hash = test_keys(1).remove(0);
+        let valid = || {
+            Ok(ShareResult::Valid {
+                assigned_difficulty: 1024,
+                hash_difficulty: 2048,
+                hash,
+            })
+        };
+        assert!(ss.dedup(valid()).is_ok());
+        assert!(matches!(ss.dedup(valid()), Err(PoolError::DuplicateShare)));
+        // A validation error passes through and leaves no trace.
+        let other = test_keys(2).remove(1);
+        assert!(matches!(
+            ss.dedup(Err(PoolError::LowDifficulty)),
+            Err(PoolError::LowDifficulty)
+        ));
+        assert!(!ss.contains(&other));
     }
 
     #[test]
@@ -482,7 +514,7 @@ mod tests {
         let key = test_keys(1).remove(0);
         assert!(!ss.contains(&key)); // invalid attempt: checked, never inserted
         assert!(!ss.contains(&key)); // same share resubmitted: still fresh
-        ss.insert(key.clone()); // now it validates
+        ss.insert(key); // now it validates
         assert!(ss.contains(&key)); // and only now is a resubmit a duplicate
     }
 
@@ -490,12 +522,12 @@ mod tests {
     fn clear_retires_all_entries_on_clean_job() {
         let mut ss = ShareSet::new();
         let key = test_keys(1).remove(0);
-        ss.insert(key.clone());
+        ss.insert(key);
         assert!(ss.contains(&key));
         ss.clear();
         assert!(!ss.contains(&key));
         // Re-inserting after a clear works (fresh job generation).
-        ss.insert(key.clone());
+        ss.insert(key);
         assert!(ss.contains(&key));
     }
 
@@ -507,7 +539,7 @@ mod tests {
         };
         let keys = test_keys(6);
         for k in &keys {
-            ss.insert(k.clone());
+            ss.insert(*k);
         }
         // Oldest two evicted, newest four retained.
         assert!(!ss.contains(&keys[0]));
@@ -516,7 +548,7 @@ mod tests {
             assert!(ss.contains(k));
         }
         // Double-insert of a present key must not grow the FIFO or evict.
-        ss.insert(keys[5].clone());
+        ss.insert(keys[5]);
         assert!(ss.contains(&keys[2]));
     }
 
