@@ -45,6 +45,20 @@ fn window_overlap(elapsed: u64, window_secs: u64) -> f64 {
 // Persistent store for all-time metrics
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Make the stats database readable by the pool's user only. SQLite creates
+/// it under the process umask, typically 0644, and it holds the payout
+/// address and per-worker history; nothing but this process needs to read it.
+#[cfg(unix)]
+fn restrict_to_owner(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        warn!("Could not restrict permissions on {path}: {e}");
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &str) {}
+
 struct StatsStore {
     conn: Mutex<Connection>,
 }
@@ -52,6 +66,7 @@ struct StatsStore {
 impl StatsStore {
     fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
+        restrict_to_owner(path);
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pool_stats (
              id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -1032,6 +1047,21 @@ mod tests {
         let id = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         path.push(format!("solo_pool_rs_stats_test_{}_{}.db", ts, id));
         path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stats_database_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let db_path = make_temp_db();
+        let _stats = PoolStats::new_with_store(Some(db_path.clone()));
+        let mode = std::fs::metadata(&db_path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "stats db must not be group/world readable"
+        );
+        std::fs::remove_file(&db_path).ok();
     }
 
     #[test]

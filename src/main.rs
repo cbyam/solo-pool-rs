@@ -45,6 +45,9 @@ async fn main() -> Result<()> {
 
     // ── Logging ───────────────────────────────────────────────────────────────
     init_tracing(&config.logging);
+    if let Some(msg) = config::credential_exposure_warning(&cfg_path, &config) {
+        tracing::warn!("{msg}");
+    }
 
     info!(
         version = env!("CARGO_PKG_VERSION"),

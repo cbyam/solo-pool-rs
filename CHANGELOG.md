@@ -34,6 +34,14 @@ everything else bumps the **patch** version.
   overwritten.
 
 ### Security
+- The stats SQLite file is set to mode 0600 on open. SQLite created it under
+  the process umask, typically world-readable, and it holds the payout
+  address and per-worker history.
+- The Bitcoin RPC URL is logged with any `user:password@` userinfo redacted,
+  in the startup line and in the URL parse error.
+- The pool warns at startup when the config file holds explicit RPC
+  credentials (a `password` key or userinfo in the URL) and is readable by
+  other local users, naming the file and the `chmod 600` to run.
 - The pre-authorization deadline on both stratum protocols is now absolute,
   measured from connect (SV1) or from the end of the Noise handshake (SV2),
   instead of resetting on every inbound message. A peer could previously hold
