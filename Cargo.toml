@@ -29,7 +29,7 @@ sha2 = { version = "0.10", features = ["compress"] }
 bitcoincore-rpc = "0.19"
 
 # ── ZMQ for block/tx notifications from Bitcoin Knots ─────────────────────────
-tmq = "0.4"          # async ZMQ bindings on top of tokio (uses libzmq)
+tmq = "0.5"          # async ZMQ bindings on top of tokio (uses libzmq)
 tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 
 # ── Stratum V2 protocol (SRI crates) ──────────────────────────────────────────
