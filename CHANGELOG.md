@@ -9,6 +9,13 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- The regtest block-acceptance test grinds to the job's own network target
+  instead of a difficulty-1 share. The pool checks the network target before
+  the share target, so on regtest about one hash in two is a block and the
+  test finishes in seconds. The difficulty-1 grind cost 2^32 hashes and timed
+  out on slow CI runners, the source of the long-standing rerun-passes flake.
+
 ## [0.6.6] - 2026-09-05
 
 ### Added

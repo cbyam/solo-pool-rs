@@ -3,18 +3,19 @@
 //! accept it onto the chain.
 //!
 //! It spins up `bitcoind -regtest`, launches the actual pool binary against it,
-//! connects over the live Stratum V1 socket as a miner would, grinds a
-//! difficulty-1 share (which on regtest is also a valid block), submits it, and
-//! asserts the node accepted it: the chain advances and the new block's coinbase
-//! pays the pool's configured address. Because it mines block **1** of a fresh
-//! chain it also covers the BIP34 small-height coinbase encoding.
+//! connects over the live Stratum V1 socket as a miner would, grinds a nonce
+//! that meets the job's own network target (on regtest about one hash in two,
+//! and the pool accepts any network-target hash as a block regardless of the
+//! share target), submits it, and asserts the node accepted it: the chain
+//! advances and the new block's coinbase pays the pool's configured address.
+//! Because it mines block **1** of a fresh chain it also covers the BIP34
+//! small-height coinbase encoding.
 //!
 //! This guards the bugs that are otherwise invisible until a real block-find:
 //! prev-hash byte order, BIP34 height, merkle root, witness commitment, coinbase
 //! structure, and the submit path itself.
 //!
-//! Ignored by default (needs `bitcoind` + `bitcoin-cli`, and the diff-1 grind
-//! wants release codegen). Run it explicitly:
+//! Ignored by default (needs `bitcoind` + `bitcoin-cli`). Run it explicitly:
 //!
 //! ```text
 //! cargo test --release --test block_acceptance -- --ignored --nocapture
@@ -267,21 +268,34 @@ fn header_hash(prefix: &[u8; 76], nonce: u32) -> [u8; 32] {
     d
 }
 
-/// Exactly mirror the pool's `meets_target` against the diff-1 target: reverse
-/// the 32-byte hash and require it `<= 0x00000000ffff0000…0000`. Using the same
-/// predicate guarantees the miner never submits a share the pool would reject.
-fn meets_diff1(d: &[u8; 32]) -> bool {
-    #[rustfmt::skip]
-    const T: [u8; 32] = [
-        0,0,0,0,0xff,0xff,0,0, 0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
-    ];
+/// Expand a compact `nbits` into a 32-byte big-endian target, as the node
+/// does (`CBigNum::SetCompact` semantics).
+fn compact_to_target_be(nbits: u32) -> [u8; 32] {
+    let exponent = (nbits >> 24) as usize;
+    let mantissa = nbits & 0x007f_ffff;
+    let mut t = [0u8; 32];
+    if exponent <= 3 {
+        let v = mantissa >> (8 * (3 - exponent));
+        t[29..32].copy_from_slice(&v.to_be_bytes()[1..4]);
+    } else {
+        let m = mantissa.to_be_bytes();
+        // The three mantissa bytes sit `exponent` bytes up from the low end.
+        let hi = 32 - exponent;
+        t[hi..hi + 3].copy_from_slice(&m[1..4]);
+    }
+    t
+}
+
+/// Exactly mirror the pool's `meets_target`: reverse the 32-byte hash and
+/// require it `<= target` as a big-endian number. Using the same predicate
+/// guarantees the miner never submits a share the pool would reject.
+fn meets_target(d: &[u8; 32], target: &[u8; 32]) -> bool {
     for i in 0..32 {
         let hb = d[31 - i];
-        if hb < T[i] {
+        if hb < target[i] {
             return true;
         }
-        if hb > T[i] {
+        if hb > target[i] {
             return false;
         }
     }
@@ -407,18 +421,19 @@ fn header_prefix(job: &Notify, extranonce1: &[u8], extranonce2: &[u8]) -> [u8; 7
 /// Cap on a single nonce sweep. The pool re-broadcasts a job every 30 s
 /// (ntime refresh) and keeps 8 jobs of history, so a job id is forgotten
 /// about 4 minutes after broadcast; a share ground for longer than that is
-/// rejected with "Job not found" no matter how valid it is (the cause of a
-/// long-standing CI flake on slow runners). Each sweep starts on a freshly
-/// synced job and gives up after 2 minutes, comfortably inside the window.
-/// Aborting costs nothing statistically: every nonce is an independent
-/// trial, so restarting on a fresh job preserves the expected time to find
-/// a share.
+/// rejected with "Job not found" no matter how valid it is. On regtest the
+/// grind finishes in a handful of hashes, so this is a safety net for a
+/// network with a real target; it stays comfortably inside the window.
 const GRIND_CHUNK: Duration = Duration::from_secs(120);
 
-/// Multi-threaded grind for a nonce whose sha256d(header) meets diff-1. Returns
-/// the nonce, or None if the deadline passes or the whole 2^32 space holds no
-/// solution (~37%).
-fn grind_diff1(prefix: &[u8; 76], deadline: Instant) -> Option<u32> {
+/// Multi-threaded grind for a nonce whose sha256d(header) meets `target`.
+/// Returns the nonce, or None if the deadline passes or the whole 2^32 space
+/// holds no solution.
+fn grind_to_target(prefix: &[u8; 76], target: &[u8; 32], deadline: Instant) -> Option<u32> {
+    // The hash's four most significant bytes are the last SHA-256 state word,
+    // byte-reversed. Comparing that word first skips the full 32-byte compare
+    // for every hash that cannot possibly qualify.
+    let top_word = u32::from_be_bytes([target[0], target[1], target[2], target[3]]);
     let nthreads = std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(4);
@@ -464,12 +479,12 @@ fn grind_diff1(prefix: &[u8; 76], deadline: Instant) -> Option<u32> {
                     }
                     let mut st2 = H0;
                     compress(&mut st2, &blk2b);
-                    if st2[7] == 0 {
+                    if st2[7].swap_bytes() <= top_word {
                         let mut d = [0u8; 32];
                         for i in 0..8 {
                             d[i * 4..i * 4 + 4].copy_from_slice(&st2[i].to_be_bytes());
                         }
-                        if meets_diff1(&d) {
+                        if meets_target(&d, target) {
                             found.store(n as i64, Ordering::SeqCst);
                             stop.store(true, Ordering::SeqCst);
                             return;
@@ -495,7 +510,8 @@ fn grind_diff1(prefix: &[u8; 76], deadline: Instant) -> Option<u32> {
 fn grind_respects_deadline() {
     let prefix = [0u8; 76];
     let t0 = Instant::now();
-    let result = grind_diff1(&prefix, Instant::now());
+    // Diff-1 target: no chance of a lucky hit before the first deadline check.
+    let result = grind_to_target(&prefix, &compact_to_target_be(0x1d00_ffff), Instant::now());
     assert!(result.is_none(), "expired deadline still returned a nonce");
     assert!(
         t0.elapsed() < Duration::from_secs(5),
@@ -637,13 +653,20 @@ json = false
         let mut ground = job.clone();
         ground.ntime = job.ntime - 1;
         let prefix = header_prefix(&ground, &extranonce1, &e2_bytes);
-        let Some(nonce) = grind_diff1(&prefix, Instant::now() + GRIND_CHUNK) else {
+        // Grind to the job's own network target. The pool checks the network
+        // target before the share target, so on regtest (nbits 0x207fffff,
+        // about one hash in two) this is a block even though it is far below
+        // the pool's diff-1 share floor. Grinding a diff-1 share here used to
+        // cost 2^32 hashes and timed out on slow CI runners.
+        let target = compact_to_target_be(job.nbits);
+        let Some(nonce) = grind_to_target(&prefix, &target, Instant::now() + GRIND_CHUNK) else {
             continue; // sweep exhausted or chunk deadline hit; re-sync and roll
         };
         eprintln!(
-            "found diff-1 nonce {nonce} in {:.0}s (job {}, en2 #{en2})",
+            "found network-target nonce {nonce} in {:.1}s (job {}, nbits {:08x}, en2 #{en2})",
             t0.elapsed().as_secs_f64(),
-            job.job_id
+            job.job_id,
+            job.nbits
         );
         send(
             &mut writer,
@@ -764,7 +787,46 @@ fn header_hash_matches_full_sha256d() {
 }
 
 #[test]
-fn meets_diff1_extremes() {
-    assert!(meets_diff1(&[0x00; 32]), "zero hash is below any target");
-    assert!(!meets_diff1(&[0xff; 32]), "max hash exceeds diff-1");
+fn compact_targets_expand_like_the_node() {
+    // Mainnet genesis nbits: 0x00000000ffff0000…
+    let diff1 = compact_to_target_be(0x1d00_ffff);
+    assert_eq!(&diff1[..8], &[0, 0, 0, 0, 0xff, 0xff, 0, 0]);
+    assert!(diff1[8..].iter().all(|&b| b == 0));
+    // Regtest powLimit: 0x7fffff0000…
+    let regtest = compact_to_target_be(0x207f_ffff);
+    assert_eq!(&regtest[..4], &[0x7f, 0xff, 0xff, 0]);
+    assert!(regtest[4..].iter().all(|&b| b == 0));
+    // Small exponent path.
+    assert_eq!(
+        compact_to_target_be(0x0301_2345)[29..32],
+        [0x01, 0x23, 0x45]
+    );
+}
+
+#[test]
+fn meets_target_extremes() {
+    let diff1 = compact_to_target_be(0x1d00_ffff);
+    assert!(
+        meets_target(&[0x00; 32], &diff1),
+        "zero hash is below any target"
+    );
+    assert!(
+        !meets_target(&[0xff; 32], &diff1),
+        "max hash exceeds diff-1"
+    );
+    // Equality is a hit (target is inclusive), one above is not.
+    let mut at = [0u8; 32];
+    for i in 0..32 {
+        at[31 - i] = diff1[i];
+    }
+    assert!(meets_target(&at, &diff1));
+    at[0] += 1;
+    assert!(!meets_target(&at, &diff1));
+    // Regtest: a hash whose top byte is 0x80 fails, 0x7f passes.
+    let regtest = compact_to_target_be(0x207f_ffff);
+    let mut h = [0u8; 32];
+    h[31] = 0x80;
+    assert!(!meets_target(&h, &regtest));
+    h[31] = 0x7f;
+    assert!(meets_target(&h, &regtest));
 }
