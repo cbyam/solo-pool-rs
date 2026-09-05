@@ -744,8 +744,9 @@ async fn handle_submit(
                 "SV2 share accepted"
             );
             session.shares_accepted += 1;
-            session.vardiff.record_share(session.difficulty);
-            metrics::share_accepted(assigned_difficulty, &worker);
+            let credited = session.vardiff.credit_for(hash_difficulty);
+            session.vardiff.record_share(credited);
+            metrics::share_accepted(credited, &worker);
             session.stats.share_accepted(hash_difficulty);
             session
                 .stats
@@ -776,7 +777,8 @@ async fn handle_submit(
                     metrics::block_submission_success();
                     session.stats.block_found(&worker, &block_hash_hex);
                     session.shares_accepted += 1;
-                    session.vardiff.record_share(session.difficulty);
+                    let credited = session.vardiff.credit_for(hash_difficulty);
+                    session.vardiff.record_share(credited);
                     session.stats.share_accepted(hash_difficulty);
                     session
                         .stats

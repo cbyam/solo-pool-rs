@@ -9,7 +9,25 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- The hashrate estimate credits each share with the difficulty threshold it
+  is known to have been mined against instead of the session's assigned
+  difficulty regardless. Shares are accepted at the pool floor because some
+  hardware fixes its threshold at connect time and never follows
+  `set_difficulty`; such a device was credited with the assigned difficulty
+  anyway, overstating it by assigned divided by floor (up to 256× with the
+  default range) and pushing that figure into the persisted all-time
+  best-hashrate watermark. A hash that clears the assignment is credited
+  with it, one that clears only the previous assignment (in-flight work
+  across a retarget) with that, and anything else with the floor. Miners
+  that follow `set_difficulty` see no change. An all-time best hashrate
+  recorded under the old accounting is not recomputed; clear it with
+  `POST /api/reset-best-hashrate` if it looks implausible.
+
 ### Changed
+- Dependencies: tmq 0.5, toml 1.1, thiserror 2, and the grouped minor and
+  patch bumps (tokio 1.53, bitcoin 0.32.102, and others); GitHub Actions
+  checkout v7, upload-artifact v7, download-artifact v8, github-script v9.
 - The regtest block-acceptance test grinds to the job's own network target
   instead of a difficulty-1 share. The pool checks the network target before
   the share target, so on regtest about one hash in two is a block and the
