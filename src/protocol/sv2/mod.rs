@@ -215,6 +215,7 @@ pub async fn run(
     // read_exact into the codec buffer is not cancel-safe, so frames are read in
     // a dedicated task and forwarded over a channel the main loop can select on.
     let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(u8, Vec<u8>)>(32);
+    let reader_ban_list = ban_list.clone();
     let reader_task = tokio::spawn(async move {
         loop {
             match nreader.read().await {
@@ -222,6 +223,14 @@ pub async fn run(
                     if inbound_tx.send(msg).await.is_err() {
                         break;
                     }
+                }
+                // A frame header declaring more than max_frame is the SV2
+                // counterpart of an oversize SV1 line and gets the same ban;
+                // the reader reports it as InvalidData and nothing else.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    warn!("SV2 {peer} {e}");
+                    reader_ban_list.ban(peer.ip(), "message too large");
+                    break;
                 }
                 Err(e) => {
                     debug!("SV2 reader ended: {e}");
@@ -243,20 +252,31 @@ pub async fn run(
     // timeout) recreates the read-arm future, so a plain timeout() would reset
     // the idle clock and a dead peer that keeps receiving jobs never times out.
     let mut last_inbound = tokio::time::Instant::now();
+    // Absolute, from the end of the handshake: until the channel opens (worker
+    // identified) the peer gets one short window regardless of how many
+    // unknown or harmless messages it sends. Mirrors the SV1 pre-auth deadline
+    // and for the same reason: an activity-anchored deadline lets a peer pin a
+    // bounded global slot indefinitely without ever identifying itself.
+    let preauth_deadline = last_inbound + preauth_timeout;
 
     loop {
-        // Until the channel opens (worker identified), hold the connection to
-        // the short handshake deadline — mirrors the SV1 pre-auth timeout.
-        let read_timeout = if session.channel_open {
-            idle_timeout
+        let deadline = if session.channel_open {
+            last_inbound + idle_timeout
         } else {
-            preauth_timeout
+            preauth_deadline
         };
         tokio::select! {
             // ── Inbound (decrypted) SV2 message ─────────────────────────────
-            inbound = tokio::time::timeout_at(last_inbound + read_timeout, inbound_rx.recv()) => {
+            inbound = tokio::time::timeout_at(deadline, inbound_rx.recv()) => {
                 let (msg_type, mut payload) = match inbound {
-                    Err(_) => { warn!("SV2 miner {peer} idle timeout — disconnecting"); break; }
+                    Err(_) => {
+                        if session.channel_open {
+                            warn!("SV2 miner {peer} idle timeout — disconnecting");
+                        } else {
+                            warn!("SV2 miner {peer} did not open a channel within {}s — disconnecting", preauth_timeout.as_secs());
+                        }
+                        break;
+                    }
                     Ok(None) => { debug!("SV2 {peer} reader closed"); break; }
                     Ok(Some(m)) => { last_inbound = tokio::time::Instant::now(); m }
                 };

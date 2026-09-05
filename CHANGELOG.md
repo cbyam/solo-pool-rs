@@ -9,6 +9,25 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Security
+- The pre-authorization deadline on both stratum protocols is now absolute,
+  measured from connect (SV1) or from the end of the Noise handshake (SV2),
+  instead of resetting on every inbound message. A peer could previously hold
+  one of the bounded global connection slots forever by sending a blank line
+  or an unknown SV2 message every few seconds without ever authorizing or
+  opening a channel; a few dozen such peers exhausted `max_connections`.
+- The SV2 Noise reader now compares a frame's declared length against the cap
+  before growing its buffer. The check used to run after the decoder had
+  already resized to the attacker-chosen 24-bit length, so one header could
+  cost up to 16 MB per connection. An oversize frame now also bans the peer,
+  the same as an oversize SV1 line; other decode failures still just
+  disconnect.
+- The per-IP connection rate limiter and the ban list each cap the number of
+  addresses they track (65,536). Both key on the exact peer address, so a
+  routed IPv6 prefix supplied unlimited fresh keys between five-minute prunes.
+  Keys stay exact rather than moving to a /64, because on a LAN pool a prefix
+  key would let one bad device throttle every IPv6 miner on the segment.
+
 ### Fixed
 - `[vardiff]` is validated at boot. An inverted `min_difficulty > max_difficulty`
   pair previously passed config loading and then panicked inside `u64::clamp`

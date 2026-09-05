@@ -19,6 +19,16 @@ use tracing::warn;
 // BanList
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Upper bound on distinct IPs the ban list and the connection rate limiter
+/// each track. Both are keyed on the exact peer address, and a peer with a
+/// routed IPv6 prefix has an effectively unlimited supply of those, so without
+/// a cap either map grows by one entry per connection attempt until the next
+/// five-minute prune. Keying on a /64 instead would make one bad device
+/// throttle or ban every IPv6 miner on the same LAN segment, which is the
+/// wrong trade for a pool that lives on a LAN; a cap keeps exact keys and
+/// bounds memory instead. 65k entries is a few MB at most.
+const MAX_TRACKED_IPS: usize = 65_536;
+
 struct BanEntry {
     until: Instant,
     #[allow(dead_code)]
@@ -28,18 +38,39 @@ struct BanEntry {
 pub struct BanList {
     entries: DashMap<IpAddr, BanEntry>,
     ban_duration: Duration,
+    max_entries: usize,
 }
 
 impl BanList {
     pub fn new(ban_duration_secs: u64) -> Arc<Self> {
+        Self::with_capacity_limit(ban_duration_secs, MAX_TRACKED_IPS)
+    }
+
+    fn with_capacity_limit(ban_duration_secs: u64, max_entries: usize) -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
             ban_duration: Duration::from_secs(ban_duration_secs),
+            max_entries,
         })
     }
 
     pub fn ban(&self, ip: IpAddr, reason: &str) {
         warn!("Banning {ip} for {:?}: {reason}", self.ban_duration);
+        if self.entries.len() >= self.max_entries && !self.entries.contains_key(&ip) {
+            self.prune();
+            if self.entries.len() >= self.max_entries {
+                // Still full of live bans: drop the one closest to expiry so
+                // the newest offender is always recorded.
+                if let Some(victim) = self
+                    .entries
+                    .iter()
+                    .min_by_key(|e| e.until)
+                    .map(|e| *e.key())
+                {
+                    self.entries.remove(&victim);
+                }
+            }
+        }
         self.entries.insert(
             ip,
             BanEntry {
@@ -75,13 +106,19 @@ pub struct ConnectionRateLimiter {
     /// IP → list of recent connection timestamps
     windows: DashMap<IpAddr, Vec<Instant>>,
     max_per_minute: u32,
+    max_tracked: usize,
 }
 
 impl ConnectionRateLimiter {
     pub fn new(max_per_minute: u32) -> Arc<Self> {
+        Self::with_capacity_limit(max_per_minute, MAX_TRACKED_IPS)
+    }
+
+    fn with_capacity_limit(max_per_minute: u32, max_tracked: usize) -> Arc<Self> {
         Arc::new(Self {
             windows: DashMap::new(),
             max_per_minute,
+            max_tracked,
         })
     }
 
@@ -91,6 +128,16 @@ impl ConnectionRateLimiter {
         // panics when the host has been up for less than the window. `None`
         // means every recorded timestamp is necessarily inside the window.
         let one_minute_ago = Instant::now().checked_sub(Duration::from_secs(60));
+
+        if self.windows.len() >= self.max_tracked && !self.windows.contains_key(&ip) {
+            self.prune();
+            if self.windows.len() >= self.max_tracked {
+                // Every tracked address connected within the last minute and
+                // this is yet another new one: that is a flood of fresh
+                // sources, and refusing it is the point of the limiter.
+                return false;
+            }
+        }
         let mut entry = self.windows.entry(ip).or_default();
 
         // Evict old entries
@@ -280,6 +327,42 @@ impl SessionGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv6Addr;
+
+    /// Distinct addresses from one routed /64, the cheap identity supply the
+    /// caps exist for.
+    fn v6(n: u64) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::from(
+            ((0x2001_0db8_0000_0000u64 as u128) << 64) | n as u128,
+        ))
+    }
+
+    #[test]
+    fn rate_limiter_refuses_new_sources_once_full() {
+        let rl = ConnectionRateLimiter::with_capacity_limit(8, 4);
+        for i in 0..4 {
+            assert!(rl.check_and_record(v6(i)));
+        }
+        assert_eq!(rl.windows.len(), 4);
+        // A fifth fresh source within the window is refused and not stored.
+        assert!(!rl.check_and_record(v6(99)));
+        assert_eq!(rl.windows.len(), 4);
+        // A source already tracked is still judged on its own window.
+        assert!(rl.check_and_record(v6(1)));
+    }
+
+    #[test]
+    fn ban_list_stays_bounded_and_keeps_the_newest_offender() {
+        let bl = BanList::with_capacity_limit(600, 3);
+        for i in 0..3 {
+            bl.ban(v6(i), "test");
+        }
+        bl.ban(v6(42), "test");
+        assert_eq!(bl.entries.len(), 3);
+        assert!(bl.is_banned(&v6(42)), "the newest ban must be recorded");
+        // The evicted one is the earliest-expiring, which is the oldest.
+        assert!(!bl.is_banned(&v6(0)));
+    }
 
     #[test]
     fn worker_name_accepts_typical_addresses() {

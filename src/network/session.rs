@@ -165,25 +165,32 @@ pub async fn run(
     // timeout) recreates the read-arm future, so a plain timeout() would reset
     // the idle clock and a dead peer that keeps receiving jobs never times out.
     let mut last_inbound = tokio::time::Instant::now();
+    // The pre-auth deadline is absolute, measured from connect, not from the
+    // last inbound line. Real miners subscribe and authorize within a second.
+    // Anchoring it on inbound activity let a peer hold a bounded global slot
+    // forever by sending one blank line every few seconds without ever
+    // authorizing; enough such peers exhaust max_connections.
+    let preauth_deadline = last_inbound + preauth_timeout;
 
     loop {
-        // Until a worker authorizes, hold the connection to the short handshake
-        // deadline — real miners subscribe/authorize immediately, and a stalled
-        // pre-auth connection pins one of the bounded global slots.
-        let read_timeout = if session.authorized {
-            idle_timeout
+        let deadline = if session.authorized {
+            last_inbound + idle_timeout
         } else {
-            preauth_timeout
+            preauth_deadline
         };
         tokio::select! {
             // ── Inbound message from miner ──────────────────────────────────
             line_result = tokio::time::timeout_at(
-                last_inbound + read_timeout,
+                deadline,
                 read_line_bounded(&mut reader, &mut line_buf, session.guard.max_message_bytes),
             ) => {
                 match line_result {
                     Err(_) => {
-                        warn!("Miner {peer} idle timeout — disconnecting");
+                        if session.authorized {
+                            warn!("Miner {peer} idle timeout — disconnecting");
+                        } else {
+                            warn!("Miner {peer} did not authorize within {}s — disconnecting", preauth_timeout.as_secs());
+                        }
                         break;
                     }
                     Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {

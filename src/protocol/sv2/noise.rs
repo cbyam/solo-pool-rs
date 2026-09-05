@@ -193,8 +193,21 @@ fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<(
     result
 }
 
+/// Generic reader/handshake failure. Deliberately not `InvalidData`: the SV2
+/// session bans on that kind, and a decrypt failure or a truncated stream is
+/// a broken peer, not an abusive one.
 fn io_err(msg: impl std::fmt::Display) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string())
+    std::io::Error::other(msg.to_string())
+}
+
+/// The one reader failure that earns a ban: a frame header declaring more
+/// than the configured maximum. Same kind the SV1 line reader uses for an
+/// oversize line, so both protocols take the same path in the session.
+fn oversize_err(declared: usize, max_frame: usize) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("SV2 frame too large: {declared} > {max_frame} bytes"),
+    )
 }
 
 /// Run the responder side of the Noise handshake on the raw stream, returning a
@@ -242,7 +255,8 @@ pub struct NoiseReader {
     /// u24 length (up to ~16 MB); without this cap the decoder would allocate and
     /// `read_exact` that whole frame (and AEAD-decrypt it) before the post-decode
     /// `check_message_size` ever runs. Set from `security.max_message_bytes` plus
-    /// framing/AEAD overhead.
+    /// framing/AEAD overhead. Compared against the decoder's `MissingBytes`
+    /// hint, which is known before `writable()` grows the buffer to fit it.
     max_frame: usize,
 }
 
@@ -274,15 +288,15 @@ impl NoiseReader {
                 Ok(Frame::HandShake(_)) => {
                     return Err(io_err("unexpected handshake frame in transport mode"))
                 }
-                Err(codec_sv2::Error::MissingBytes(_)) => {
-                    let writable = self.decoder.writable();
-                    if writable.len() > self.max_frame {
-                        return Err(io_err(format!(
-                            "SV2 frame too large: {} > {} bytes",
-                            writable.len(),
-                            self.max_frame
-                        )));
+                Err(codec_sv2::Error::MissingBytes(missing)) => {
+                    // `next_frame` only records the hint; the allocation
+                    // happens inside `writable()`. Refuse before that call so
+                    // a 16 MB declared length costs the peer nothing but its
+                    // connection, and costs this process no memory at all.
+                    if missing > self.max_frame {
+                        return Err(oversize_err(missing, self.max_frame));
                     }
+                    let writable = self.decoder.writable();
                     self.reader.read_exact(writable).await?;
                 }
                 Err(e) => return Err(io_err(format!("noise decode error: {e:?}"))),
@@ -431,6 +445,60 @@ mod tests {
             .await
             .expect_err("expired certificate must be rejected");
         assert!(matches!(err, noise_sv2::Error::InvalidCertificate(_)));
+    }
+
+    /// Bring up a real Noise transport between a client `NoiseWriter` and a
+    /// pool-side `NoiseReader` with the given frame cap.
+    async fn transport_pair(max_frame: usize) -> (NoiseWriter, NoiseReader) {
+        let secret = generate_secret();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let state = responder_handshake_with(&mut sock, &secret, 3600)
+                .await
+                .unwrap();
+            (sock, state)
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut initiator = Initiator::without_pk().unwrap();
+        let first = initiator.step_0().unwrap();
+        client.write_all(&first).await.unwrap();
+        let mut reply = [0u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE];
+        client.read_exact(&mut reply).await.unwrap();
+        let codec = initiator.step_2(reply).unwrap();
+        let client_state = Arc::new(Mutex::new(State::with_transport_mode(codec)));
+        let (_client_rx, client_tx) = client.into_split();
+        let writer = NoiseWriter::new(client_tx, client_state, addr);
+
+        let (sock, state) = server.await.unwrap();
+        let (server_rx, _server_tx) = sock.into_split();
+        let reader = NoiseReader::new(server_rx, Arc::new(Mutex::new(state)), max_frame);
+        (writer, reader)
+    }
+
+    #[tokio::test]
+    async fn frame_within_cap_is_delivered() {
+        let (mut writer, mut reader) = transport_pair(4096).await;
+        let payload = vec![0xAB; 1000];
+        assert!(writer.send(0x1F, true, &payload).await);
+        let (msg_type, got) = reader.read().await.unwrap();
+        assert_eq!(msg_type, 0x1F);
+        assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn frame_over_cap_is_refused_as_invalid_data() {
+        // The header declares a payload far over max_frame. The reader must
+        // reject on the declared length with the kind the session bans on,
+        // rather than allocating and reading the payload first.
+        let (mut writer, mut reader) = transport_pair(4096).await;
+        let payload = vec![0xAB; 200_000];
+        assert!(writer.send(0x1F, true, &payload).await);
+        let err = reader.read().await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("too large"), "{err}");
     }
 
     fn temp_key_path(name: &str) -> std::path::PathBuf {
