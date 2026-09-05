@@ -9,6 +9,14 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- `[vardiff]` is validated at boot. An inverted `min_difficulty > max_difficulty`
+  pair previously passed config loading and then panicked inside `u64::clamp`
+  on every retarget and every `mining.suggest_difficulty`, dropping each miner
+  shortly after it connected. A zero floor, a zero target share time or
+  retarget interval, and a `max_retarget_factor` that is below 1.0 or not
+  finite are now refused with a message naming the key.
+
 ### Security
 - The mutating dashboard routes (`POST /api/settings`, which changes the
   payout address, and `POST /api/reset-best-hashrate`) now refuse requests

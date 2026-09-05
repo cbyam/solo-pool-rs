@@ -353,6 +353,51 @@ impl Config {
                  persist_authority_key = true"
             );
         }
+
+        self.validate_vardiff()
+    }
+
+    /// Reject a `[vardiff]` section that would panic or stall every session.
+    ///
+    /// `Vardiff` clamps with `u64::clamp(min, max)`, which panics when
+    /// `min > max`, and it runs on every `mining.suggest_difficulty` and every
+    /// retarget. A bad pair therefore drops each miner shortly after connect
+    /// instead of failing once at boot where the operator can see it.
+    fn validate_vardiff(&self) -> Result<()> {
+        let v = &self.vardiff;
+        if v.min_difficulty == 0 {
+            anyhow::bail!(
+                "[vardiff] min_difficulty must be >= 1: a zero difficulty has no \
+                 share target and every submission would be rejected"
+            );
+        }
+        if v.min_difficulty > v.max_difficulty {
+            anyhow::bail!(
+                "[vardiff] min_difficulty ({}) must be <= max_difficulty ({}): \
+                 clamping to an inverted range panics on every session",
+                v.min_difficulty,
+                v.max_difficulty
+            );
+        }
+        if !v.max_retarget_factor.is_finite() || v.max_retarget_factor < 1.0 {
+            anyhow::bail!(
+                "[vardiff] max_retarget_factor must be a finite number >= 1.0 (got {}): \
+                 the retarget ratio is clamped to [1/factor, factor]",
+                v.max_retarget_factor
+            );
+        }
+        if v.target_share_time_secs == 0 {
+            anyhow::bail!(
+                "[vardiff] target_share_time_secs must be >= 1: a zero target \
+                 drives every retarget to the floor"
+            );
+        }
+        if v.retarget_interval_secs == 0 {
+            anyhow::bail!(
+                "[vardiff] retarget_interval_secs must be >= 1: a zero interval \
+                 retargets on every share"
+            );
+        }
         Ok(())
     }
 }
@@ -537,6 +582,69 @@ mod tests {
         cfg.pool.extranonce1_size = 0;
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("extranonce1_size"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn inverted_vardiff_range_is_rejected() {
+        // u64::clamp(min, max) panics when min > max, and Vardiff calls it on
+        // every retarget and every suggest_difficulty. Catch it at boot.
+        let mut cfg = example_config();
+        cfg.vardiff.min_difficulty = 262_144;
+        cfg.vardiff.max_difficulty = 1024;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("min_difficulty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn equal_vardiff_floor_and_ceiling_is_allowed() {
+        // A fixed-difficulty pool is a legitimate configuration.
+        let mut cfg = example_config();
+        cfg.vardiff.min_difficulty = 4096;
+        cfg.vardiff.max_difficulty = 4096;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn zero_vardiff_floor_is_rejected() {
+        let mut cfg = example_config();
+        cfg.vardiff.min_difficulty = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("min_difficulty must be >= 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn bad_retarget_factor_is_rejected() {
+        for bad in [0.0, 0.5, -4.0, f64::NAN, f64::INFINITY] {
+            let mut cfg = example_config();
+            cfg.vardiff.max_retarget_factor = bad;
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("max_retarget_factor"),
+                "factor {bad}: unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_vardiff_timings_are_rejected() {
+        let mut cfg = example_config();
+        cfg.vardiff.target_share_time_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("target_share_time_secs"),
+            "unexpected error: {err}"
+        );
+
+        let mut cfg = example_config();
+        cfg.vardiff.retarget_interval_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("retarget_interval_secs"),
+            "unexpected error: {err}"
+        );
     }
 
     // Fixtures pass vars directly instead of mutating the process environment,
