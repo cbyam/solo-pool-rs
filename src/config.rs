@@ -234,6 +234,19 @@ pub struct MetricsConfig {
     /// authenticating proxy (Umbrel's app_proxy does this automatically).
     #[serde(default = "default_allow_runtime_settings")]
     pub allow_runtime_settings: bool,
+    /// Extra hostnames accepted in the `Host` header on mutating dashboard
+    /// routes (`POST /api/settings`, `POST /api/reset-best-hashrate`).
+    ///
+    /// Those routes refuse requests whose `Host` is a public DNS name, which
+    /// stops DNS rebinding: a web page the operator happens to open cannot
+    /// point its own domain at the pool's LAN address and change the payout
+    /// address from inside the browser. IP literals, `localhost`, single-label
+    /// names and reserved local suffixes (`.local`, `.lan`, `.home.arpa`,
+    /// `.internal`, ...) are always accepted. List any other name the
+    /// dashboard is reached by here, such as a Tailscale or split-horizon DNS
+    /// name. Compared case-insensitively, port ignored.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 fn default_allow_runtime_settings() -> bool {
@@ -327,6 +340,7 @@ impl Config {
                  persist_authority_key = true"
             );
         }
+
         Ok(())
     }
 }

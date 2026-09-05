@@ -10,6 +10,17 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Security
+- The mutating dashboard routes (`POST /api/settings`, which changes the
+  payout address, and `POST /api/reset-best-hashrate`) now refuse requests
+  whose `Host` header is a public DNS name, and requests whose `Origin` names
+  a different site. Before this, a web page opened on the LAN could re-point
+  its own domain at the pool's address after loading (DNS rebinding) and
+  redirect all future block rewards with one same-origin fetch; a plain
+  cross-site form POST could clear the best-hashrate watermark. IP literals,
+  `localhost`, single-label names and reserved local suffixes (`.local`,
+  `.lan`, `.home.arpa`, `.internal`, ...) are accepted without configuration.
+  Any other name the dashboard is reached by, such as a Tailscale name, goes
+  in the new `[metrics] allowed_hosts` list. Read-only routes are unchanged.
 - h2 bumped from 0.4.13 to 0.4.16 for RUSTSEC-2026-0258, unbounded processing
   of empty DATA frames sent by a peer. Reached transitively through hyper,
   which serves the dashboard and metrics endpoints; axum's server accepts

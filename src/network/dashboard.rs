@@ -10,7 +10,7 @@
 use crate::{mining::engine::TemplateEngine, settings::RuntimeSettings, stats::PoolStats};
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -27,7 +27,10 @@ use charming::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 use tracing::{info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,6 +51,9 @@ pub struct DashState {
     /// Base58check SV2 Noise authority public key (None when SV2 is disabled).
     /// Shown on the Connect page so miners can pin the pool identity.
     pub sv2_authority_pubkey: Option<String>,
+    /// Operator-listed hostnames accepted by `check_mutation_origin` beyond
+    /// the built-in local set. Lowercased, port stripped.
+    pub allowed_hosts: Vec<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +73,7 @@ pub async fn start(
     stratum_listen_addr: &str,
     sv2_enabled: bool,
     sv2_authority_pubkey: Option<String>,
+    allowed_hosts: &[String],
 ) {
     if addr.is_empty() {
         return;
@@ -96,6 +103,10 @@ pub async fn start(
         stratum_port,
         sv2_enabled,
         sv2_authority_pubkey,
+        allowed_hosts: allowed_hosts
+            .iter()
+            .filter_map(|h| authority_host(h))
+            .collect(),
     };
     let app = Router::new()
         .route("/", get(dashboard_html))
@@ -288,6 +299,107 @@ struct SettingsUpdate {
     coinbase_address: String,
 }
 
+// ── Request-origin guard for mutating routes ─────────────────────────────────
+//
+// The dashboard is deliberately unauthenticated on the LAN, so the only thing
+// standing between a browser and `POST /api/settings` is the browser's own
+// same-origin policy. DNS rebinding gets around that: a page the operator opens
+// at attacker.example points that name at the pool's LAN address after the page
+// has loaded, and from then on the page's own fetches land here carrying
+// `Host: attacker.example`. Refusing any Host that a public resolver could have
+// produced closes that hole. Names that cannot come out of public DNS (IP
+// literals, `localhost`, single labels, the reserved local suffixes) are
+// accepted as-is; anything else must be listed in `[metrics] allowed_hosts`.
+//
+// The Origin check handles the other browser-side vector. A form POST from a
+// foreign page carries `Origin: http://attacker.example` with the pool's real
+// Host, so requiring the two authorities to agree refuses it while leaving
+// curl and the dashboard's own fetches (same origin, or no Origin at all)
+// untouched.
+
+/// Domain suffixes that public DNS never resolves (RFC 6762 appendix G,
+/// RFC 8375, ICANN's `.internal` reservation), so a Host ending in one cannot
+/// have been rebound from outside the LAN.
+const LOCAL_SUFFIXES: &[&str] = &[
+    ".localhost",
+    ".local",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".internal",
+    ".intranet",
+    ".private",
+];
+
+/// Hostname part of an HTTP authority (`host[:port]`), lowercased, with any
+/// IPv6 brackets and trailing dot removed. `None` for an empty host.
+fn authority_host(authority: &str) -> Option<String> {
+    let authority = authority.trim();
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        // A bare IPv6 literal has several colons; only a single one is a port.
+        match authority.rsplit_once(':') {
+            Some((h, port)) if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => h,
+            _ => authority,
+        }
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether a hostname can only have come from the local network rather than a
+/// public resolver.
+fn is_local_host(host: &str) -> bool {
+    host.parse::<IpAddr>().is_ok()
+        || host == "localhost"
+        || !host.contains('.')
+        || LOCAL_SUFFIXES.iter().any(|suf| host.ends_with(suf))
+}
+
+/// Refuse a mutating request whose `Host` could be a rebound public name or
+/// whose `Origin` names a different site. `Err` carries the message returned
+/// to the client.
+fn check_mutation_origin(headers: &HeaderMap, allowed_hosts: &[String]) -> Result<(), String> {
+    let host_hdr = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| "missing Host header".to_string())?;
+    let host = authority_host(host_hdr).ok_or_else(|| "empty Host header".to_string())?;
+
+    if !is_local_host(&host) && !allowed_hosts.contains(&host) {
+        return Err(format!(
+            "Host '{host}' is not a local name; to change settings from this address \
+             add it to [metrics] allowed_hosts"
+        ));
+    }
+
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        let origin = origin
+            .to_str()
+            .map_err(|_| "unreadable Origin header".to_string())?;
+        let origin_authority = origin
+            .split_once("://")
+            .map(|(_, rest)| rest.split('/').next().unwrap_or(""))
+            .unwrap_or("");
+        if origin == "null" || !origin_authority.eq_ignore_ascii_case(host_hdr.trim()) {
+            return Err(format!(
+                "cross-origin request refused (Origin '{origin}' does not match Host '{}')",
+                host_hdr.trim()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn forbidden(error: String) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": error })),
+    )
+        .into_response()
+}
+
 /// Clear the all-time best-hashrate watermark.
 ///
 /// Gated behind `allow_runtime_settings` like every other mutating route. Exists
@@ -295,15 +407,15 @@ struct SettingsUpdate {
 /// estimate can never be reached again by an honest measurement, so without an
 /// explicit reset the dashboard would show an unreachable all-time figure for
 /// the life of the database.
-async fn reset_best_hashrate_post(State(state): State<DashState>) -> Response {
+async fn reset_best_hashrate_post(State(state): State<DashState>, headers: HeaderMap) -> Response {
     if !state.allow_settings {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "runtime settings are disabled ([metrics] allow_runtime_settings = false)"
-            })),
-        )
-            .into_response();
+        return forbidden(
+            "runtime settings are disabled ([metrics] allow_runtime_settings = false)".into(),
+        );
+    }
+    if let Err(e) = check_mutation_origin(&headers, &state.allowed_hosts) {
+        warn!(error = %e, "Refused POST /api/reset-best-hashrate");
+        return forbidden(e);
     }
 
     state.stats.reset_best_hashrate();
@@ -312,16 +424,17 @@ async fn reset_best_hashrate_post(State(state): State<DashState>) -> Response {
 
 async fn settings_post(
     State(state): State<DashState>,
+    headers: HeaderMap,
     Json(req): Json<SettingsUpdate>,
 ) -> Response {
     if !state.allow_settings {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "runtime settings are disabled ([metrics] allow_runtime_settings = false)"
-            })),
-        )
-            .into_response();
+        return forbidden(
+            "runtime settings are disabled ([metrics] allow_runtime_settings = false)".into(),
+        );
+    }
+    if let Err(e) = check_mutation_origin(&headers, &state.allowed_hosts) {
+        warn!(error = %e, "Refused POST /api/settings");
+        return forbidden(e);
     }
 
     let address = req.coinbase_address.trim();
@@ -1662,8 +1775,93 @@ setInterval(fetchBtcPrice, 60000);
 
 #[cfg(test)]
 mod tests {
-    use super::DASHBOARD_HTML;
+    use super::{authority_host, check_mutation_origin, DASHBOARD_HTML};
+    use axum::http::{header, HeaderMap, HeaderValue};
     use std::collections::HashSet;
+
+    fn headers(host: Option<&str>, origin: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(host) = host {
+            h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        }
+        if let Some(origin) = origin {
+            h.insert(header::ORIGIN, HeaderValue::from_str(origin).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn authority_host_strips_port_brackets_and_case() {
+        assert_eq!(
+            authority_host("192.168.1.5:9090").as_deref(),
+            Some("192.168.1.5")
+        );
+        assert_eq!(authority_host("[::1]:9090").as_deref(), Some("::1"));
+        assert_eq!(authority_host("[fe80::1]").as_deref(), Some("fe80::1"));
+        assert_eq!(authority_host("::1").as_deref(), Some("::1"));
+        assert_eq!(
+            authority_host("Umbrel.Local:9090").as_deref(),
+            Some("umbrel.local")
+        );
+        assert_eq!(authority_host("pool.lan.").as_deref(), Some("pool.lan"));
+        assert_eq!(authority_host(""), None);
+        assert_eq!(authority_host(":9090"), None);
+    }
+
+    #[test]
+    fn local_hosts_are_accepted_without_configuration() {
+        for host in [
+            "127.0.0.1:9090",
+            "192.168.1.5:9090",
+            "[::1]:9090",
+            "localhost:9090",
+            "umbrel:9090",
+            "umbrel.local:9090",
+            "pool.lan",
+            "pool.home.arpa:9090",
+            "nas.internal",
+        ] {
+            assert!(
+                check_mutation_origin(&headers(Some(host), None), &[]).is_ok(),
+                "{host} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn public_dns_names_are_refused_unless_listed() {
+        // The DNS-rebinding case: a public name pointed at the pool's LAN
+        // address after the attacker's page loaded.
+        let h = headers(Some("attacker.example:9090"), None);
+        let err = check_mutation_origin(&h, &[]).unwrap_err();
+        assert!(err.contains("allowed_hosts"), "unexpected error: {err}");
+
+        // Listing it (compared without port or case) opts the name in.
+        let allowed = vec!["pool.tail1234.ts.net".to_string()];
+        let h = headers(Some("Pool.Tail1234.TS.net:9090"), None);
+        assert!(check_mutation_origin(&h, &allowed).is_ok());
+    }
+
+    #[test]
+    fn origin_must_match_host_when_present() {
+        // Same-origin fetch from the dashboard itself.
+        let h = headers(Some("192.168.1.5:9090"), Some("http://192.168.1.5:9090"));
+        assert!(check_mutation_origin(&h, &[]).is_ok());
+
+        // Cross-site form POST: real Host, foreign Origin.
+        let h = headers(Some("192.168.1.5:9090"), Some("http://attacker.example"));
+        let err = check_mutation_origin(&h, &[]).unwrap_err();
+        assert!(err.contains("cross-origin"), "unexpected error: {err}");
+
+        // Opaque origin (sandboxed iframe, some redirects).
+        let h = headers(Some("192.168.1.5:9090"), Some("null"));
+        assert!(check_mutation_origin(&h, &[]).is_err());
+    }
+
+    #[test]
+    fn missing_host_is_refused() {
+        assert!(check_mutation_origin(&headers(None, None), &[]).is_err());
+    }
 
     /// Every element id the embedded JS looks up must exist in the markup —
     /// a missing one throws inside refresh() and kills the whole update loop.

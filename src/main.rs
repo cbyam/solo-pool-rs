@@ -183,6 +183,7 @@ async fn main() -> Result<()> {
         &config.pool.listen_addr,
         config.sv2.enabled,
         sv2_authority_pubkey,
+        &config.metrics.allowed_hosts,
     )
     .await;
 
