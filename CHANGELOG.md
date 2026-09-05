@@ -10,6 +10,12 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Fixed
+- An SV2 `OpenExtendedMiningChannel` that is refused for asking more
+  extranonce than the pool reserves now leaves the session untouched. It
+  used to clear the worker identity and consume an authorization slot before
+  checking the request, so a refused re-open on a live channel left the
+  channel open with no worker: shares validated under "?", and the stats
+  maps marked the real worker offline.
 - Duplicate-share detection now keys on the 80-byte header hash instead of
   the submitted fields. The old key included the job id, but the 30 s ntime
   refresh mints a new job id over byte-identical template content and the

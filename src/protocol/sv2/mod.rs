@@ -515,18 +515,13 @@ async fn handle_open_extended(
         return Flow::Disconnect(format!("invalid user_identity: {e}"));
     }
 
-    // Only a *new* identity counts against the cap or touches the stats maps
-    // (mirrors the SV1 authorize path).
-    let is_new_identity = session.worker.as_deref() != Some(open.user_identity.as_str());
-    if is_new_identity {
-        if !session.guard.record_new_authorization() {
-            return Flow::Disconnect("too many worker identities".into());
-        }
-        if let Some(prev) = session.worker.take() {
-            session.stats.mark_worker_offline(&prev);
-        }
-    }
-
+    // Validate the request in full before touching any session state. A
+    // rejected open must leave the session exactly as it was: this handler
+    // also serves re-opens on a live channel, and an earlier version cleared
+    // `worker` and burned an authorization slot first, so a refused re-open
+    // left the channel open with no worker (shares then validated under
+    // "?") and the stats maps marked the real worker offline.
+    //
     // Grant the device its requested extranonce out of the coinbase's reserved
     // total; the remaining bytes become the pool prefix. This is independent of
     // the SV1 split, so SV1 miners (e.g. the Avalon Nano) keep their smaller
@@ -549,6 +544,18 @@ async fn handle_open_extended(
             Err(e) => error!("encode OpenMiningChannelError: {e}"),
         }
         return Flow::Continue;
+    }
+
+    // Only a *new* identity counts against the cap or touches the stats maps
+    // (mirrors the SV1 authorize path).
+    let is_new_identity = session.worker.as_deref() != Some(open.user_identity.as_str());
+    if is_new_identity {
+        if !session.guard.record_new_authorization() {
+            return Flow::Disconnect("too many worker identities".into());
+        }
+        if let Some(prev) = session.worker.take() {
+            session.stats.mark_worker_offline(&prev);
+        }
     }
 
     // Grant exactly what the device asked (min 1), leaving the rest as prefix.
@@ -912,5 +919,66 @@ async fn reject(session: &Sv2Session, writer: &mut NoiseWriter, seq: u32, code: 
             Flow::Continue
         }
         Err(e) => Flow::Disconnect(format!("encode SubmitSharesError: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binary_sv2::{Str0255, U256};
+    use mining_sv2::OpenExtendedMiningChannel;
+
+    fn example_config() -> Config {
+        let src = include_str!("../../../config.toml.example");
+        let value: toml::Value = toml::from_str(src).unwrap();
+        value.try_into().unwrap()
+    }
+
+    fn open_payload(identity: &str, min_extranonce_size: u16) -> Vec<u8> {
+        binary_sv2::to_bytes(OpenExtendedMiningChannel {
+            request_id: 1,
+            user_identity: Str0255::try_from(identity.to_string()).unwrap(),
+            nominal_hash_rate: 1.0e12,
+            max_target: U256::from([0xffu8; 32]),
+            min_extranonce_size,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_refused_reopen_leaves_the_live_channel_untouched() {
+        let cfg = example_config();
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let stats = PoolStats::new_with_store(None);
+        let mut session = Sv2Session::new(peer, &cfg, vec![0; 4], stats);
+        session.setup_done = true;
+        let total = session.extranonce_total;
+        let (mut writer, _reader) = noise::tests::transport_pair(65_536).await;
+
+        // A device opens a channel with a request the pool can grant.
+        let mut ok = open_payload("bc1qexample.rig1", total as u16);
+        assert!(matches!(
+            handle_open_extended(&mut session, &mut writer, &mut ok).await,
+            Flow::Continue
+        ));
+        assert!(session.channel_open);
+        assert_eq!(session.worker.as_deref(), Some("bc1qexample.rig1"));
+        let channel_id = session.channel_id;
+
+        // It re-opens under a new identity asking for more extranonce than
+        // exists. The pool refuses; the refusal must not have touched the
+        // channel that is still mining.
+        let mut bad = open_payload("bc1qexample.rig2", total as u16 + 1);
+        assert!(matches!(
+            handle_open_extended(&mut session, &mut writer, &mut bad).await,
+            Flow::Continue
+        ));
+        assert!(session.channel_open, "live channel must stay open");
+        assert_eq!(
+            session.worker.as_deref(),
+            Some("bc1qexample.rig1"),
+            "worker identity must survive a refused re-open"
+        );
+        assert_eq!(session.channel_id, channel_id);
     }
 }

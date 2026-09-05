@@ -361,7 +361,7 @@ impl NoiseWriter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use noise_sv2::{Initiator, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE};
     use tokio::net::TcpListener;
@@ -449,7 +449,7 @@ mod tests {
 
     /// Bring up a real Noise transport between a client `NoiseWriter` and a
     /// pool-side `NoiseReader` with the given frame cap.
-    async fn transport_pair(max_frame: usize) -> (NoiseWriter, NoiseReader) {
+    pub(crate) async fn transport_pair(max_frame: usize) -> (NoiseWriter, NoiseReader) {
         let secret = generate_secret();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
