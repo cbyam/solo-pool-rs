@@ -129,22 +129,56 @@ fn load_or_generate_secret(path: &std::path::Path) -> Result<[u8; 32]> {
     }
 }
 
+/// Sibling scratch file for an in-progress key write.
+fn key_tmp_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+/// Write the key so that `path` only ever holds a complete key or nothing.
+///
+/// The contents go to a sibling `.tmp` (owner-only, fsynced) and are then
+/// linked into place. A crash between create and write used to leave a
+/// zero-length or partial file at `path`, which parses as a corrupt key and
+/// fails every later boot until someone deletes it by hand. `hard_link`
+/// rather than `rename` so an existing key is never overwritten: the caller
+/// only writes after seeing NotFound, and this keeps that check honest
+/// against a racing writer.
 #[cfg(unix)]
 fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(contents.as_bytes())?;
-    f.write_all(b"\n")
+    let tmp = key_tmp_path(path);
+    // A leftover from an earlier interrupted write is not a key; clear it so
+    // create_new below succeeds.
+    let _ = std::fs::remove_file(&tmp);
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        std::fs::hard_link(&tmp, path)
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 #[cfg(not(unix))]
 fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    std::fs::write(path, format!("{contents}\n"))
+    let tmp = key_tmp_path(path);
+    let _ = std::fs::remove_file(&tmp);
+    let result =
+        std::fs::write(&tmp, format!("{contents}\n")).and_then(|_| std::fs::hard_link(&tmp, path));
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 fn io_err(msg: impl std::fmt::Display) -> std::io::Error {
@@ -414,6 +448,36 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "key file must be owner-only");
         }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn key_write_leaves_no_scratch_file_and_survives_a_stale_one() {
+        let path = temp_key_path("atomic.key");
+        let tmp = key_tmp_path(&path);
+        std::fs::remove_file(&path).ok();
+        // Debris from a write interrupted before it reached the key path.
+        std::fs::write(&tmp, "partial").unwrap();
+
+        let secret = load_or_generate_secret(&path).unwrap();
+        assert!(!tmp.exists(), "scratch file must be gone after a write");
+        assert!(path.exists());
+        // The key that landed is the one returned, not the debris.
+        assert_eq!(load_or_generate_secret(&path).unwrap(), secret);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn key_write_never_overwrites_an_existing_file() {
+        // Simulates a racing writer landing between the NotFound check and
+        // the write: the existing key must win and the call must fail.
+        let path = temp_key_path("existing.key");
+        std::fs::write(&path, "keep-me\n").unwrap();
+        let err = write_owner_only(&path, "new-key").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep-me\n");
+        assert!(!key_tmp_path(&path).exists());
         std::fs::remove_file(&path).ok();
     }
 
