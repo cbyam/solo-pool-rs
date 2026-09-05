@@ -140,8 +140,31 @@ pub async fn start(
 // Route handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-async fn dashboard_html() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
+/// Content-Security-Policy for the dashboard page.
+///
+/// The page is the only thing on this origin that can call the mutating
+/// routes from a browser, so what it may load is what an attacker would
+/// need to control. Scripts come from this origin or jsDelivr (and the
+/// ECharts tag also pins its hash with `integrity`); XHR goes to this origin
+/// or CoinGecko for the market card; nothing may frame the page. Inline
+/// script and style stay allowed because the page is one embedded file with
+/// inline handlers and styles.
+const DASHBOARD_CSP: &str = "default-src 'self'; \
+    script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; \
+    style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data:; \
+    connect-src 'self' https://api.coingecko.com; \
+    font-src 'self'; \
+    object-src 'none'; \
+    base-uri 'self'; \
+    form-action 'self'; \
+    frame-ancestors 'none'";
+
+async fn dashboard_html() -> impl IntoResponse {
+    (
+        [(header::CONTENT_SECURITY_POLICY, DASHBOARD_CSP)],
+        Html(DASHBOARD_HTML),
+    )
 }
 
 async fn favicon() -> impl IntoResponse {
@@ -578,7 +601,7 @@ const DASHBOARD_HTML: &str = concat!(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
 <title>solo-pool-rs</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" integrity="sha384-Mx5lkUEQPM1pOJCwFtUICyX45KNojXbkWdYhkKUKsbv391mavbfoAmONbzkgYPzR" crossorigin="anonymous"></script>
 <style>
 :root {
   --bg: #0a0a0b;
@@ -1779,7 +1802,7 @@ setInterval(fetchBtcPrice, 60000);
 
 #[cfg(test)]
 mod tests {
-    use super::{authority_host, check_mutation_origin, DASHBOARD_HTML};
+    use super::{authority_host, check_mutation_origin, DASHBOARD_CSP, DASHBOARD_HTML};
     use axum::http::{header, HeaderMap, HeaderValue};
     use std::collections::HashSet;
 
@@ -1865,6 +1888,51 @@ mod tests {
     #[test]
     fn missing_host_is_refused() {
         assert!(check_mutation_origin(&headers(None, None), &[]).is_err());
+    }
+
+    /// Every external script must pin its bytes. A CDN that serves something
+    /// else, or an on-path rewrite, then fails to load instead of running
+    /// with this origin's access to the mutating routes.
+    #[test]
+    fn every_external_script_carries_an_integrity_hash() {
+        for (idx, _) in DASHBOARD_HTML.match_indices("<script src=\"http") {
+            let tag = &DASHBOARD_HTML[idx..idx + DASHBOARD_HTML[idx..].find('>').unwrap()];
+            assert!(
+                tag.contains("integrity=\"sha384-"),
+                "unpinned script: {tag}"
+            );
+            assert!(
+                tag.contains("crossorigin=\"anonymous\""),
+                "SRI needs CORS: {tag}"
+            );
+        }
+    }
+
+    /// Every host the page loads from must be allowed by the policy, and the
+    /// policy must not have become a one-line blob with a missing separator.
+    #[test]
+    fn csp_covers_every_host_the_page_uses() {
+        for directive in [
+            "script-src",
+            "connect-src",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+        ] {
+            assert!(DASHBOARD_CSP.contains(directive), "missing {directive}");
+        }
+        for host in ["https://cdn.jsdelivr.net", "https://api.coingecko.com"] {
+            assert!(
+                DASHBOARD_HTML.contains(host),
+                "test is stale: {host} no longer used"
+            );
+            assert!(DASHBOARD_CSP.contains(host), "CSP blocks {host}");
+        }
+        // Each directive is ';'-separated with no stray line-continuation
+        // whitespace inside a token.
+        assert!(
+            !DASHBOARD_CSP.contains("  "),
+            "double space in CSP: {DASHBOARD_CSP:?}"
+        );
     }
 
     /// Every element id the embedded JS looks up must exist in the markup —
