@@ -56,7 +56,7 @@ jobs:
             url: https://bitcoincore.org/bin/bitcoin-core-31.1/bitcoin-31.1-x86_64-linux-gnu.tar.gz
             dir: bitcoin-31.1
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install libzmq
         run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config

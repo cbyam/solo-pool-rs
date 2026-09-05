@@ -18,7 +18,7 @@ jobs:
     name: Test, lint & build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # tmq → zmq → libzmq: required to build and link.
       - name: Install libzmq
