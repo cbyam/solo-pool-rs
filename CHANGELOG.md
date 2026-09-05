@@ -10,6 +10,10 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Changed
+- The dashboard's worker table is built with DOM calls and `textContent`
+  instead of HTML strings. Worker names are miner-supplied; building nodes
+  removes the escaping step rather than keeping it correct, and a test now
+  refuses any `innerHTML` in the page.
 - The regtest block-acceptance test grinds to the job's own network target
   instead of a difficulty-1 share. The pool checks the network target before
   the share target, so on regtest about one hash in two is a block and the

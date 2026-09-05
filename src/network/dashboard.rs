@@ -1466,37 +1466,53 @@ async function refresh() {
     document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;
     document.getElementById('v-workers-degraded').textContent = 'Degraded: ' + degradedCount;
 
-    // Workers table
+    // Workers table. Rows are built with DOM calls and textContent, never
+    // from HTML strings: worker names are miner-supplied, and building nodes
+    // means there is no escaping step to get wrong or forget.
     const tbody = document.getElementById('workers-tbody');
+    const rows = [];
     if (workers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="12" class="empty-row">No connected workers</td></tr>';
+      const tr = document.createElement('tr');
+      const td = cell('No connected workers', 'empty-row');
+      td.colSpan = 12;
+      tr.appendChild(td);
+      rows.push(tr);
     } else {
-      tbody.innerHTML = workers
+      workers
         .sort((a, b) => b.hashrate_60s_hps - a.hashrate_60s_hps)
-        .map(w => {
+        .forEach(w => {
           const workerName = w.worker.includes('.') ? w.worker.split('.')[1] : w.worker;
           const nowSec = Math.floor(Date.now() / 1000);
           const lastShareAgo = w.last_submit_ts > 0 ? fmtUptime(nowSec - w.last_submit_ts) : '—';
           const uptime = w.connected_ts > 0 ? fmtUptime(nowSec - w.connected_ts) : '—';
           const mode = (w.protocol || 'sv1').toUpperCase();
           const led = workerLed(w, nowSec);
-          return `<tr>
-            <td>${escHtml(workerName)}</td>
-            <td class="col-led"><span class="led ${led.cls}" title="${led.title}"></span></td>
-            <td>${mode}</td>
-            <td>${fmtDiff(w.current_vardiff)}</td>
-            <td>${fmtHr(w.hashrate_60s_hps, false)}</td>
-            <td>${fmtHr(w.hashrate_3h_hps, false)}</td>
-            <td>${fmtHr(w.hashrate_24h_hps, false)}</td>
-            <td>${w.shares_accepted.toLocaleString()}</td>
-            <td title="${rejectBreakdown(w)}">${w.shares_rejected.toLocaleString()}</td>
-            <td>${fmtDiff(w.best_share_difficulty)}</td>
-            <td>${lastShareAgo}</td>
-            <td>${uptime}</td>
-          </tr>`;
-        })
-        .join('');
+
+          const ledCell = cell('', 'col-led');
+          const dot = document.createElement('span');
+          dot.className = 'led ' + led.cls;
+          dot.title = led.title;
+          ledCell.appendChild(dot);
+
+          const tr = document.createElement('tr');
+          [
+            cell(workerName),
+            ledCell,
+            cell(mode),
+            cell(fmtDiff(w.current_vardiff)),
+            cell(fmtHr(w.hashrate_60s_hps, false)),
+            cell(fmtHr(w.hashrate_3h_hps, false)),
+            cell(fmtHr(w.hashrate_24h_hps, false)),
+            cell(w.shares_accepted.toLocaleString()),
+            cell(w.shares_rejected.toLocaleString(), null, rejectBreakdown(w)),
+            cell(fmtDiff(w.best_share_difficulty)),
+            cell(lastShareAgo),
+            cell(uptime),
+          ].forEach(td => tr.appendChild(td));
+          rows.push(tr);
+        });
     }
+    tbody.replaceChildren(...rows);
 
     document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
     lastStatsOk = Date.now();
@@ -1576,8 +1592,13 @@ function attachTimeframeSelector() {
   });
 }
 
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+/// A table cell with text content (never markup), optional class and title.
+function cell(text, cls, title) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  if (cls) td.className = cls;
+  if (title) td.title = title;
+  return td;
 }
 
 const PAIR_KEY = 'btcPair';
@@ -1888,6 +1909,22 @@ mod tests {
     #[test]
     fn missing_host_is_refused() {
         assert!(check_mutation_origin(&headers(None, None), &[]).is_err());
+    }
+
+    /// Miner-supplied strings (worker names) reach the page through the
+    /// workers table. It is built with DOM calls and textContent, so there
+    /// is no HTML-string path for them to travel and no escaping to keep
+    /// right. Keep it that way: no innerHTML anywhere in the page.
+    #[test]
+    fn page_never_assigns_inner_html() {
+        assert!(
+            !DASHBOARD_HTML.contains("innerHTML"),
+            "build nodes with textContent instead of assigning innerHTML"
+        );
+        assert!(
+            !DASHBOARD_HTML.contains("escHtml"),
+            "escHtml was removed on purpose"
+        );
     }
 
     /// Every external script must pin its bytes. A CDN that serves something
