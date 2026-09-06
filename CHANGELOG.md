@@ -15,6 +15,11 @@ everything else bumps the **patch** version.
   so a file-logging install has bounded disk use without logrotate. The
   systemd unit now ships with `LogsDirectory=solo-pool-rs` enabled, so file
   logging under the unit is just `log_dir = "/var/log/solo-pool-rs"`.
+- `docs/stable-surface.md`, a draft of the 1.0 stability promise: the
+  configuration keys, wire behaviour, HTTP routes and fields, metrics, files
+  on disk, packaging contract and process behaviour it will cover, what it
+  excludes, the deferred stances, how changes are classified after 1.0, and
+  the list of places where the code or docs still disagree with the text.
 - Round effort on the dashboard: a bar under the pool hashrate showing the
   credited share difficulty submitted since the last block this pool found,
   as a share of one average block's work at the current network difficulty.
