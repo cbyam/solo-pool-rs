@@ -204,9 +204,9 @@ other miners' blocks, is what strands a node.
 
 As of August 2026 Knots has not announced dropping mandatory enforcement, so
 hold node upgrades at 20260507 until a release without it exists. You can
-verify which side your node is on yourself: the dashboard's BIP110/RDTS card
-reads version bit 4 live from the current template, and a stranded node also
-shows a frozen tip height (compare `getblockcount` against any block explorer).
+verify which side your node is on yourself: a stranded node shows a frozen tip
+height (compare `getblockcount`, or the dashboard's Chain tip card, against any
+block explorer).
 
 ---
 

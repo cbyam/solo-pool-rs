@@ -213,7 +213,7 @@ const LOGO_LIGHT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox
 async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsSnapshot> {
     let mut snap = state.stats.snapshot();
     // Template version comes from the engine, not PoolStats, so it is live
-    // even with no miners connected. Bit 4 drives the BIP110/RDTS card.
+    // even with no miners connected.
     if let Some(job) = state.engine.current_job().await {
         snap.template_version = job.version;
     }
@@ -1112,11 +1112,6 @@ tr:last-child td { border-bottom: none; }
       <div class="sub" id="v-node-sub" title="The pool rebuilds its block template on every new block and every 30 s; an old template means bitcoind's RPC is not answering"><span id="v-node-led" class="led led-off led-sm"></span><span id="v-node-text">Node: &mdash;</span></div>
     </div>
     <div class="kpi">
-      <div class="label">BIP110 / RDTS</div>
-      <div class="val" id="v-bip110" style="font-size:0.92rem;" title="Whether block templates from your Bitcoin node signal the BIP110 (RDTS) soft fork proposal by setting version bit 4. The pool copies the block version from your node, so this is decided by your node software, not by the pool.">&mdash;</div>
-      <div class="sub">signal &middot; version bit 4, from your node</div>
-    </div>
-    <div class="kpi">
       <div class="label" style="display:flex; justify-content:space-between; align-items:center;">Market
         <select id="pair-select" title="Quote currency">
           <option selected>USD</option>
@@ -1664,16 +1659,6 @@ async function refresh() {
     const adjEl = document.getElementById('v-net-adj-pct');
     adjEl.textContent = 'Est. move: ' + adj.text;
     adjEl.style.color = adj.color;
-    // BIP110/RDTS: bit 4 of the template version. 0 means no job broadcast yet.
-    const bipEl = document.getElementById('v-bip110');
-    if (d.template_version) {
-      const signaling = (d.template_version & (1 << 4)) !== 0;
-      bipEl.textContent = signaling ? 'Signaling' : 'Not signaling';
-      bipEl.style.color = signaling ? 'var(--accent)' : '';
-    } else {
-      bipEl.textContent = '—';
-      bipEl.style.color = '';
-    }
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
     document.getElementById('server-uptime').textContent = 'Uptime ' + fmtUptime(d.uptime_secs);
