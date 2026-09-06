@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-09-06
+
 ### Fixed
 - The dashboard's chain tip, coinbase value, transaction count and network
   difficulty no longer sit at zero until a miner connects. Sessions used to
@@ -827,7 +829,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.7...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.8...HEAD
+[0.6.8]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.7...v0.6.8
 [0.6.7]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.4...v0.6.5
