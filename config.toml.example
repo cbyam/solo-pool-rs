@@ -25,7 +25,9 @@ listen_addr = "0.0.0.0:3333"
 # Your Bitcoin address — ALL block rewards go here (solo = 100%)
 coinbase_address = "bc1qyouraddresshere"
 
-# Tag embedded in the coinbase scriptSig (max ~20 bytes)
+# Tag embedded in the coinbase scriptSig. The scriptSig is capped at 100 bytes
+# including the height push and the extranonce, so about 90 bytes are
+# available at the default extranonce size; longer is refused at boot.
 coinbase_tag = "/solo-pool-rs/"
 
 # Optional safety assertion. The pool always detects the actual network from
@@ -156,10 +158,12 @@ max_retarget_factor = 4.0
 # Rate-limit: max new TCP connections per IP per minute. Count every device
 # that shares one address (a proxy, a rack behind NAT) and add headroom for a
 # power-cycle reconnect burst; 8 suits a rack of a few miners. Exceeding it
-# refuses the connection and bans the address for ban_duration_secs.
+# refuses the connection; it never bans.
 max_connections_per_ip = 5
 
-# Max share submissions per second per connection before banning
+# Max inbound messages per second per connection (token bucket). Exceeding it
+# disconnects the session; it never bans. There is no "disabled" value: 0
+# rejects every message.
 max_shares_per_sec = 500
 
 # How long (seconds) an address stays banned after an unambiguous protocol
@@ -193,13 +197,14 @@ max_authorizations_per_session = 8
 # Prometheus metrics HTTP endpoint (empty string to disable)
 prometheus_addr = "0.0.0.0:9090"
 
-# Optional SQLite file for persisting all-time best stats across restarts.
-# Also stores dashboard-saved settings (payout address / network).
-# Leave empty or omit to disable.
+# Optional SQLite file for state that must survive restarts: all-time best
+# share and hashrate, every block found and the running round, six months of
+# hashrate history, and the payout address saved from the dashboard (which
+# then wins over coinbase_address above). Leave empty or omit to disable.
 stats_db_path = "pool_stats.sqlite"
 
-# Allow changing the payout address / network from the dashboard Settings
-# page. The dashboard has no authentication of its own: on an untrusted LAN
+# Allow changing the payout address from the dashboard Settings page (the
+# network is read from the node and cannot be changed). The dashboard has no authentication of its own: on an untrusted LAN
 # either set this to false or front the dashboard with an authenticating
 # proxy (Umbrel's app_proxy does this automatically).
 allow_runtime_settings = true

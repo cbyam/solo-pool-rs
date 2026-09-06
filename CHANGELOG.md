@@ -9,6 +9,20 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- Documentation brought in line with the code, from the review that produced
+  `docs/stable-surface.md`: SECURITY.md names 0.6.x as the supported line;
+  the README's systemd section installs through `packaging/install.sh` and
+  lists the three state paths the hardened unit needs; the Docker quick
+  start mounts a data volume and says which paths to point at it; the
+  feature table no longer claims `minimum-difficulty` or
+  `subscribe-extranonce`; the route table gains the reset route and the
+  full local-suffix list; the metrics table shows the `worker` label and
+  the 24-hour series eviction; the image tag is documented without a `v`
+  and the release notes now print the right `docker pull` line; the config
+  example no longer says rate limits ban, and describes the coinbase-tag
+  limit and the stats database accurately.
+
 ## [0.6.7] - 2026-09-06
 
 ### Added

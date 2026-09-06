@@ -64,7 +64,7 @@ and exercised on every commit, so you can check it rather than trust it.
 | Category | Detail |
 |---|---|
 | Protocol | Stratum V1 (JSON-RPC over TCP) **and** Stratum V2 (Extended Channel, Noise-encrypted), auto-detected per connection on one port |
-| ASIC extensions | SV1: `version-rolling` (BIP320), `minimum-difficulty`, `subscribe-extranonce`, `mining.configure`. SV2: extended channel with BIP320 version rolling |
+| ASIC extensions | SV1: `mining.configure` with `version-rolling` (BIP320, mask `1fffe000`), `mining.suggest_difficulty` as a starting difficulty. SV2: extended channel with BIP320 version rolling |
 | Auth | `mining.authorize` (any worker name accepted, solo pool) |
 | Difficulty | Per-miner vardiff with configurable target share time, retarget interval, and max adjustment factor |
 | Block template | `getblocktemplate` via Bitcoin RPC, ZMQ `hashblock` push (RPC poll fallback) |
@@ -90,12 +90,20 @@ $EDITOR config.toml          # set coinbase_address + bitcoin_rpc
 #    via a supplementary group: pass your node group's GID (find it with
 #    `stat -c %g "$HOME/.bitcoin/.cookie"`) and set rpccookieperms=group in
 #    bitcoin.conf so the cookie is group-readable.
+mkdir -p data && sudo chown 10001:10001 data   # persistent state, owned by the image's uid
 docker run -d --name solo-pool-rs --network host \
   --group-add "$(stat -c %g "$HOME/.bitcoin/.cookie")" \
   -v "$PWD/config.toml:/app/config.toml:ro" \
   -v "$HOME/.bitcoin/.cookie:/home/solo-pool/.bitcoin/.cookie:ro" \
+  -v "$PWD/data:/app/data" \
   ghcr.io/cbyam/solo-pool-rs:latest
 ```
+
+In `config.toml`, point the three files that must outlive the container at
+that volume: `stats_db_path = "data/pool_stats.sqlite"`,
+`found_block_dir = "data/found-blocks"`, and under `[sv2]`
+`authority_key_file = "data/sv2-authority.key"`. With the example's relative
+defaults they land in `/app` and vanish when the container is re-created.
 
 Or with Compose, see [`docker-compose.yml`](docker-compose.yml):
 
@@ -135,10 +143,17 @@ For a bare-metal install alongside your node, a hardened unit is provided at
 [`packaging/systemd/solo-pool-rs.service`](packaging/systemd/solo-pool-rs.service).
 
 ```bash
-# 1. Install the binary and config to standard locations
-sudo install -Dm755 target/release/solo-pool-rs /usr/local/bin/solo-pool-rs
+# 1. Install the binary and config. The install script keeps each version
+#    under /usr/local/lib/solo-pool-rs/<version>/ and swaps a symlink at
+#    /usr/local/bin/solo-pool-rs, so `--rollback` relinks the previous one
+#    and a stray `cargo build` never changes what the service runs.
+cargo build --release && sudo packaging/install.sh
 sudo install -Dm644 config.toml /etc/solo-pool-rs/config.toml      # then edit it
-#    Set stats_db_path = "/var/lib/solo-pool-rs/pool_stats.sqlite" in the config.
+#    The unit runs under ProtectSystem=strict with /var/lib/solo-pool-rs as its
+#    writable state directory, so set these three paths in the config:
+#      stats_db_path      = "/var/lib/solo-pool-rs/pool_stats.sqlite"
+#      found_block_dir    = "/var/lib/solo-pool-rs/found-blocks"
+#      authority_key_file = "/var/lib/solo-pool-rs/sv2-authority.key"   # under [sv2]
 
 # 2. Create a dedicated system user
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin solo-pool
@@ -157,7 +172,15 @@ sudo install -Dm644 packaging/systemd/solo-pool-rs.service \
 sudo systemctl daemon-reload
 sudo systemctl enable --now solo-pool-rs
 journalctl -u solo-pool-rs -f
+
+# Upgrading later: build, install, restart. Roll back with `--rollback`.
+cargo build --release && sudo packaging/install.sh && sudo systemctl restart solo-pool-rs
 ```
+
+The unit starts after `bitcoind.service` but does not wait for its RPC to
+answer; a node that is still loading makes the pool exit and systemd retry
+every 5 s, three times a minute. If that bites at boot, uncomment the
+`ExecStartPre` readiness probe in the unit.
 
 Logs go to the journal by default (`log_dir` empty). For files instead, set
 `log_dir = "/var/log/solo-pool-rs"`: the unit's `LogsDirectory=` creates that
@@ -313,16 +336,18 @@ With `prometheus_addr` set (default `0.0.0.0:9090`), an HTTP server exposes:
 | `GET /stats` | JSON snapshot of current pool state |
 | `GET /history` | JSON hashrate history (`?since=<unix-ts>` for increments) |
 | `GET /chart` | Hashrate chart as an ECharts option spec (`?window=36h\|1w\|1m\|6m`) |
-| `GET /api/info` | Pool version, stratum port, SV2 status and authority pubkey |
+| `GET /api/info` | Pool version, stratum port, SV2 status and authority pubkey, network, payout address |
 | `GET/POST /api/settings` | Read or change the payout address at runtime (POST requires `[metrics] allow_runtime_settings = true` and a local `Host`, see below) |
+| `POST /api/reset-best-hashrate` | Clear the all-time best-hashrate watermark (same guards as the settings POST) |
 | `GET /metrics` | Prometheus text exposition |
 
 The two `POST` routes (`/api/settings` and `/api/reset-best-hashrate`) refuse
 requests whose `Host` header is a public DNS name, or whose `Origin` names a
 different site. This stops DNS rebinding and cross-site form posts from
 changing the payout address through a browser on the LAN. IP addresses,
-`localhost`, single-label names and local-only suffixes (`.local`, `.lan`,
-`.home.arpa`, `.internal`) work without configuration. If you reach the
+`localhost`, single-label names and local-only suffixes (`.localhost`,
+`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.intranet`,
+`.private`) work without configuration. If you reach the
 dashboard by any other name, such as a Tailscale name, add it to
 `[metrics] allowed_hosts`.
 
@@ -331,11 +356,17 @@ Key Prometheus metrics:
 | Metric | Description |
 |---|---|
 | `pool_connected_miners` | Current live connections |
-| `pool_shares_accepted_total` | Lifetime valid shares |
-| `pool_shares_rejected_total{reason}` | Rejected shares by reason |
-| `pool_blocks_found_total` | 🏆 Blocks found and submitted |
+| `pool_shares_accepted_total{worker}` | Lifetime valid shares |
+| `pool_shares_rejected_total{reason,worker}` | Rejected shares by reason |
+| `pool_blocks_found_total` | 🏆 Blocks found and accepted by the node |
 | `pool_hashrate_estimated_hps{worker}` | Per-worker estimated H/s |
 | `pool_job_height` | Current template block height |
+
+The full list is in [`docs/stable-surface.md`](docs/stable-surface.md). Any
+series not written for 24 hours is dropped from the exposition, which bounds
+the `worker` label; a scraper sees an idle worker's series disappear and a
+counter such as `pool_blocks_found_total` restart from zero after a quiet
+day.
 
 ---
 
@@ -362,7 +393,7 @@ bitcoin/template.rs      - GBT → StratumJob (coinbase, merkle branch, job ID)
 bitcoin/rpc.rs           - Bitcoin RPC (cookie auth, getblocktemplate, submitblock)
 bitcoin/zmq.rs           - ZMQ hashblock listener + RPC poll fallback
 
-network/dashboard.rs     - HTTP :9090 - dashboard, /stats JSON, /metrics
+network/dashboard.rs     - HTTP (prometheus_addr) - dashboard, /stats JSON, /metrics
 ```
 
 The mining engine, validator, vardiff, and template code are protocol-agnostic; SV1 and SV2 share the same job pipeline.
@@ -422,11 +453,16 @@ Pushing a `v*` tag triggers two workflows automatically:
 - **`release.yml`** builds Linux x86_64 and aarch64 binaries on native runners,
   packages a tarball per architecture (binary + `config.toml.example` + README),
   and publishes a GitHub Release with auto-generated notes.
-- **`docker.yml`** builds and pushes a multi-arch (amd64 + arm64) image to
-  `ghcr.io/cbyam/solo-pool-rs:<tag>`.
+- **`docker.yml`** builds and pushes a multi-arch (amd64 + arm64) image
+  tagged `X.Y.Z`, `X.Y` and `latest` (no `v` prefix; `v0.6.7` becomes
+  `ghcr.io/cbyam/solo-pool-rs:0.6.7`). Every push to `main` also publishes
+  `:edge`.
 
 So the only manual steps are the changelog promotion, the version bump, and the
-tag push. CI produces the artifacts and the GitHub Release.
+tag push. CI produces the artifacts and the GitHub Release. After the image is
+published, bump the pin in the
+[community app store](https://github.com/cbyam/umbrel-app-store) to the new
+version and its index digest.
 
 ---
 

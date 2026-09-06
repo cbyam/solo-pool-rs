@@ -6,8 +6,9 @@ up, the conventions the project follows, and what a pull request needs to pass.
 ## Reporting issues
 
 - **Bugs and feature requests:** open a GitHub issue. Include your version
-  (`solo-pool-rs --version` or the release tag), relevant config (redact your
-  address/credentials), and log excerpts.
+  (the release tag, the dashboard footer, or the `starting version=` line in
+  the log), relevant config (redact your address/credentials), and log
+  excerpts.
 - **Security vulnerabilities:** do **not** open a public issue. Follow the
   private reporting process in [SECURITY.md](SECURITY.md).
 
