@@ -66,6 +66,15 @@ everything else bumps the **patch** version.
   stays in `/stats` as raw data.
 
 ### Fixed
+- The "Tip changed but ZMQ has been silent" warning no longer fires on a
+  healthy node. The RPC poll runs every second, and the node's hashblock
+  notification leaves through its validation callback queue, which can lag
+  the RPC-visible tip by a few seconds when busy. When the poll won that
+  race the old check compared against the previous block's ZMQ message and
+  declared the subscription dead. The poll now gives ZMQ ten seconds to
+  deliver its own notification before warning, and the rpc-fallback metric
+  counts only genuine silence. The new-block signal is unchanged and still
+  goes out on the first sighting.
 - The hashrate chart shows downtime as a gap instead of a dip. The recorder
   wrote a sample at boot, before any miner had reconnected, and the chart
   joined it to the shutdown sample as a slope down to zero that never
