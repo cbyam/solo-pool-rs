@@ -392,7 +392,8 @@ commit/PR conventions.
 
 Versioning follows [SemVer](https://semver.org/). While pre-1.0, breaking
 changes bump the **minor** version and everything else bumps the **patch**
-version. Changes are recorded in [CHANGELOG.md](CHANGELOG.md) under
+version. What 1.0 will promise, and what it will not, is drafted in
+[docs/stable-surface.md](docs/stable-surface.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md) under
 `[Unreleased]` as they merge.
 
 To cut a release (e.g. `v0.3.1`):
