@@ -10,6 +10,11 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
+- `[logging] log_max_files` (default 14): how many daily log files to keep
+  when `log_dir` is set. The oldest is deleted when a new day's file opens,
+  so a file-logging install has bounded disk use without logrotate. The
+  systemd unit now ships with `LogsDirectory=solo-pool-rs` enabled, so file
+  logging under the unit is just `log_dir = "/var/log/solo-pool-rs"`.
 - Round effort on the dashboard: a bar under the pool hashrate showing the
   credited share difficulty submitted since the last block this pool found,
   as a share of one average block's work at the current network difficulty.
@@ -61,6 +66,9 @@ everything else bumps the **patch** version.
   stays in `/stats` as raw data.
 
 ### Fixed
+- `log_dir = ""` logs to stdout as the config comment promised. An empty or
+  whitespace-only value was `Some("")`, not unset, so the pool created a
+  rotating log file in its working directory.
 - The hashrate chart shows downtime as a gap instead of a dip. The recorder
   wrote a sample at boot, before any miner had reconnected, and the chart
   joined it to the shutdown sample as a slope down to zero that never
