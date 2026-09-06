@@ -53,10 +53,12 @@ Group=solo-pool
 # (or set persist_authority_key = false to keep an ephemeral per-process key).
 StateDirectory=solo-pool-rs
 
-# Logs go to the journal (journalctl -u solo-pool-rs). Keep log_dir empty in
-# config.toml to use this. For file logging instead, uncomment the next line
-# and set log_dir = "/var/log/solo-pool-rs" in config.toml:
-#   LogsDirectory=solo-pool-rs
+# Logs go to the journal (journalctl -u solo-pool-rs) while log_dir is empty
+# in config.toml. For files instead, set log_dir = "/var/log/solo-pool-rs":
+# LogsDirectory= creates that directory owned by the service user, writable
+# under ProtectSystem=strict, and removes it on uninstall. Retention is
+# log_max_files in config.toml (default 14 days); no logrotate needed.
+LogsDirectory=solo-pool-rs
 
 # ── Hardening ────────────────────────────────────────────────────────────────
 NoNewPrivileges=true
