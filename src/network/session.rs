@@ -844,7 +844,7 @@ async fn handle_submit(
             let credited = session.vardiff.credit_for(hash_difficulty);
             session.vardiff.record_share(credited);
             metrics::share_accepted(credited, worker);
-            session.stats.share_accepted(hash_difficulty);
+            session.stats.share_accepted(hash_difficulty, credited);
             session.stats.worker_share_accepted(worker, hash_difficulty);
             session.stats.mark_worker_submit(worker);
             HandleResult::Messages(vec![ResponseBuilder::ok(
@@ -875,11 +875,13 @@ async fn handle_submit(
                 Ok(_) => {
                     metrics::block_found();
                     metrics::block_submission_success();
-                    session.stats.block_found(worker, &block_hash_hex);
+                    session
+                        .stats
+                        .block_found(worker, &block_hash_hex, job_height);
                     session.shares_accepted += 1;
                     let credited = session.vardiff.credit_for(hash_difficulty);
                     session.vardiff.record_share(credited);
-                    session.stats.share_accepted(hash_difficulty);
+                    session.stats.share_accepted(hash_difficulty, credited);
                     session.stats.worker_share_accepted(worker, hash_difficulty);
                     session.stats.mark_worker_submit(worker);
                     info!(

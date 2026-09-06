@@ -10,6 +10,21 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
+- Round effort on the dashboard: a bar under the pool hashrate showing the
+  credited share difficulty submitted since the last block this pool found,
+  as a share of one average block's work at the current network difficulty.
+  The footer names the round's opening date and, once a block has been
+  found, the effort the previous round closed at. The blocks-found count and
+  the round's work now persist in the stats database (`found_blocks` table,
+  two new columns on `pool_stats`), so neither resets on restart.
+- Node health on the dashboard: the rail and the Chain tip card show the age
+  of the newest block template, with a "Node stale" pill when the pool has
+  not built one from bitcoind in 90 seconds. The template engine refreshes
+  on every block and every 30 s, so a frozen age means the RPC is not
+  answering; previously the chain tip just stopped moving.
+- Blocks the pool found are marked on the hashrate chart, and a "Blocks
+  found" tile replaces the pool-uptime tile (uptime stays in the rail).
+
 - Fuzz targets for the two parsers that face unauthenticated peers: the
   Stratum V1 line parser and dispatch, and the three Stratum V2 message
   decoders. A CI job runs each for 90 seconds on any change to the protocol
@@ -17,6 +32,11 @@ everything else bumps the **patch** version.
   as a library; the binary is unchanged.
 
 ### Changed
+- Dashboard empty states say what they mean: "None yet" with the expected
+  wait at the current hashrate instead of three dashes, and "Expected wait:
+  about N years" instead of "Yearly: 1 in N".
+- `PoolStats::share_accepted` takes the credited difficulty alongside the
+  hash difficulty, and `block_found` takes the height; both are internal.
 - The dashboard's worker table is built with DOM calls and `textContent`
   instead of HTML strings. Worker names are miner-supplied; building nodes
   removes the escaping step rather than keeping it correct, and a test now

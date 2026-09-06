@@ -124,6 +124,23 @@ pub struct TemplateEngine {
     /// for this to drain so a block found seconds before `systemctl stop`
     /// still reaches the node.
     inflight_submits: AtomicUsize,
+
+    /// When a job was last built from a fresh getblocktemplate, and why the
+    /// last refresh produced no job if it did not. Together they are the
+    /// dashboard's node-health signal: a refresh runs on every block and
+    /// every ntime tick, so a healthy node keeps the age under a minute,
+    /// and a dead RPC leaves the old job in place while the age climbs.
+    last_template_ok: parking_lot::Mutex<Option<Instant>>,
+    last_template_error: parking_lot::Mutex<Option<String>>,
+}
+
+/// Snapshot of the engine's template health for the dashboard.
+#[derive(Debug, Clone, Default)]
+pub struct TemplateHealth {
+    /// Seconds since the last job was built; None before the first.
+    pub age_secs: Option<u64>,
+    /// Why the last refresh built no job, if it did not.
+    pub error: Option<String>,
 }
 
 /// RAII count of an in-progress inline submission.
@@ -157,7 +174,21 @@ impl TemplateEngine {
             job_history: RwLock::new(VecDeque::with_capacity(JOB_HISTORY_DEPTH)),
             job_tx,
             inflight_submits: AtomicUsize::new(0),
+            last_template_ok: parking_lot::Mutex::new(None),
+            last_template_error: parking_lot::Mutex::new(None),
         })
+    }
+
+    /// Template freshness and the last refresh failure, for the dashboard.
+    pub fn template_health(&self) -> TemplateHealth {
+        TemplateHealth {
+            age_secs: self.last_template_ok.lock().map(|t| t.elapsed().as_secs()),
+            error: self.last_template_error.lock().clone(),
+        }
+    }
+
+    fn note_template_failure(&self, why: String) {
+        *self.last_template_error.lock() = Some(why);
     }
 
     /// Wait up to `timeout` for inline block submissions to finish. Called on
@@ -185,8 +216,8 @@ impl TemplateEngine {
     /// outright move to `rejected/` so they are not retried forever.
     ///
     /// Replayed blocks are not credited to the dashboard's block counter:
-    /// most will be duplicates of blocks that were counted before the
-    /// restart, and the counter is in-memory only.
+    /// most will be duplicates of blocks that were counted (and persisted)
+    /// before the restart.
     pub async fn replay_archived_blocks(self: &Arc<Self>) {
         let dir = self.pool_cfg.found_block_dir.clone();
         let pending = {
@@ -307,6 +338,9 @@ impl TemplateEngine {
                 "Mining paused: no valid payout address for the node's network — \
                  set one in the dashboard Settings page"
             );
+            self.note_template_failure(
+                "mining paused: no valid payout address for the node's network".to_string(),
+            );
             return;
         };
 
@@ -339,6 +373,8 @@ impl TemplateEngine {
                         let clean_jobs = clean_jobs || tip_changed;
                         *current = Some(job.clone());
                         drop(current);
+                        *self.last_template_ok.lock() = Some(Instant::now());
+                        *self.last_template_error.lock() = None;
 
                         if tip_changed {
                             info!(
@@ -369,10 +405,16 @@ impl TemplateEngine {
                         });
                         metrics::job_broadcast(receiver_count);
                     }
-                    Err(e) => error!("Failed to build job: {e}"),
+                    Err(e) => {
+                        error!("Failed to build job: {e}");
+                        self.note_template_failure(format!("failed to build job: {e}"));
+                    }
                 }
             }
-            Err(e) => error!("getblocktemplate failed: {e}"),
+            Err(e) => {
+                error!("getblocktemplate failed: {e}");
+                self.note_template_failure(format!("getblocktemplate failed: {e}"));
+            }
         }
     }
 
@@ -490,7 +532,7 @@ impl TemplateEngine {
                             metrics::block_submission_success();
                             // Mirror the inline-success path so the dashboard's
                             // block count / last-block panel agree with Prometheus.
-                            stats.block_found(worker, &hash_hex);
+                            stats.block_found(worker, &hash_hex, height);
                         }
                         info!(
                             "🏆 Block {hash_hex} (height {height}) accepted on \

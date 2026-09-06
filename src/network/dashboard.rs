@@ -217,6 +217,9 @@ async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsS
     if let Some(job) = state.engine.current_job().await {
         snap.template_version = job.version;
     }
+    let health = state.engine.template_health();
+    snap.template_age_secs = health.age_secs;
+    snap.template_error = health.error;
     Json(snap)
 }
 
@@ -615,6 +618,7 @@ const DASHBOARD_HTML: &str = concat!(
   --warn: #e3b341;
   --bad: #f0564a;
   --grid: rgba(255,255,255,0.06);
+  --track: rgba(255,255,255,0.08);
 }
 :root[data-theme="light"] {
   --bg: #fafafa;
@@ -628,6 +632,7 @@ const DASHBOARD_HTML: &str = concat!(
   --warn: #ca8a04;
   --bad: #dc2626;
   --grid: rgba(0,0,0,0.07);
+  --track: rgba(0,0,0,0.08);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
@@ -703,6 +708,19 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 }
 .hero-side .label { margin-bottom: 0.2rem; }
 
+/* ── Round effort: full-width bar under the hero row ── */
+.effort { flex-basis: 100%; padding-top: 1.1rem; border-top: 1px solid var(--border); }
+.effort-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.effort-head .label { margin-bottom: 0; }
+.effort-pct { font-size: 1.06rem; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.effort-pct small { font-size: 0.72rem; font-weight: 500; color: var(--muted); margin-left: 0.4rem; }
+.effort-track { position: relative; height: 6px; border-radius: 3px; background: var(--track); }
+.effort-fill { height: 100%; border-radius: 3px; background: var(--accent); min-width: 2px; width: 0; transition: width 0.6s ease; }
+.effort-tick { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--muted); opacity: 0.5; }
+.effort-ticklabel { position: absolute; top: 10px; font-size: 0.62rem; color: var(--muted); transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+.effort-foot { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .effort-fill { transition: none; } }
+
 /* ── KPI strip ── */
 .kpis {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
@@ -710,6 +728,8 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 }
 .kpi { border-left: 1px solid var(--border); padding-left: 0.9rem; min-width: 0; }
 .kpi .val { font-size: 1.06rem; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+/* Honest empty state ("None yet", a zero count): present but not shouting. */
+.kpi .val.muted { color: var(--muted); font-weight: 500; }
 .kpi .sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; font-variant-numeric: tabular-nums; }
 .kpi .sub.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ok  { color: var(--ok); }
@@ -748,7 +768,9 @@ tr:last-child td { border-bottom: none; }
 .led { width: 9px; height: 9px; border-radius: 50%; display: inline-block; vertical-align: middle; }
 .led-on { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
 .led-warn { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
+.led-bad { background: var(--bad); box-shadow: 0 0 5px var(--bad); }
 .led-off { background: var(--muted); opacity: 0.45; }
+.led-sm { width: 7px; height: 7px; margin-right: 0.3rem; }
 .col-led { text-align: center; }
 /* New chain tip: pulse the number itself in the accent color (two beats),
    matching the other highlighted values instead of flashing the background. */
@@ -774,6 +796,7 @@ tr:last-child td { border-bottom: none; }
 /* .kpi .sub sets the muted color at higher specificity; win it back for the
    24h change line. */
 .kpi .sub.ok  { color: var(--ok); }
+.kpi .sub.warn { color: var(--warn); }
 .kpi .sub.bad { color: var(--bad); }
 
 /* ── Settings form / network badge ── */
@@ -844,6 +867,16 @@ tr:last-child td { border-bottom: none; }
   padding: 0.3rem 0.5rem; background: none; font-family: inherit; text-align: left;
 }
 #paused-pill.show { display: inline-flex; }
+/* Rail "node stale" pill: the pool has not built a job from a fresh template
+   in a while, usually because bitcoind's RPC is down. */
+#node-pill {
+  display: none; align-items: center; gap: 0.35rem; cursor: pointer;
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 5px;
+  padding: 0.3rem 0.5rem; background: none; font-family: inherit; text-align: left;
+}
+#node-pill.show { display: inline-flex; }
+#node-pill.bad { color: var(--bad); border-color: var(--bad); }
 
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
@@ -906,8 +939,10 @@ tr:last-child td { border-bottom: none; }
   </nav>
   <div class="rail-foot">
     <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
+    <button id="node-pill" title="No fresh block template from bitcoind — see the Network section">&#9888; Node stale</button>
     <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
     <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
+    <span id="rail-node" title="Age of the newest block template the pool built from bitcoind"><span id="node-led" class="led led-off rail-led"></span>Node &middot; <span id="rail-node-text">&mdash;</span></span>
     <span id="server-uptime" title="How long this pool process has been running">Uptime &mdash;</span>
     <span id="last-updated" class="hide-sm">Loading&hellip;</span>
     <span class="hide-sm">v"##,
@@ -929,8 +964,24 @@ tr:last-child td { border-bottom: none; }
       <div class="label">Block odds</div>
       <span id="v-prob-daily">Daily: &mdash;</span>
       <span id="v-prob-monthly">Monthly: &mdash;</span>
-      <span id="v-prob-yearly">Yearly: &mdash;</span>
+      <span id="v-prob-yearly" title="Mean time between blocks at this hashrate; the real wait is anything from minutes to many times this">Expected wait: &mdash;</span>
       <span id="v-prob-powerball" style="color:var(--muted);">vs Powerball: &mdash;</span>
+    </div>
+
+    <div class="effort">
+      <div class="effort-head">
+        <div class="label">Round effort <span title="Work submitted since the last block this pool found (or since the pool first ran), as a share of the work one block takes on average at the current network difficulty. 100% is average luck, not a guarantee: most rounds close well before or well after it." style="cursor:help;">&#9432;</span></div>
+        <div class="effort-pct"><span id="v-effort-pct">&mdash;</span><small>of one expected block</small></div>
+      </div>
+      <div class="effort-track" aria-hidden="true">
+        <div class="effort-fill" id="v-effort-fill"></div>
+        <div class="effort-tick" style="left:50%"></div><div class="effort-ticklabel" style="left:50%">50%</div>
+        <div class="effort-tick" style="left:100%"></div><div class="effort-ticklabel" style="left:100%">100%</div>
+      </div>
+      <div class="effort-foot">
+        <span id="v-effort-work">&mdash;</span>
+        <span id="v-effort-since">&mdash;</span>
+      </div>
     </div>
   </div>
 
@@ -957,21 +1008,21 @@ tr:last-child td { border-bottom: none; }
       <div class="sub">session: <span id="v-session-best-hashrate">&mdash;</span></div>
     </div>
     <div class="kpi">
-      <div class="label">Pool uptime</div>
-      <div class="val" id="v-uptime">&mdash;</div>
-      <div class="sub">found blocks survive restarts</div>
+      <div class="label">Blocks found</div>
+      <div class="val muted" id="v-blocks-found">&mdash;</div>
+      <div class="sub">all time &middot; survives restarts</div>
     </div>
     <div class="kpi">
       <div class="label">Last block found</div>
       <div class="val" id="v-last-block-worker">&mdash;</div>
       <div class="sub" id="v-last-block-time">&mdash;</div>
-      <div class="sub trunc" id="v-last-block-hash" title="Hash of the last block this pool found">&mdash;</div>
+      <div class="sub trunc" id="v-last-block-hash">&mdash;</div>
     </div>
   </div>
 
   <div class="panel">
     <div class="panel-head">
-      <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes" style="cursor:help;">&#9432;</span></div>
+      <div class="panel-title">Hashrate over time <span title="Plots the 10-minute average hashrate, sampled every 10 minutes. Blocks this pool found are marked on the timeline." style="cursor:help;">&#9432;</span></div>
       <div class="panel-controls">
         <label id="chart-window-label" style="font-size:0.72rem; color:var(--muted);">Window
           <select id="timeframe-select">
@@ -1034,6 +1085,7 @@ tr:last-child td { border-bottom: none; }
       <div class="val" id="v-height" title="Height of current best chain tip">&mdash;</div>
       <div class="sub"><span id="v-block-transaction-count">Txs: &mdash;</span></div>
       <div class="sub" id="v-block-reward">Reward: &mdash;</div>
+      <div class="sub" id="v-node-sub" title="The pool rebuilds its block template on every new block and every 30 s; an old template means bitcoind's RPC is not answering"><span id="v-node-led" class="led led-off led-sm"></span><span id="v-node-text">Node: &mdash;</span></div>
     </div>
     <div class="kpi">
       <div class="label">BIP110 / RDTS</div>
@@ -1350,6 +1402,7 @@ async function loadChart(window) {
     if (series) {
       series.lineStyle = Object.assign(series.lineStyle || {}, { color: accent });
       series.areaStyle = { color: accent + '17' }; // ~9% alpha hex suffix
+      markFoundBlocks(series, { accent, text, surface, border });
     }
     if (options.tooltip) {
       options.tooltip.backgroundColor = surface;
@@ -1368,6 +1421,156 @@ async function loadChart(window) {
   } catch (e) {
     console.error('Chart fetch error:', e);
   }
+}
+
+// ── Found-block markers ──────────────────────────────────────────────────────
+// Blocks this pool found, from the last /stats. A dashed line at each one on
+// the hashrate chart, with a dot on the series where it landed.
+let foundBlocks = [];
+let blocksMarked = 0;
+
+function markFoundBlocks(series, c) {
+  const pts = Array.isArray(series.data) ? series.data : [];
+  if (!pts.length || !foundBlocks.length) return;
+  const firstMs = pts[0][0];
+  const inWindow = foundBlocks.filter(b => b.ts * 1000 >= firstMs);
+  if (!inWindow.length) return;
+  // Series value nearest the block time, for the dot.
+  const valueAt = ms => {
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(p[0] - ms) < Math.abs(best[0] - ms)) best = p;
+    return best[1];
+  };
+  series.markLine = {
+    symbol: ['none', 'none'], silent: true, animation: false,
+    lineStyle: { color: c.text, type: 'dashed', width: 1, opacity: 0.7 },
+    label: {
+      show: true, position: 'insideEndTop', color: c.text, fontSize: 11, fontWeight: 600,
+      padding: [2, 6], backgroundColor: c.surface, borderColor: c.border, borderWidth: 1, borderRadius: 4,
+      formatter: p => 'Block ' + Number(p.name).toLocaleString(),
+    },
+    data: inWindow.map(b => ({ xAxis: b.ts * 1000, name: String(b.height) })),
+  };
+  series.markPoint = {
+    symbol: 'circle', symbolSize: 12, silent: true, animation: false,
+    itemStyle: { color: c.accent, borderColor: c.surface, borderWidth: 2 },
+    label: { show: false },
+    data: inWindow.map(b => ({ coord: [b.ts * 1000, valueAt(b.ts * 1000)] })),
+  };
+}
+
+// ── Round effort ─────────────────────────────────────────────────────────────
+// Credited share difficulty since the last block this pool found, over the
+// network difficulty: the share of one average block's work done this round.
+function fmtPct(pct) {
+  if (!isFinite(pct)) return '—';
+  return (pct < 1 ? pct.toFixed(2) : pct < 100 ? pct.toFixed(1) : Math.round(pct).toLocaleString()) + '%';
+}
+
+function fmtDate(ts) {
+  return new Date(ts * 1000).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function renderRound(d) {
+  const net = d.network_difficulty || 0;
+  const work = d.round_work || 0;
+  const pct = net > 0 ? work / net * 100 : NaN;
+  document.getElementById('v-effort-pct').textContent = fmtPct(pct);
+  document.getElementById('v-effort-fill').style.width = (isFinite(pct) ? Math.min(100, pct) : 0) + '%';
+  document.getElementById('v-effort-work').textContent = net > 0
+    ? fmtDiff(work) + ' of ' + fmtDiff(net) + ' difficulty-work submitted'
+    : 'Waiting for the network difficulty from the node';
+  const blocks = Array.isArray(d.found_blocks) ? d.found_blocks : [];
+  const prev = blocks[blocks.length - 1];
+  let since = d.round_start_ts > 0
+    ? 'Round open since ' + fmtDate(d.round_start_ts) + (prev ? '' : ' (pool start)')
+    : 'Round open since this boot (no stats database, so it resets on restart)';
+  if (prev && prev.network_difficulty > 0) {
+    since += ' · previous round closed at ' + fmtPct(prev.round_work / prev.network_difficulty * 100);
+  }
+  document.getElementById('v-effort-since').textContent = since;
+}
+
+// ── Blocks found ─────────────────────────────────────────────────────────────
+function renderBlocks(d, nowSec) {
+  const blocks = Array.isArray(d.found_blocks) ? d.found_blocks : [];
+  const n = d.blocks_found || 0;
+  const countEl = document.getElementById('v-blocks-found');
+  countEl.textContent = n.toLocaleString();
+  countEl.classList.toggle('muted', n === 0);
+  countEl.classList.toggle('accent', n > 0);
+
+  const workerEl = document.getElementById('v-last-block-worker');
+  const timeEl = document.getElementById('v-last-block-time');
+  const hashEl = document.getElementById('v-last-block-hash');
+  if (n === 0 || !d.last_block_ts) {
+    workerEl.textContent = 'None yet';
+    workerEl.classList.add('muted');
+    timeEl.textContent = lastExpectedWait
+      ? 'At ' + fmtHr(d.total_hashrate_10m || 0, false) + ', expect one ' + lastExpectedWait.replace('about', 'about every')
+      : 'Odds appear once a miner connects';
+    hashEl.textContent = 'The chart marks it when it lands';
+    hashEl.title = '';
+  } else {
+    const last = blocks[blocks.length - 1];
+    workerEl.textContent = d.last_block_worker;
+    workerEl.classList.remove('muted');
+    timeEl.textContent = fmtTimestamp(d.last_block_ts)
+      + ' (' + fmtUptime(Math.max(0, nowSec - d.last_block_ts)) + ' ago)'
+      + (last && last.height ? ' · height ' + last.height.toLocaleString() : '');
+    hashEl.textContent = d.last_block_hash;
+    hashEl.title = 'Hash of the last block this pool found';
+  }
+
+  foundBlocks = blocks;
+  // The chart loads before the first /stats lands, and a block can land
+  // between chart refreshes: redraw whenever the count changes.
+  if (n !== blocksMarked) {
+    blocksMarked = n;
+    if (!chartCollapsed()) loadChart(selectedWindow);
+  }
+}
+
+// ── Node health ──────────────────────────────────────────────────────────────
+// The engine rebuilds the template on every block and every 30 s ntime tick,
+// so a healthy node keeps the template age well under a minute. If the RPC
+// dies the old job stays in place and the chain tip freezes silently; the
+// age is what exposes that.
+const NODE_WARN_SECS = 90;
+const NODE_BAD_SECS = 300;
+
+function renderNode(d) {
+  const age = d.template_age_secs;
+  const err = d.template_error || '';
+  const paused = err.startsWith('mining paused');
+  let cls, railText, cardText, level = 'ok';
+  if (paused) {
+    cls = 'led-off'; railText = 'paused'; cardText = 'Node: template not requested while mining is paused';
+  } else if (age === null || age === undefined) {
+    cls = err ? 'led-warn' : 'led-off';
+    railText = err ? 'no template' : 'waiting';
+    cardText = err ? 'Node: no template yet · ' + err : 'Node: waiting for the first block template';
+    level = err ? 'warn' : 'ok';
+  } else {
+    const stale = age >= NODE_WARN_SECS || !!err;
+    level = age >= NODE_BAD_SECS ? 'bad' : (stale ? 'warn' : 'ok');
+    cls = level === 'bad' ? 'led-bad' : (level === 'warn' ? 'led-warn' : 'led-on');
+    railText = (stale ? 'stale ' : 'template ') + fmtUptime(age) + (stale ? '' : ' old');
+    cardText = 'Node: template ' + fmtUptime(age) + ' old' + (err ? ' · ' + err : '');
+  }
+  for (const id of ['node-led', 'v-node-led']) {
+    const el = document.getElementById(id);
+    el.classList.remove('led-on', 'led-warn', 'led-bad', 'led-off');
+    el.classList.add(cls);
+  }
+  document.getElementById('rail-node-text').textContent = railText;
+  document.getElementById('v-node-text').textContent = cardText;
+  const sub = document.getElementById('v-node-sub');
+  sub.classList.toggle('warn', level === 'warn');
+  sub.classList.toggle('bad', level === 'bad');
+  const pill = document.getElementById('node-pill');
+  pill.classList.toggle('show', level !== 'ok');
+  pill.classList.toggle('bad', level === 'bad');
 }
 
 // ── Stats refresh ────────────────────────────────────────────────────────────
@@ -1406,9 +1609,9 @@ async function refresh() {
       const btc = d.current_coinbase_value / 1e8;
       document.getElementById('v-block-reward').textContent = 'Reward: ' + btc.toFixed(8) + ' BTC';
     }
-    document.getElementById('v-last-block-worker').textContent = d.last_block_worker || '—';
-    document.getElementById('v-last-block-hash').textContent = d.last_block_hash || '—';
-    document.getElementById('v-last-block-time').textContent = fmtTimestamp(d.last_block_ts);
+    renderRound(d);
+    renderBlocks(d, Math.floor(Date.now() / 1000));
+    renderNode(d);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
     document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';
@@ -1433,7 +1636,6 @@ async function refresh() {
     }
     document.getElementById('v-session-best-hashrate').textContent = fmtHr(d.session_best_hashrate_hps, false);
     document.getElementById('v-best-hashrate').textContent = fmtHr(d.best_hashrate_hps, false);
-    document.getElementById('v-uptime').textContent = fmtUptime(d.uptime_secs);
     document.getElementById('server-uptime').textContent = 'Uptime ' + fmtUptime(d.uptime_secs);
 
     const total = d.shares_accepted + d.shares_rejected;
@@ -1552,13 +1754,27 @@ function fmtOdds(p) {
   return '1 in ' + inv.toLocaleString();
 }
 
+// Mean time to a block at the current hashrate, as words. "1 in 492 per
+// year" is exact but hard to feel; "about 490 years" is the same number.
+function fmtWait(secs) {
+  const years = secs / (365.25 * 86400);
+  if (years >= 1) return 'about ' + Number(years.toPrecision(3)).toLocaleString() + ' years';
+  const days = secs / 86400;
+  if (days >= 60) return 'about ' + Math.round(days / 30.44) + ' months';
+  if (days >= 2) return 'about ' + Math.round(days) + ' days';
+  return 'about ' + Math.max(1, Math.round(secs / 3600)) + ' hours';
+}
+// Last computed expected wait, reused by the empty last-block card.
+let lastExpectedWait = '';
+
 function updateProbability(ourHps, netHps) {
   const el = id => document.getElementById(id);
   if (!ourHps || !netHps || netHps === 0) {
     el('v-prob-daily').textContent   = 'Daily: —';
     el('v-prob-monthly').textContent = 'Monthly: —';
-    el('v-prob-yearly').textContent  = 'Yearly: —';
+    el('v-prob-yearly').textContent  = 'Expected wait: —';
     el('v-prob-powerball').textContent = 'vs Powerball: —';
+    lastExpectedWait = '';
     return;
   }
   // Probability of finding a block per block (~10 min)
@@ -1566,11 +1782,9 @@ function updateProbability(ourHps, netHps) {
   // Blocks per period
   const blocksPerDay   = 144;
   const blocksPerMonth = blocksPerDay * 30;
-  const blocksPerYear  = blocksPerDay * 365;
   // P(at least one block in N blocks) = 1 - (1 - pBlock)^N
   const pDaily   = 1 - Math.pow(1 - pBlock, blocksPerDay);
   const pMonthly = 1 - Math.pow(1 - pBlock, blocksPerMonth);
-  const pYearly  = 1 - Math.pow(1 - pBlock, blocksPerYear);
   // Powerball jackpot: 1 in 292,201,338 per ticket
   const pPowerball = 1 / 292201338;
   const ratio = pDaily / pPowerball;
@@ -1578,9 +1792,12 @@ function updateProbability(ourHps, netHps) {
     ? (ratio.toFixed(1) + '× better than Powerball')
     : ((1 / ratio).toFixed(1) + '× worse than Powerball');
 
+  // Mean blocks until ours is 1/pBlock, at ~10 minutes each.
+  lastExpectedWait = fmtWait(600 / pBlock);
+
   el('v-prob-daily').textContent   = 'Daily: '   + fmtOdds(pDaily);
   el('v-prob-monthly').textContent = 'Monthly: ' + fmtOdds(pMonthly);
-  el('v-prob-yearly').textContent  = 'Yearly: '  + fmtOdds(pYearly);
+  el('v-prob-yearly').textContent  = 'Expected wait: ' + lastExpectedWait;
   el('v-prob-powerball').textContent = vsText;
 }
 
@@ -1746,6 +1963,9 @@ const settingsModal = document.getElementById('settings-modal');
 function openSettings() { loadSettings(); settingsModal.showModal(); }
 document.getElementById('open-settings').addEventListener('click', openSettings);
 document.getElementById('paused-pill').addEventListener('click', openSettings);
+document.getElementById('node-pill').addEventListener('click', () => {
+  document.getElementById('network').scrollIntoView({ behavior: 'smooth' });
+});
 document.getElementById('close-settings').addEventListener('click', () => settingsModal.close());
 // Click on the backdrop (outside the dialog content) closes it.
 settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });

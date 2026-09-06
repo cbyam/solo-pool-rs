@@ -87,10 +87,42 @@ impl StatsStore {
             [],
         )?;
 
+        // Round accounting lives on the single pool_stats row. Existing
+        // databases predate these columns, so add them in place; SQLite has
+        // no ADD COLUMN IF NOT EXISTS, and a duplicate-column error is the
+        // expected outcome on every boot after the first.
+        for ddl in [
+            "ALTER TABLE pool_stats ADD COLUMN round_work REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE pool_stats ADD COLUMN round_start_ts INTEGER NOT NULL DEFAULT 0",
+        ] {
+            if let Err(e) = conn.execute(ddl, []) {
+                if !e.to_string().contains("duplicate column") {
+                    return Err(e);
+                }
+            }
+        }
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS worker_best_shares (
              worker TEXT PRIMARY KEY,
              best_share_difficulty INTEGER NOT NULL
+             )",
+            [],
+        )?;
+
+        // One row per block this pool found, in the order found. The hash
+        // is the key so a block credited twice (inline success racing the
+        // background retrier) cannot be counted twice. round_work and
+        // network_difficulty are captured at the moment the round closed,
+        // so the effort of a past round survives without recomputation.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS found_blocks (
+             hash TEXT PRIMARY KEY,
+             height INTEGER NOT NULL,
+             worker TEXT NOT NULL,
+             ts INTEGER NOT NULL,
+             round_work REAL NOT NULL,
+             network_difficulty REAL NOT NULL
              )",
             [],
         )?;
@@ -160,33 +192,74 @@ impl StatsStore {
         }
     }
 
-    fn load_values(
-        &self,
-    ) -> Result<(u64, f64, std::collections::HashMap<String, u64>), rusqlite::Error> {
+    fn load_values(&self) -> Result<LoadedStats, rusqlite::Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT best_share_difficulty, best_hashrate_hps FROM pool_stats WHERE id = 1",
+            "SELECT best_share_difficulty, best_hashrate_hps, round_work, round_start_ts
+             FROM pool_stats WHERE id = 1",
         )?;
         let mut rows = stmt.query([])?;
-        let best_values = if let Some(row) = rows.next()? {
-            let best_share_difficulty = row.get::<_, u64>(0)?;
-            let best_hashrate_hps = row.get::<_, f64>(1)?;
-            (best_share_difficulty, best_hashrate_hps)
-        } else {
-            (0, 0.0)
-        };
+        let mut loaded = LoadedStats::default();
+        if let Some(row) = rows.next()? {
+            loaded.best_share_difficulty = row.get::<_, u64>(0)?;
+            loaded.best_hashrate_hps = row.get::<_, f64>(1)?;
+            loaded.round_work = row.get::<_, f64>(2)?;
+            loaded.round_start_ts = row.get::<_, u64>(3)?;
+        }
 
-        let mut worker_best_shares = std::collections::HashMap::new();
         let mut stmt =
             conn.prepare("SELECT worker, best_share_difficulty FROM worker_best_shares")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let worker = row.get::<_, String>(0)?;
             let difficulty = row.get::<_, u64>(1)?;
-            worker_best_shares.insert(worker, difficulty);
+            loaded.worker_best_shares.insert(worker, difficulty);
         }
 
-        Ok((best_values.0, best_values.1, worker_best_shares))
+        let mut stmt = conn.prepare(
+            "SELECT hash, height, worker, ts, round_work, network_difficulty
+             FROM found_blocks ORDER BY ts ASC, height ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            loaded.found_blocks.push(FoundBlock {
+                hash: row.get(0)?,
+                height: row.get(1)?,
+                worker: row.get(2)?,
+                ts: row.get(3)?,
+                round_work: row.get(4)?,
+                network_difficulty: row.get(5)?,
+            });
+        }
+
+        Ok(loaded)
+    }
+
+    fn set_round(&self, round_work: f64, round_start_ts: u64) {
+        if let Err(e) = self.conn.lock().execute(
+            "UPDATE pool_stats SET round_work = ?1, round_start_ts = ?2 WHERE id = 1",
+            params![round_work, round_start_ts],
+        ) {
+            warn!("Failed to persist round state: {e}");
+        }
+    }
+
+    fn insert_found_block(&self, block: &FoundBlock) {
+        if let Err(e) = self.conn.lock().execute(
+            "INSERT OR IGNORE INTO found_blocks
+             (hash, height, worker, ts, round_work, network_difficulty)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                block.hash,
+                block.height,
+                block.worker,
+                block.ts,
+                block.round_work,
+                block.network_difficulty
+            ],
+        ) {
+            warn!("Failed to persist found block {}: {e}", block.hash);
+        }
     }
 
     // The `?1 > ...` guards (matching set_worker_best_share) make the writes
@@ -270,6 +343,33 @@ impl StatsStore {
     }
 }
 
+/// Everything the store hands back at boot.
+#[derive(Default)]
+struct LoadedStats {
+    best_share_difficulty: u64,
+    best_hashrate_hps: f64,
+    worker_best_shares: std::collections::HashMap<String, u64>,
+    round_work: f64,
+    round_start_ts: u64,
+    found_blocks: Vec<FoundBlock>,
+}
+
+/// A block this pool found, with the round it closed.
+#[derive(Clone, Debug, Serialize)]
+pub struct FoundBlock {
+    pub height: u64,
+    pub hash: String,
+    pub worker: String,
+    pub ts: u64,
+    /// Difficulty-work submitted in the round this block closed (the sum of
+    /// credited share difficulties since the previous block, or since the
+    /// pool first ran).
+    pub round_work: f64,
+    /// Network difficulty when the block was found; `round_work` over this
+    /// is the round's effort, 1.0 being average luck.
+    pub network_difficulty: f64,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PoolStats
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,6 +394,17 @@ pub struct PoolStats {
     pub last_block_worker: Mutex<Option<String>>,
     pub last_block_hash: Mutex<Option<String>>,
     pub last_block_ts: AtomicU64,
+    /// Credited share difficulty summed since the last block this pool found
+    /// (f64 bits). Divided by network difficulty it is the round's effort.
+    /// Persisted on the periodic snapshot tick and when a block closes the
+    /// round, so a restart loses at most one tick of work.
+    round_work: AtomicU64,
+    /// When the current round opened: the last found block, or the first
+    /// boot with a stats store. Zero only when there is no store.
+    round_start_ts: AtomicU64,
+    /// Every block this pool has found, oldest first. Loaded from the store
+    /// at boot, so the count and the last-block card survive restarts.
+    found_blocks: Mutex<Vec<FoundBlock>>,
     // Stored as f64::to_bits so we can use AtomicU64
     worker_hashrates_60s: DashMap<String, u64>,
     worker_hashrates_10m: DashMap<String, u64>,
@@ -338,45 +449,50 @@ pub struct WorkerState {
 
 impl PoolStats {
     pub fn new_with_store(stats_db_path: Option<String>) -> Arc<Self> {
-        let (store, best_share_difficulty, best_hashrate_hps, worker_best_shares_map) =
-            match stats_db_path.filter(|p| !p.is_empty()) {
-                Some(path) => match StatsStore::open(&path) {
-                    Ok(store) => match store.load_values() {
-                        Ok((best_difficulty, best_hps, worker_best_shares_map)) => (
-                            Some(store),
-                            best_difficulty,
-                            best_hps,
-                            worker_best_shares_map,
-                        ),
-                        Err(e) => {
-                            warn!("Failed to load stats from DB {}: {e}", path);
-                            (None, 0, 0.0, std::collections::HashMap::new())
-                        }
-                    },
+        let (store, loaded) = match stats_db_path.filter(|p| !p.is_empty()) {
+            Some(path) => match StatsStore::open(&path) {
+                Ok(store) => match store.load_values() {
+                    Ok(loaded) => (Some(store), loaded),
                     Err(e) => {
-                        warn!("Failed to open stats DB {}: {e}", path);
-                        (None, 0, 0.0, std::collections::HashMap::new())
+                        warn!("Failed to load stats from DB {}: {e}", path);
+                        (None, LoadedStats::default())
                     }
                 },
-                None => (None, 0, 0.0, std::collections::HashMap::new()),
-            };
+                Err(e) => {
+                    warn!("Failed to open stats DB {}: {e}", path);
+                    (None, LoadedStats::default())
+                }
+            },
+            None => (None, LoadedStats::default()),
+        };
 
         let worker_best_shares = DashMap::new();
-        for (worker, best_share) in worker_best_shares_map {
+        for (worker, best_share) in loaded.worker_best_shares {
             worker_best_shares.insert(worker, best_share);
         }
+
+        // The first boot with a store opens the first round now; without a
+        // store there is no round start worth reporting.
+        let mut round_start_ts = loaded.round_start_ts;
+        if round_start_ts == 0 {
+            if let Some(store) = &store {
+                round_start_ts = Self::now_secs();
+                store.set_round(loaded.round_work, round_start_ts);
+            }
+        }
+        let last_block = loaded.found_blocks.last().cloned();
 
         Arc::new(Self {
             shares_accepted: AtomicU64::new(0),
             shares_rejected: AtomicU64::new(0),
-            blocks_found: AtomicU64::new(0),
+            blocks_found: AtomicU64::new(loaded.found_blocks.len() as u64),
             connected_miners: AtomicU64::new(0),
             current_height: AtomicU64::new(0),
             current_coinbase_value: AtomicU64::new(0),
             current_block_transaction_count: AtomicU64::new(0),
-            best_share_difficulty: AtomicU64::new(best_share_difficulty),
+            best_share_difficulty: AtomicU64::new(loaded.best_share_difficulty),
             session_best_share_difficulty: AtomicU64::new(0),
-            best_hashrate_hps: AtomicU64::new(best_hashrate_hps.to_bits()),
+            best_hashrate_hps: AtomicU64::new(loaded.best_hashrate_hps.to_bits()),
             session_best_hashrate_hps: AtomicU64::new(0),
             network_hashrate_hps: AtomicU64::new(0),
             network_difficulty: AtomicU64::new(f64::to_bits(0.0)),
@@ -390,9 +506,12 @@ impl PoolStats {
             worker_last_submit_ts: DashMap::new(),
             worker_best_shares,
             worker_states: DashMap::new(),
-            last_block_worker: Mutex::new(None),
-            last_block_hash: Mutex::new(None),
-            last_block_ts: AtomicU64::new(0),
+            last_block_worker: Mutex::new(last_block.as_ref().map(|b| b.worker.clone())),
+            last_block_hash: Mutex::new(last_block.as_ref().map(|b| b.hash.clone())),
+            last_block_ts: AtomicU64::new(last_block.as_ref().map(|b| b.ts).unwrap_or(0)),
+            round_work: AtomicU64::new(loaded.round_work.to_bits()),
+            round_start_ts: AtomicU64::new(round_start_ts),
+            found_blocks: Mutex::new(loaded.found_blocks),
             start_time: Instant::now(),
             store,
         })
@@ -439,8 +558,27 @@ impl PoolStats {
         self.connected_miners.fetch_sub(1, Ordering::Relaxed);
     }
 
-    pub fn share_accepted(&self, difficulty: u64) {
+    /// `difficulty` is the hash's actual difficulty (drives the best-share
+    /// records); `credited` is the difficulty the share was credited at (see
+    /// `Vardiff::credit_for`) and is what the round's effort sums. Summing
+    /// hash difficulty instead would let one lucky share add terahashes of
+    /// "work" the miner never did.
+    pub fn share_accepted(&self, difficulty: u64, credited: u64) {
         self.shares_accepted.fetch_add(1, Ordering::Relaxed);
+
+        let mut prev = self.round_work.load(Ordering::Relaxed);
+        loop {
+            let next = (f64::from_bits(prev) + credited as f64).to_bits();
+            match self.round_work.compare_exchange_weak(
+                prev,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(x) => prev = x,
+            }
+        }
 
         // CAS loop to track all-time best share
         let mut prev = self.best_share_difficulty.load(Ordering::Relaxed);
@@ -478,15 +616,49 @@ impl PoolStats {
         self.shares_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn block_found(&self, worker: &str, hash: &str) {
+    /// Record a block this pool found. Closes the current round: its work
+    /// and the network difficulty at this moment are stored with the block,
+    /// and a new round opens now. Runs after `submitblock` has succeeded,
+    /// never on the path to it.
+    pub fn block_found(&self, worker: &str, hash: &str, height: u64) {
+        // Inline success and the background retrier both credit; the same
+        // block must not close two rounds or count twice.
+        if self.found_blocks.lock().iter().any(|b| b.hash == hash) {
+            return;
+        }
+        let now = Self::now_secs();
+        let round_work = f64::from_bits(self.round_work.swap(0f64.to_bits(), Ordering::Relaxed));
+        let block = FoundBlock {
+            height,
+            hash: hash.to_string(),
+            worker: worker.to_string(),
+            ts: now,
+            round_work,
+            network_difficulty: f64::from_bits(self.network_difficulty.load(Ordering::Relaxed)),
+        };
         self.blocks_found.fetch_add(1, Ordering::Relaxed);
         *self.last_block_worker.lock() = Some(worker.to_string());
         *self.last_block_hash.lock() = Some(hash.to_string());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         self.last_block_ts.store(now, Ordering::Relaxed);
+        self.round_start_ts.store(now, Ordering::Relaxed);
+        self.found_blocks.lock().push(block.clone());
+        if let Some(store) = &self.store {
+            store.insert_found_block(&block);
+            store.set_round(0.0, now);
+        }
+    }
+
+    /// Persist the running round work. Called from the periodic snapshot
+    /// tick rather than per share: the value only needs to survive a restart
+    /// to within one tick, and a per-share write would cost a SQLite
+    /// transaction on the hot path.
+    fn persist_round_state(&self) {
+        if let Some(store) = &self.store {
+            store.set_round(
+                f64::from_bits(self.round_work.load(Ordering::Relaxed)),
+                self.round_start_ts.load(Ordering::Relaxed),
+            );
+        }
     }
 
     pub fn update_height(&self, height: u64, coinbase_value: u64, transaction_count: u64) {
@@ -831,6 +1003,7 @@ impl PoolStats {
                 .sum();
             store.record_hashrate_snapshot(ts, hps);
         }
+        self.persist_round_state();
     }
 
     pub fn get_hashrate_history(&self, since_ts: u64) -> Vec<(u64, f64)> {
@@ -987,6 +1160,11 @@ impl PoolStats {
                 .clone()
                 .unwrap_or_else(|| "—".to_string()),
             last_block_ts: self.last_block_ts.load(Ordering::Relaxed),
+            round_work: f64::from_bits(self.round_work.load(Ordering::Relaxed)),
+            round_start_ts: self.round_start_ts.load(Ordering::Relaxed),
+            found_blocks: self.found_blocks.lock().clone(),
+            template_age_secs: None,
+            template_error: None,
         }
     }
 }
@@ -1026,6 +1204,21 @@ pub struct StatsSnapshot {
     pub last_block_worker: String,
     pub last_block_hash: String,
     pub last_block_ts: u64,
+    /// Credited share difficulty summed since the last block this pool
+    /// found. Over `network_difficulty` it is the current round's effort.
+    pub round_work: f64,
+    /// When the current round opened (unix seconds); 0 without a stats DB.
+    pub round_start_ts: u64,
+    /// Every block this pool has found, oldest first.
+    pub found_blocks: Vec<FoundBlock>,
+    /// Seconds since the template engine last built a job from a fresh
+    /// getblocktemplate. PoolStats does not track this; the dashboard fills
+    /// it from the TemplateEngine, like `template_version`. None before the
+    /// first job.
+    pub template_age_secs: Option<u64>,
+    /// Why the engine could not build its last job, when it could not.
+    /// Filled by the dashboard from the TemplateEngine.
+    pub template_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1114,7 +1307,7 @@ mod tests {
         let db_path = make_temp_db();
         let stats = PoolStats::new_with_store(Some(db_path.clone()));
         stats.worker_share_accepted("nerdqaxe", 794_568_949_760);
-        stats.share_accepted(794_568_949_760);
+        stats.share_accepted(794_568_949_760, 4096);
 
         stats.reset_best_hashrate();
 
@@ -1176,14 +1369,96 @@ mod tests {
 
         {
             let stats = PoolStats::new_with_store(Some(db_path.clone()));
-            stats.share_accepted(1_000_000);
+            stats.share_accepted(1_000_000, 1_000_000);
             assert_eq!(stats.snapshot().best_share_difficulty, 1_000_000);
-            stats.share_accepted(1_500_000);
+            stats.share_accepted(1_500_000, 1_000_000);
             assert_eq!(stats.snapshot().best_share_difficulty, 1_500_000);
         }
 
         let stats = PoolStats::new_with_store(Some(db_path.clone()));
         assert_eq!(stats.snapshot().best_share_difficulty, 1_500_000);
+
+        std::fs::remove_file(db_path).ok();
+    }
+
+    #[test]
+    fn round_work_sums_credited_difficulty_and_a_block_closes_the_round() {
+        let stats = PoolStats::new_with_store(None);
+        stats.set_network_difficulty(1_000_000.0);
+        // Hash difficulty is luck; only the credited difficulty is work.
+        stats.share_accepted(900_000_000, 4_096);
+        stats.share_accepted(5_000, 4_096);
+        let snap = stats.snapshot();
+        assert_eq!(snap.round_work, 8_192.0);
+        assert_eq!(snap.blocks_found, 0);
+        assert!(snap.found_blocks.is_empty());
+        assert_eq!(snap.last_block_worker, "—");
+
+        stats.block_found("bitaxe", "00ab", 912_401);
+        let snap = stats.snapshot();
+        assert_eq!(snap.round_work, 0.0, "a found block opens a fresh round");
+        assert_eq!(snap.blocks_found, 1);
+        assert_eq!(snap.last_block_worker, "bitaxe");
+        assert_eq!(snap.last_block_hash, "00ab");
+        assert!(snap.last_block_ts > 0);
+        assert_eq!(snap.round_start_ts, snap.last_block_ts);
+        let block = &snap.found_blocks[0];
+        assert_eq!(block.height, 912_401);
+        assert_eq!(
+            block.round_work, 8_192.0,
+            "the closed round's work rides with the block"
+        );
+        assert_eq!(block.network_difficulty, 1_000_000.0);
+    }
+
+    #[test]
+    fn found_blocks_and_round_work_are_persisted_across_instances() {
+        let db_path = make_temp_db();
+
+        let first_round_start;
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            first_round_start = stats.snapshot().round_start_ts;
+            assert!(
+                first_round_start > 0,
+                "first boot with a store opens a round"
+            );
+            stats.set_network_difficulty(50.0);
+            stats.share_accepted(10, 10);
+            stats.block_found("w1", "aa", 100);
+            stats.share_accepted(7, 7);
+            // Round work reaches disk on the snapshot tick, not per share.
+            stats.record_hashrate_snapshot();
+        }
+
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        let snap = stats.snapshot();
+        assert_eq!(snap.blocks_found, 1);
+        assert_eq!(snap.last_block_worker, "w1");
+        assert_eq!(snap.last_block_hash, "aa");
+        assert_eq!(snap.found_blocks.len(), 1);
+        assert_eq!(snap.found_blocks[0].height, 100);
+        assert_eq!(snap.found_blocks[0].round_work, 10.0);
+        assert_eq!(snap.found_blocks[0].network_difficulty, 50.0);
+        assert_eq!(snap.round_work, 7.0);
+        assert!(
+            snap.round_start_ts >= first_round_start,
+            "the round reopened at the block, not at boot"
+        );
+
+        // The same block credited again (inline success racing the retrier)
+        // is not counted twice, in memory or on disk.
+        stats.share_accepted(3, 3);
+        stats.block_found("w1", "aa", 100);
+        assert_eq!(stats.snapshot().blocks_found, 1);
+        assert_eq!(
+            stats.snapshot().round_work,
+            10.0,
+            "a duplicate must not close the round"
+        );
+        drop(stats);
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        assert_eq!(stats.snapshot().found_blocks.len(), 1);
 
         std::fs::remove_file(db_path).ok();
     }
