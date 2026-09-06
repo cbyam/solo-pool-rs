@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-09-06
+
 ### Added
 - `[logging] log_max_files` (default 14): how many daily log files to keep
   when `log_dir` is set. The oldest is deleted when a new day's file opens,
@@ -801,7 +803,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.7...HEAD
+[0.6.7]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.3...v0.6.4
