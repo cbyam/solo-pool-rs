@@ -11,6 +11,7 @@ use crate::{
     config::PoolConfig,
     error::PoolError,
     settings::RuntimeSettings,
+    stats::PoolStats,
 };
 use std::{
     collections::VecDeque,
@@ -111,6 +112,13 @@ pub struct TemplateEngine {
     /// dashboard-driven change applies to the next job built.
     settings: Arc<RuntimeSettings>,
 
+    /// Dashboard stats. The engine is the single writer of template state,
+    /// so it also publishes the template facts the dashboard shows (chain
+    /// tip, coinbase value, transaction count, network difficulty). Sessions
+    /// used to do this when they forwarded a job, which left every one of
+    /// those values at zero on a pool with no miner connected.
+    stats: Arc<PoolStats>,
+
     /// Current best job (Arc so sessions can hold a cheap reference)
     current_job: RwLock<Option<Arc<template::StratumJob>>>,
 
@@ -164,12 +172,14 @@ impl TemplateEngine {
         rpc: Arc<RpcClient>,
         pool_cfg: PoolConfig,
         settings: Arc<RuntimeSettings>,
+        stats: Arc<PoolStats>,
     ) -> Arc<Self> {
         let (job_tx, _) = broadcast::channel(JOB_BROADCAST_CAP);
         Arc::new(Self {
             rpc,
             pool_cfg,
             settings,
+            stats,
             current_job: RwLock::new(None),
             job_history: RwLock::new(VecDeque::with_capacity(JOB_HISTORY_DEPTH)),
             job_tx,
@@ -189,6 +199,20 @@ impl TemplateEngine {
 
     fn note_template_failure(&self, why: String) {
         *self.last_template_error.lock() = Some(why);
+    }
+
+    /// Push the facts of a freshly built job into the dashboard stats and
+    /// Prometheus, whether or not any miner is connected to receive it.
+    fn publish_template_stats(&self, job: &template::StratumJob) {
+        metrics::update_job_height(job.height);
+        self.stats.update_height(
+            job.height,
+            job.coinbase_value,
+            job.transactions.len() as u64,
+        );
+        if let Ok(net_diff) = template::bits_to_difficulty(&job.bits) {
+            self.stats.set_network_difficulty(net_diff);
+        }
     }
 
     /// Wait up to `timeout` for inline block submissions to finish. Called on
@@ -355,6 +379,7 @@ impl TemplateEngine {
                 ) {
                     Ok(job) => {
                         let job = Arc::new(job);
+                        self.publish_template_stats(&job);
                         debug!(
                             height = job.height,
                             job_id = %job.job_id,

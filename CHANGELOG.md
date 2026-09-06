@@ -9,6 +9,16 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- The dashboard's chain tip, coinbase value, transaction count and network
+  difficulty no longer sit at zero until a miner connects. Sessions used to
+  publish those values when they forwarded a job, so a pool with no miner,
+  the state of every fresh install, showed a chain tip of 0, an empty
+  reward, and a round-effort bar waiting for a difficulty the node had
+  already supplied. The template engine, the single writer of template
+  state, now publishes them on every job it builds, along with the
+  Prometheus job-height gauge.
+
 ### Changed
 - Documentation brought in line with the code, from the review that produced
   `docs/stable-surface.md`: SECURITY.md names 0.6.x as the supported line;
