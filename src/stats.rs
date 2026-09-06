@@ -1185,7 +1185,8 @@ pub struct StatsSnapshot {
     /// Block version of the current template. PoolStats does not track this;
     /// the dashboard fills it from the TemplateEngine (the single writer of
     /// template state) when serving /stats, so it stays 0 elsewhere. Version
-    /// bits reflect the node's soft-fork signaling (bit 4 = BIP110/RDTS).
+    /// bits reflect the node's soft-fork signaling; exposed as raw data, no
+    /// dashboard card reads it since the BIP110/RDTS one was removed.
     pub template_version: u32,
     pub best_share_difficulty: u64,
     pub session_best_share_difficulty: u64,

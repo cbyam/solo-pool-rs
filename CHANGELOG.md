@@ -51,6 +51,15 @@ everything else bumps the **patch** version.
   patch bumps (tokio 1.53, bitcoin 0.32.102, and others); GitHub Actions
   checkout v7, upload-artifact v7, download-artifact v8, github-script v9.
 
+### Removed
+- The BIP110/RDTS card on the dashboard. It showed whether the node's
+  templates set version bit 4 so an operator could see which side of the
+  soft fork their node was on. The fork resolved in August 2026: enforcing
+  nodes stalled on a minority chain, and every node on the live chain now
+  reads "Not signaling" permanently. A stranded node is better spotted by
+  its frozen chain tip, which the README describes. `template_version`
+  stays in `/stats` as raw data.
+
 ### Fixed
 - The hashrate chart shows downtime as a gap instead of a dip. The recorder
   wrote a sample at boot, before any miner had reconnected, and the chart
