@@ -37,11 +37,6 @@ Gates, in the order they can be closed:
   the all-time bests, so a silent open failure means the dashboard forgets a
   found block on the next restart with no visible signal. Make it a boot error
   or a red pill on the dashboard, not a log line.
-- [ ] `log_dir = ""` writes a rotating log file into the working directory
-  instead of logging to stdout as the config comment promises, because an empty
-  string is `Some("")` rather than `None` (`main.rs:207`). Treat empty or
-  whitespace-only as unset. A documented-behaviour bug in the config surface;
-  fix it before promising the surface.
 - [ ] **Prod soak.** Two months of continuous mainnet mining with no
   correctness bug on the share or block path, started 2026-09-05 on 0.6.6.
   Patch-day restarts do not reset it; a change to share validation or block
@@ -188,6 +183,9 @@ shard guard, confirmed a writer was blocked on it, then completed the read).
 
 Kept for the record; the changelog has the detail.
 
+- [x] **Empty `log_dir` logs to stdout** (PR #90): an empty or whitespace-only
+  value counts as unset, and `[logging] log_max_files` (default 14) bounds
+  file retention. The systemd unit ships with `LogsDirectory=` enabled.
 - [x] **Cap attacker-controlled worker-name growth**: per-session cap on
   distinct authorized identities (`max_authorizations_per_session`, default 8),
   token bucket on all inbound messages, 24 h TTL eviction of offline workers,

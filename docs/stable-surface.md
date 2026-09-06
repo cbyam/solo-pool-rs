@@ -85,7 +85,8 @@ refuse to start.
 | | `allowed_hosts` | list of strings, default empty | Extra `Host` names accepted on mutating routes. Bare hostnames only, optional port. |
 | `[logging]` | `level` | string, required | A `tracing` filter. An unparseable value falls back to `info`. |
 | | `json` | bool, required | JSON lines instead of human-readable output. |
-| | `log_dir` | string, optional | Directory for daily-rotated files. Unset logs to stdout. |
+| | `log_dir` | string, optional | Directory for daily-rotated files. Unset or empty logs to stdout. |
+| | `log_max_files` | integer, default 14 | Daily files kept when `log_dir` is set; the oldest is deleted as a new one opens. At least 1. |
 
 **Environment overrides.** Any scalar key can be set with
 `SOLO_POOL_<SECTION>__<KEY>` (upper case, double underscore between section
@@ -315,7 +316,7 @@ bounds the cardinality of the `worker` label and is part of the surface.
   start. A corrupt file is a fatal boot error. Deleting it changes the pool's
   public identity; pinned miners then refuse to connect until re-pinned.
 - **Log files** at `log_dir`: `solo-pool-rs.log.YYYY-MM-DD`, daily rotation,
-  no retention limit. Safe to delete.
+  the newest `log_max_files` kept. Safe to delete.
 
 ### 9. Packaging
 
@@ -409,28 +410,26 @@ a boot-time warning and keeps working until the next major.
 Each item is a place where the code or the shipped docs currently disagree
 with the text above. They are tracked in `TODO.md` under "Before 1.0".
 
-1. `log_dir = ""` writes a log file into the working directory instead of
-   logging to stdout. The table above states the intended behaviour.
-2. `subscribe-extranonce` is acknowledged in the `mining.configure` reply but
+1. `subscribe-extranonce` is acknowledged in the `mining.configure` reply but
    the pool never sends `mining.set_extranonce`. Either send it on extranonce
    changes or stop acknowledging the extension; the README feature table
    currently lists it as supported.
-3. `minimum-difficulty` is listed as a supported extension in the README, but
+2. `minimum-difficulty` is listed as a supported extension in the README, but
    a value requested by the miner is discarded. The text above documents the
    actual behaviour; the README should match.
-4. `pool_zmq_reconnects_total` is declared and never written. Emit it or drop
+3. `pool_zmq_reconnects_total` is declared and never written. Emit it or drop
    it before the metric table is frozen.
-5. The config example says the per-IP rate limit bans, and that
+4. The config example says the per-IP rate limit bans, and that
    `max_shares_per_sec` is a limit "before banning". Neither bans since
    0.6.6.
-6. `[sv2] enabled` is required when the section header is present, while the
+5. `[sv2] enabled` is required when the section header is present, while the
    example presents the whole section as defaulted. Give the key a default of
    true.
-7. The environment-override docs say every value can be overridden;
+6. The environment-override docs say every value can be overridden;
    `allowed_hosts` cannot, and optional keys cannot be unset.
-8. The binary has no `--version` or `--help`; `CONTRIBUTING.md` tells
+7. The binary has no `--version` or `--help`; `CONTRIBUTING.md` tells
    reporters to run `--version`. Add the flags or fix the text.
-9. The MSRV of 1.75 is declared in `Cargo.toml` and the README but CI builds
+8. The MSRV of 1.75 is declared in `Cargo.toml` and the README but CI builds
    on stable only, so the claim is not verified.
-10. The stats-store open failure is a warning, not an error, so a locked file
+9. The stats-store open failure is a warning, not an error, so a locked file
     silently disables the persistence promised in §8.
