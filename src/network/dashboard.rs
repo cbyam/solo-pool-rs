@@ -496,6 +496,30 @@ struct ChartParams {
     window: Option<String>,
 }
 
+/// Two hashrate samples further apart than this had no pool running between
+/// them (the recorder writes every ten minutes). The chart breaks the line
+/// there instead of drawing a slope that never happened. Generous enough
+/// that one late tick under load does not read as an outage.
+const CHART_GAP_SECS: u64 = 25 * 60;
+
+/// Insert a null sample midway across every gap wider than `max_gap_secs`.
+/// ECharts leaves `connectNulls` off by default, so the line and its area
+/// fill break at the null: a restart or a machine that was off shows as
+/// missing data, distinct from a recorded zero (pool up, no miners).
+fn with_gaps(history: Vec<(u64, f64)>, max_gap_secs: u64) -> Vec<(u64, Option<f64>)> {
+    let mut out = Vec::with_capacity(history.len());
+    for (ts, hps) in history {
+        if let Some(&(prev_ts, _)) = out.last() {
+            let prev_ts: u64 = prev_ts;
+            if ts.saturating_sub(prev_ts) > max_gap_secs {
+                out.push((prev_ts + (ts - prev_ts) / 2, None));
+            }
+        }
+        out.push((ts, Some(hps)));
+    }
+    out
+}
+
 // Chart colors here are placeholders: the dashboard JS re-skins every color
 // (line, area, axes, grid, tooltip) from the active theme's CSS variables in
 // loadChart(), so the light/dark toggle restyles the chart without a server
@@ -532,12 +556,12 @@ async fn chart_json(
     let live_10m: f64 = state.stats.snapshot().total_hashrate_10m;
     history.push((now_ms, live_10m));
 
-    let data: Vec<DataPoint> = history
-        .iter()
+    let data: Vec<DataPoint> = with_gaps(history, CHART_GAP_SECS)
+        .into_iter()
         .map(|(ts, hps)| {
             DataPoint::from(CompositeValue::from(vec![
-                CompositeValue::from(*ts as i64 * 1000),
-                CompositeValue::from(*hps),
+                CompositeValue::from(ts as i64 * 1000),
+                CompositeValue::from(hps),
             ]))
         })
         .collect();
@@ -1414,6 +1438,8 @@ async function loadChart(window) {
         const ts = Array.isArray(pt.value) ? pt.value[0] : pt.value;
         const hps = Array.isArray(pt.value) ? pt.value[1] : 0;
         const date = new Date(ts).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        // A null sample marks a stretch with no pool running (see with_gaps).
+        if (hps === null || hps === undefined) return date + '<br/>No data: the pool was not running';
         return date + '<br/><span style="color:' + accent + '">Hashrate (10m)</span>: ' + fmtHr(hps, false);
       };
     }
@@ -1437,9 +1463,12 @@ function markFoundBlocks(series, c) {
   if (!inWindow.length) return;
   // Series value nearest the block time, for the dot.
   const valueAt = ms => {
-    let best = pts[0];
-    for (const p of pts) if (Math.abs(p[0] - ms) < Math.abs(best[0] - ms)) best = p;
-    return best[1];
+    let best = null;
+    for (const p of pts) {
+      if (p[1] === null || p[1] === undefined) continue; // gap marker, no value
+      if (!best || Math.abs(p[0] - ms) < Math.abs(best[0] - ms)) best = p;
+    }
+    return best ? best[1] : 0;
   };
   series.markLine = {
     symbol: ['none', 'none'], silent: true, animation: false,
@@ -2056,6 +2085,39 @@ mod tests {
             h.insert(header::ORIGIN, HeaderValue::from_str(origin).unwrap());
         }
         h
+    }
+
+    #[test]
+    fn with_gaps_breaks_the_line_only_across_real_downtime() {
+        use super::with_gaps;
+        // Ten-minute cadence with one late tick: no break.
+        let steady = vec![(0, 1.0), (600, 2.0), (1500, 3.0)];
+        assert_eq!(
+            with_gaps(steady, 1500),
+            vec![(0, Some(1.0)), (600, Some(2.0)), (1500, Some(3.0))]
+        );
+
+        // An hour with nothing recorded: a null midway, so ECharts leaves a
+        // gap between the shutdown sample and the first sample after boot.
+        let restart = vec![(0, 5.0), (600, 5.0), (4200, 4.0)];
+        assert_eq!(
+            with_gaps(restart, 1500),
+            vec![
+                (0, Some(5.0)),
+                (600, Some(5.0)),
+                (2400, None),
+                (4200, Some(4.0))
+            ]
+        );
+
+        // A recorded zero is data (pool up, miners gone), never a gap.
+        let miners_down = vec![(0, 5.0), (600, 0.0), (1200, 0.0)];
+        assert!(with_gaps(miners_down, 1500)
+            .iter()
+            .all(|(_, v)| v.is_some()));
+
+        assert!(with_gaps(vec![], 1500).is_empty());
+        assert_eq!(with_gaps(vec![(7, 1.0)], 1500), vec![(7, Some(1.0))]);
     }
 
     #[test]

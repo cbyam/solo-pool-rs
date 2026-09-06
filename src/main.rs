@@ -71,13 +71,17 @@ async fn main() -> Result<()> {
     runtime_settings.apply_persisted(stats.load_setting("coinbase_address"));
 
     // ── Hashrate history recorder (every 10 minutes) ─────────────────────────
+    // Sleep first: a sample taken at boot is a zero (no miner has reconnected
+    // yet), and the chart drew it as a ramp down to nothing across every
+    // restart. Downtime is shown as a gap instead (see chart_json), which the
+    // shutdown hook's final sample and the first post-boot sample delimit.
     {
         let stats = stats.clone();
         tokio::spawn(async move {
             let interval = tokio::time::Duration::from_secs(10 * 60);
             loop {
-                stats.record_hashrate_snapshot();
                 tokio::time::sleep(interval).await;
+                stats.record_hashrate_snapshot();
             }
         });
     }

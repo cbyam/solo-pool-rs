@@ -51,6 +51,13 @@ everything else bumps the **patch** version.
   checkout v7, upload-artifact v7, download-artifact v8, github-script v9.
 
 ### Fixed
+- The hashrate chart shows downtime as a gap instead of a dip. The recorder
+  wrote a sample at boot, before any miner had reconnected, and the chart
+  joined it to the shutdown sample as a slope down to zero that never
+  happened. The boot sample is gone, and the chart endpoint inserts a null
+  wherever two samples are more than 25 minutes apart, which ECharts draws
+  as a break in the line and the area. A recorded zero (pool up, miners
+  gone) still draws as zero.
 - The Docker image builds again. The dependency-caching stage stubbed only
   `src/main.rs`; with the crate now also a library, Cargo needs `src/lib.rs`
   to exist too, and the `:edge` build broke on the first push after that
