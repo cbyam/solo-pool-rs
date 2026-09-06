@@ -1532,21 +1532,32 @@ function renderBlocks(d, nowSec) {
   const workerEl = document.getElementById('v-last-block-worker');
   const timeEl = document.getElementById('v-last-block-time');
   const hashEl = document.getElementById('v-last-block-hash');
+  // The tile is about 160px wide at a typical window size: two short lines
+  // in the empty state, with the detail in tooltips, and the hash line
+  // hidden until there is a hash.
   if (n === 0 || !d.last_block_ts) {
     workerEl.textContent = 'None yet';
     workerEl.classList.add('muted');
-    timeEl.textContent = lastExpectedWait
-      ? 'At ' + fmtHr(d.total_hashrate_10m || 0, false) + ', expect one ' + lastExpectedWait.replace('about', 'about every')
-      : 'Odds appear once a miner connects';
-    hashEl.textContent = 'The chart marks it when it lands';
-    hashEl.title = '';
+    workerEl.title = 'The chart marks it when it lands';
+    if (lastExpectedWait) {
+      timeEl.textContent = lastExpectedWait.replace('about', 'About every');
+      timeEl.title = 'Mean time between blocks at ' + fmtHr(d.total_hashrate_10m || 0, false)
+        + ', the current 10-minute pool hashrate. The real wait is anything from minutes to many times this.';
+    } else {
+      timeEl.textContent = 'Odds appear once a miner connects';
+      timeEl.title = '';
+    }
+    hashEl.hidden = true;
   } else {
     const last = blocks[blocks.length - 1];
     workerEl.textContent = d.last_block_worker;
     workerEl.classList.remove('muted');
+    workerEl.title = 'Worker that found the last block';
     timeEl.textContent = fmtTimestamp(d.last_block_ts)
       + ' (' + fmtUptime(Math.max(0, nowSec - d.last_block_ts)) + ' ago)'
       + (last && last.height ? ' · height ' + last.height.toLocaleString() : '');
+    timeEl.title = '';
+    hashEl.hidden = false;
     hashEl.textContent = d.last_block_hash;
     hashEl.title = 'Hash of the last block this pool found';
   }

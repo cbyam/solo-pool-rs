@@ -33,8 +33,9 @@ everything else bumps the **patch** version.
 
 ### Changed
 - Dashboard empty states say what they mean: "None yet" with the expected
-  wait at the current hashrate instead of three dashes, and "Expected wait:
-  about N years" instead of "Yearly: 1 in N".
+  wait ("About every N years", the hashrate it assumes in the tooltip)
+  instead of three dashes, and "Expected wait: about N years" instead of
+  "Yearly: 1 in N".
 - `PoolStats::share_accepted` takes the credited difficulty alongside the
   hash difficulty, and `block_found` takes the height; both are internal.
 - The dashboard's worker table is built with DOM calls and `textContent`
