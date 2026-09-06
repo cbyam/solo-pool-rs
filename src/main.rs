@@ -265,7 +265,7 @@ fn init_tracing(cfg: &config::LoggingConfig) {
 
     let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if let Some(log_dir) = &cfg.log_dir {
+    if let Some(log_dir) = cfg.log_dir() {
         use std::path::PathBuf;
         use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
@@ -290,8 +290,24 @@ fn init_tracing(cfg: &config::LoggingConfig) {
             std::process::exit(1);
         }
 
-        let file_appender =
-            RollingFileAppender::new(Rotation::DAILY, log_dir_path, "solo-pool-rs.log");
+        // Daily files, oldest deleted past `log_max_files`, so a file-logging
+        // install has bounded disk use without an external logrotate.
+        let file_appender = match RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("solo-pool-rs.log")
+            .max_log_files(cfg.log_max_files)
+            .build(&log_dir_path)
+        {
+            Ok(appender) => appender,
+            Err(e) => {
+                eprintln!(
+                    "Failed to open log file in {}: {}",
+                    log_dir_path.display(),
+                    e
+                );
+                std::process::exit(1);
+            }
+        };
 
         if cfg.json {
             fmt()

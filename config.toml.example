@@ -221,7 +221,14 @@ level = "info"
 # Emit structured JSON logs (useful for log aggregators like Loki)
 json = false
 
-# Optional: Directory to write log files to (e.g., for systemd service).
-# If set, logs will be written to a rotating file in this directory.
-# Supports ~ expansion. Leave empty or omit to log to stdout/stderr.
+# Optional: directory to write log files to. Leave empty or omit to log to
+# stdout, which the journal, `docker logs` and Umbrel all capture; that is the
+# right choice for every packaged install. Set it only when you want files.
+# One file per day, named solo-pool-rs.log.YYYY-MM-DD. Supports ~ expansion.
+# Under the systemd unit, use "/var/log/solo-pool-rs" (the unit's
+# LogsDirectory= creates it with the right owner).
 log_dir = ""
+
+# How many daily files to keep when log_dir is set; the oldest is deleted when
+# a new day's file opens. Ignored when log_dir is empty.
+log_max_files = 14

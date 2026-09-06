@@ -159,8 +159,10 @@ sudo systemctl enable --now solo-pool-rs
 journalctl -u solo-pool-rs -f
 ```
 
-Logs go to the journal by default (`log_dir` empty); set `log_dir` plus
-`LogsDirectory=` in the unit for file logging instead.
+Logs go to the journal by default (`log_dir` empty). For files instead, set
+`log_dir = "/var/log/solo-pool-rs"`: the unit's `LogsDirectory=` creates that
+directory with the right owner, and `log_max_files` (default 14) bounds how
+many daily files are kept.
 
 ---
 

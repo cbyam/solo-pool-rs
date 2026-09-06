@@ -267,8 +267,30 @@ pub struct LoggingConfig {
     pub json: bool,
     /// Optional directory to write logs to (e.g., "/var/log/solo-pool-rs/").
     /// If set, logs will be written to a file in this directory.
-    /// Supports `~` expansion.
+    /// Supports `~` expansion. Read through `log_dir()`, which treats an
+    /// empty value as unset.
     pub log_dir: Option<String>,
+    /// How many daily log files to keep when `log_dir` is set. The oldest is
+    /// deleted when a new day's file is opened. Ignored without `log_dir`.
+    #[serde(default = "default_log_max_files")]
+    pub log_max_files: usize,
+}
+
+fn default_log_max_files() -> usize {
+    14
+}
+
+impl LoggingConfig {
+    /// The log directory, or None when unset. An empty or whitespace-only
+    /// value counts as unset: the shipped example uses `log_dir = ""` for
+    /// "log to stdout", and `Some("")` would otherwise create a log file in
+    /// the working directory.
+    pub fn log_dir(&self) -> Option<&str> {
+        self.log_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -278,6 +300,10 @@ pub struct LoggingConfig {
 impl Config {
     /// Reject configurations that would later panic or misbehave at runtime.
     fn validate(&self) -> Result<()> {
+        if self.logging.log_max_files == 0 {
+            anyhow::bail!("[logging] log_max_files must be at least 1");
+        }
+
         // An entry like "http://pool.ts.net/" would never match an incoming
         // Host header, so the operator would be locked out of settings with no
         // hint why. Refuse it here where the message is visible.
@@ -561,6 +587,33 @@ mod tests {
     fn shipped_example_config_passes_validation() {
         // The example is what operators copy, so it must satisfy every guard.
         example_config().validate().expect("example must validate");
+    }
+
+    #[test]
+    fn empty_log_dir_means_stdout() {
+        // The example ships `log_dir = ""` with a comment promising stdout.
+        let mut cfg = example_config();
+        assert_eq!(cfg.logging.log_dir, Some(String::new()));
+        assert_eq!(cfg.logging.log_dir(), None);
+        cfg.logging.log_dir = Some("   ".to_string());
+        assert_eq!(cfg.logging.log_dir(), None);
+        cfg.logging.log_dir = Some("~/logs".to_string());
+        assert_eq!(cfg.logging.log_dir(), Some("~/logs"));
+        cfg.logging.log_dir = None;
+        assert_eq!(cfg.logging.log_dir(), None);
+    }
+
+    #[test]
+    fn log_retention_defaults_and_rejects_zero() {
+        let src = "[logging]\nlevel = \"info\"\njson = false\n";
+        let value: toml::Value = toml::from_str(src).unwrap();
+        let logging: super::LoggingConfig = value["logging"].clone().try_into().unwrap();
+        assert_eq!(logging.log_max_files, 14);
+
+        let mut cfg = example_config();
+        cfg.logging.log_max_files = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("log_max_files"), "unexpected error: {err}");
     }
 
     #[test]
