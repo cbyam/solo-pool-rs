@@ -148,7 +148,12 @@ async fn main() -> Result<()> {
     let new_block_rx = zmq::start(&config.zmq, rpc.clone()).await;
 
     // ── Template engine ───────────────────────────────────────────────────────
-    let engine = TemplateEngine::new(rpc.clone(), config.pool.clone(), runtime_settings.clone());
+    let engine = TemplateEngine::new(
+        rpc.clone(),
+        config.pool.clone(),
+        runtime_settings.clone(),
+        stats.clone(),
+    );
 
     // Spawn the template refresh loop
     {
