@@ -20,11 +20,38 @@ pub type NewBlockReceiver = watch::Receiver<u64>;
 /// Backoff before re-subscribing after the ZMQ stream errors or closes.
 const ZMQ_RECONNECT_SECS: u64 = 5;
 
-/// How long ZMQ may be silent before a poll-detected tip change is treated as
-/// "ZMQ missed it". Blocks are ~10 minutes apart and a healthy subscription
-/// delivers within milliseconds of the tip moving, so a minute of silence around
-/// a confirmed tip change means the subscription is not delivering.
-const ZMQ_SILENCE_SECS: u64 = 60;
+/// How long after the poll notices a new tip the subscription gets to deliver
+/// its own notification before the poll declares it silent. The hashblock
+/// message leaves the node through its validation callback queue, which can
+/// lag the RPC-visible tip by seconds when the queue is busy (a rawtx
+/// publisher on the same node shares it), so a one-second poll wins the race
+/// now and then on a perfectly healthy subscription. A subscription that has
+/// not spoken this long after a confirmed tip change is not delivering.
+const ZMQ_GRACE_SECS: u64 = 10;
+
+/// What the poll concludes about a tip change it noticed at `observed_at`.
+#[derive(Debug, PartialEq, Eq)]
+enum ZmqVerdict {
+    /// ZMQ has spoken since the poll's observation: the subscription is alive
+    /// and the poll merely won the race for this block.
+    Delivered,
+    /// Still inside the grace period; keep watching.
+    Pending,
+    /// The grace period passed with no ZMQ message.
+    Silent,
+}
+
+fn zmq_verdict(zmq_last_seen: u64, observed_at: u64, now: u64) -> ZmqVerdict {
+    // Second granularity: a message stamped in the same second as the poll's
+    // observation counts as delivered whichever came first.
+    if zmq_last_seen >= observed_at {
+        ZmqVerdict::Delivered
+    } else if now.saturating_sub(observed_at) > ZMQ_GRACE_SECS {
+        ZmqVerdict::Silent
+    } else {
+        ZmqVerdict::Pending
+    }
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -127,8 +154,30 @@ async fn run_poll_fallback(
     let mut last_hash = String::new();
     let mut seq: u64 = 0;
     let interval = tokio::time::Duration::from_millis(poll_interval_ms);
+    // A tip change the poll saw first, awaiting ZMQ's own notification.
+    let mut awaiting_zmq: Option<u64> = None;
 
     loop {
+        if let Some(observed_at) = awaiting_zmq {
+            match zmq_verdict(
+                zmq_last_seen.load(Ordering::Relaxed),
+                observed_at,
+                now_secs(),
+            ) {
+                ZmqVerdict::Pending => {}
+                ZmqVerdict::Delivered => awaiting_zmq = None,
+                ZmqVerdict::Silent => {
+                    awaiting_zmq = None;
+                    metrics::rpc_fallback_used();
+                    warn!(
+                        "Tip changed {ZMQ_GRACE_SECS}s ago and ZMQ never delivered it — the \
+                         hashblock subscription is not delivering. Check \
+                         zmq.hashblock_endpoint and that the node runs with -zmqpubhashblock."
+                    );
+                }
+            }
+        }
+
         // bitcoincore-rpc is synchronous; run it on the blocking pool so a hung
         // node cannot pin a runtime worker for the transport timeout.
         let rpc = Arc::clone(&rpc);
@@ -136,19 +185,13 @@ async fn run_poll_fallback(
             Ok(Ok(hash)) => {
                 if hash != last_hash {
                     // Skip the first observation: that is the poll learning the
-                    // current tip at startup, not a missed notification.
-                    if !last_hash.is_empty() {
-                        let silence =
-                            now_secs().saturating_sub(zmq_last_seen.load(Ordering::Relaxed));
-                        if zmq_last_seen.load(Ordering::Relaxed) == 0 || silence > ZMQ_SILENCE_SECS
-                        {
-                            metrics::rpc_fallback_used();
-                            warn!(
-                                "Tip changed but ZMQ has been silent — the hashblock \
-                                 subscription is not delivering. Check zmq.hashblock_endpoint \
-                                 and that the node runs with -zmqpubhashblock."
-                            );
-                        }
+                    // current tip at startup, not a missed notification. For
+                    // every later change, give ZMQ a grace period to deliver
+                    // before concluding anything; the verdict is taken at the
+                    // top of the loop. The signal below goes out regardless,
+                    // so a lagging or dead subscription costs no job latency.
+                    if !last_hash.is_empty() && awaiting_zmq.is_none() {
+                        awaiting_zmq = Some(now_secs());
                     }
                     debug!("Poll: new block hash {hash}");
                     last_hash = hash;
@@ -160,5 +203,44 @@ async fn run_poll_fallback(
             Err(e) => warn!("Poll task failed: {e}"),
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{zmq_verdict, ZmqVerdict, ZMQ_GRACE_SECS};
+
+    #[test]
+    fn zmq_beating_the_poll_is_delivered() {
+        // ZMQ stamped the block before the poll noticed it.
+        assert_eq!(zmq_verdict(1_000, 1_000, 1_000), ZmqVerdict::Delivered);
+        assert_eq!(zmq_verdict(999, 1_000, 1_000), ZmqVerdict::Pending);
+    }
+
+    #[test]
+    fn zmq_lagging_the_poll_inside_the_grace_is_delivered() {
+        // The poll won the race at t=1000; ZMQ delivered at t=1003. Before it
+        // did, the verdict must stay pending, never silent.
+        assert_eq!(zmq_verdict(400, 1_000, 1_002), ZmqVerdict::Pending);
+        assert_eq!(zmq_verdict(1_003, 1_000, 1_004), ZmqVerdict::Delivered);
+    }
+
+    #[test]
+    fn no_zmq_message_after_the_grace_is_silent() {
+        let observed = 1_000;
+        assert_eq!(
+            zmq_verdict(400, observed, observed + ZMQ_GRACE_SECS),
+            ZmqVerdict::Pending,
+            "the boundary second is still inside the grace"
+        );
+        assert_eq!(
+            zmq_verdict(400, observed, observed + ZMQ_GRACE_SECS + 1),
+            ZmqVerdict::Silent
+        );
+        // Never delivered at all since boot (last_seen 0) is the same case.
+        assert_eq!(
+            zmq_verdict(0, observed, observed + ZMQ_GRACE_SECS + 1),
+            ZmqVerdict::Silent
+        );
     }
 }
