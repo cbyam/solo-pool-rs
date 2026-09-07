@@ -47,7 +47,7 @@ tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 const_sv2 = "4.0.1"            # shared SV2 message-type / channel-bit constants
 binary_sv2 = "5.0.1"           # SV2 binary message (de)serialization
 framing_sv2 = "6.0.1"          # SV2 frame header (extension_type, msg_type, length)
-common_messages_sv2 = "7.1.0"  # SetupConnection(Success/Error)
+common_messages_sv2 = "8.0.0"  # SetupConnection(Success/Error)
 mining_sv2 = "9.0.0"           # mining protocol messages (extended channel)
 
 # ── Serialization ──────────────────────────────────────────────────────────────
