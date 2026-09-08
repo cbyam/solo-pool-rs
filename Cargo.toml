@@ -72,7 +72,7 @@ axum = "0.8"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 thiserror = "2"
-rand = "0.8"
+rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 dashmap = "5"
