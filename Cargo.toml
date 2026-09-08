@@ -61,7 +61,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tracing-appender = "0.2"
 
 # ── Metrics (Prometheus-compatible) ───────────────────────────────────────────
-metrics = "0.23"
+metrics = "0.24"
 metrics-exporter-prometheus = "0.15"
 metrics-util = "0.17" # MetricKindMask for the exporter idle-timeout (same minor as the exporter's own dep)
 
