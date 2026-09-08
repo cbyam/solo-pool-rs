@@ -78,7 +78,7 @@ parking_lot = "0.12"
 dashmap = "5"
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
-rusqlite = "0.29"
+rusqlite = "0.40"
 charming = "0.6"
 codec_sv2 = { version = "6.0.0", features = ["noise_sv2"] }
 noise_sv2 = "1.4.2"
