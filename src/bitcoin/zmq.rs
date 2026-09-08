@@ -41,10 +41,25 @@ enum ZmqVerdict {
     Silent,
 }
 
-fn zmq_verdict(zmq_last_seen: u64, observed_at: u64, now: u64) -> ZmqVerdict {
-    // Second granularity: a message stamped in the same second as the poll's
-    // observation counts as delivered whichever came first.
-    if zmq_last_seen >= observed_at {
+/// How far before the poll's observation a ZMQ message still counts as being
+/// about the same tip change.
+///
+/// The poll learns of a block up to one interval after it connects, while ZMQ
+/// is stamped as it arrives, so a healthy subscription is routinely stamped
+/// *earlier* than the observation it belongs to. Both stamps are whole
+/// seconds, which costs another second at the boundary. Without this slack the
+/// verdict is a coin flip on every block: measured on prod, ZMQ beat the poll
+/// by ~0.5 s on 5 of 6 blocks and the warning fired on 43 of 97 tip changes
+/// while the node had in fact delivered every one.
+fn poll_slack_secs(poll_interval_ms: u64) -> u64 {
+    poll_interval_ms.div_ceil(1_000) + 1
+}
+
+fn zmq_verdict(zmq_last_seen: u64, observed_at: u64, now: u64, slack: u64) -> ZmqVerdict {
+    // A message stamped up to `slack` seconds before the poll's observation is
+    // the notification for this tip change, not a stale one: the poll cannot
+    // notice a block sooner than ZMQ can announce it.
+    if zmq_last_seen + slack >= observed_at {
         ZmqVerdict::Delivered
     } else if now.saturating_sub(observed_at) > ZMQ_GRACE_SECS {
         ZmqVerdict::Silent
@@ -163,6 +178,7 @@ async fn run_poll_fallback(
                 zmq_last_seen.load(Ordering::Relaxed),
                 observed_at,
                 now_secs(),
+                poll_slack_secs(poll_interval_ms),
             ) {
                 ZmqVerdict::Pending => {}
                 ZmqVerdict::Delivered => awaiting_zmq = None,
@@ -208,39 +224,77 @@ async fn run_poll_fallback(
 
 #[cfg(test)]
 mod tests {
-    use super::{zmq_verdict, ZmqVerdict, ZMQ_GRACE_SECS};
+    use super::{poll_slack_secs, zmq_verdict, ZmqVerdict, ZMQ_GRACE_SECS};
+
+    /// Slack for the default 1000 ms poll.
+    const SLACK: u64 = 2;
 
     #[test]
     fn zmq_beating_the_poll_is_delivered() {
-        // ZMQ stamped the block before the poll noticed it.
-        assert_eq!(zmq_verdict(1_000, 1_000, 1_000), ZmqVerdict::Delivered);
-        assert_eq!(zmq_verdict(999, 1_000, 1_000), ZmqVerdict::Pending);
+        // Same second, whichever came first.
+        assert_eq!(
+            zmq_verdict(1_000, 1_000, 1_000, SLACK),
+            ZmqVerdict::Delivered
+        );
+        // The block connected at t=999.9: ZMQ stamped 999, the poll's next tick
+        // noticed at t=1000.1 and stamped 1000. ZMQ delivered *first*, so this
+        // is the subscription working, not failing. Asserting Pending here is
+        // what made the warning fire on roughly half of all blocks.
+        assert_eq!(zmq_verdict(999, 1_000, 1_000, SLACK), ZmqVerdict::Delivered);
+        assert_eq!(
+            zmq_verdict(999, 1_000, 1_000 + ZMQ_GRACE_SECS + 1, SLACK),
+            ZmqVerdict::Delivered,
+            "and it stays delivered once the grace has elapsed"
+        );
     }
 
     #[test]
     fn zmq_lagging_the_poll_inside_the_grace_is_delivered() {
         // The poll won the race at t=1000; ZMQ delivered at t=1003. Before it
         // did, the verdict must stay pending, never silent.
-        assert_eq!(zmq_verdict(400, 1_000, 1_002), ZmqVerdict::Pending);
-        assert_eq!(zmq_verdict(1_003, 1_000, 1_004), ZmqVerdict::Delivered);
+        assert_eq!(zmq_verdict(400, 1_000, 1_002, SLACK), ZmqVerdict::Pending);
+        assert_eq!(
+            zmq_verdict(1_003, 1_000, 1_004, SLACK),
+            ZmqVerdict::Delivered
+        );
     }
 
     #[test]
     fn no_zmq_message_after_the_grace_is_silent() {
         let observed = 1_000;
         assert_eq!(
-            zmq_verdict(400, observed, observed + ZMQ_GRACE_SECS),
+            zmq_verdict(400, observed, observed + ZMQ_GRACE_SECS, SLACK),
             ZmqVerdict::Pending,
             "the boundary second is still inside the grace"
         );
         assert_eq!(
-            zmq_verdict(400, observed, observed + ZMQ_GRACE_SECS + 1),
+            zmq_verdict(400, observed, observed + ZMQ_GRACE_SECS + 1, SLACK),
             ZmqVerdict::Silent
         );
         // Never delivered at all since boot (last_seen 0) is the same case.
         assert_eq!(
-            zmq_verdict(0, observed, observed + ZMQ_GRACE_SECS + 1),
+            zmq_verdict(0, observed, observed + ZMQ_GRACE_SECS + 1, SLACK),
             ZmqVerdict::Silent
         );
+    }
+
+    #[test]
+    fn slack_covers_a_whole_poll_interval() {
+        // The slack has to track poll_interval_ms: at 5000 ms, documented in
+        // config.toml.example as the low-call-volume setting, the poll can
+        // notice a tip five seconds after ZMQ announced it. A fixed one-second
+        // tolerance would call that silent on most blocks.
+        assert_eq!(poll_slack_secs(1_000), 2);
+        assert_eq!(poll_slack_secs(5_000), 6);
+        assert_eq!(poll_slack_secs(1_500), 3);
+
+        let slack = poll_slack_secs(5_000);
+        assert_eq!(
+            zmq_verdict(995, 1_000, 1_020, slack),
+            ZmqVerdict::Delivered,
+            "ZMQ spoke one poll interval before the poll noticed"
+        );
+        // A genuinely dead subscription is still caught at any interval.
+        assert_eq!(zmq_verdict(900, 1_000, 1_020, slack), ZmqVerdict::Silent);
     }
 }

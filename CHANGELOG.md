@@ -10,6 +10,18 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Fixed
+- The `ZMQ never delivered it` warning fired on roughly half of all blocks
+  while the subscription was working perfectly. The poll learns of a block up
+  to one interval after it connects, so a healthy ZMQ is routinely stamped
+  *earlier* than the observation it belongs to, and with both stamps kept as
+  whole seconds the verdict came down to whether a second boundary happened to
+  fall in that sub-second gap. Measured on the live pool: ZMQ beat the poll by
+  ~0.5 s on 5 of 6 blocks, and the node had delivered every one of the 43
+  blocks out of 97 that the pool reported as silent. The verdict now allows a
+  poll interval plus a second of slack, so it tracks `poll_interval_ms` rather
+  than assuming the 1000 ms default. A genuinely silent subscription is still
+  caught at any interval. Only the warning and `pool_rpc_fallback_used_total`
+  were affected; the new-job signal never depended on this.
 - `/metrics` served an empty body. Bumping `metrics` to 0.24 on its own left
   `metrics-exporter-prometheus` 0.15 and `metrics-util` 0.17 pulling `metrics`
   0.23, so the pool emitted into one global registry and the exporter read
