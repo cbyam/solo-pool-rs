@@ -9,6 +9,16 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- Stratum V2 dependencies moved up to the current SRI set: `binary_sv2` 6,
+  `framing_sv2` 7, `codec_sv2` 6, `common_messages_sv2` 8 and `mining_sv2`
+  11. These crates are released as a matched set and each new major needs
+  the matching `binary_sv2`, so Dependabot's one-crate-at-a-time PRs could
+  not build; they are now grouped as `sv2-stack`. `const_sv2` and
+  `noise_sv2` are unchanged, so the Noise handshake is untouched. Verified
+  against live hardware on both protocols, including a Noise-only
+  NerdQAxe++, across a chain-tip change with no rejected or stale shares.
+
 ## [0.6.8] - 2026-09-06
 
 ### Fixed

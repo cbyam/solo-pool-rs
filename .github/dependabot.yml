@@ -15,6 +15,12 @@ updates:
       # a bump to any one of them alone cannot compile. Move them together.
       metrics-stack:
         patterns: ["metrics", "metrics-*"]
+      # The SRI Stratum V2 crates are released as a matched set: each new
+      # major of mining_sv2/common_messages_sv2/framing_sv2/codec_sv2 requires
+      # the matching binary_sv2 major, so bumping one alone cannot compile.
+      # Move them together.
+      sv2-stack:
+        patterns: ["*_sv2"]
       # Patch and minor bumps are lockfile-only and land together.
       minor-and-patch:
         update-types: [minor, patch]
