@@ -35,6 +35,9 @@ allow = [
   # crate). Permissive; listed explicitly so it is a decision rather than a
   # surprise.
   "MITNFA",
+  # Permissive, and the same family as MIT/BSD. Used by foldhash, which arrives
+  # with metrics-util 0.20 as hashbrown's default hasher.
+  "Zlib",
 ]
 confidence-threshold = 0.8
 

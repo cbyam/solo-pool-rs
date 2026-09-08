@@ -137,3 +137,38 @@ pub fn update_hashrate(hps: f64, worker: &str) {
 pub fn update_job_height(height: u64) {
     gauge!("pool_job_height").set(height as f64);
 }
+
+#[cfg(test)]
+mod tests {
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    /// The `metrics` facade these helpers emit through and the exporter that
+    /// serves /metrics must resolve to one version of the crate.
+    ///
+    /// When they split, nothing complains. Bumping `metrics` to 0.24 while the
+    /// exporter still pulled 0.23 gave two global registries: every macro here
+    /// wrote to one, the exporter read the other, the build stayed green, all
+    /// tests passed, and /metrics served 200 with an empty body until someone
+    /// happened to look. Rendering through the real helpers is the only check
+    /// that fails when that happens.
+    #[test]
+    fn the_exporter_can_read_what_these_helpers_emit() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            super::miner_connected();
+            super::connection_refused("rate_limit");
+        });
+
+        let rendered = handle.render();
+        for expected in ["pool_connected_miners", "pool_connections_refused_total"] {
+            assert!(
+                rendered.contains(expected),
+                "exporter rendered nothing for {expected}, which this module just \
+                 emitted — the facade and the exporter are probably on different \
+                 versions of `metrics`. Rendered:\n{rendered}"
+            );
+        }
+    }
+}

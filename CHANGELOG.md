@@ -9,6 +9,17 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- `/metrics` served an empty body. Bumping `metrics` to 0.24 on its own left
+  `metrics-exporter-prometheus` 0.15 and `metrics-util` 0.17 pulling `metrics`
+  0.23, so the pool emitted into one global registry and the exporter read
+  another. Nothing failed: the build was green, every test passed, and the
+  endpoint returned 200 with nothing in it. The exporter moves to 0.18 and
+  `metrics-util` to 0.20, which put the whole stack back on one `metrics`, and
+  a test now renders through the exporter so a future split fails to compile
+  instead of silently emptying the endpoint. `deny.toml` allows Zlib for
+  `foldhash`, which arrives with `metrics-util` 0.20.
+
 ### Changed
 - Stratum V2 dependencies moved up to the current SRI set: `binary_sv2` 6,
   `framing_sv2` 7, `codec_sv2` 6, `common_messages_sv2` 8 and `mining_sv2`

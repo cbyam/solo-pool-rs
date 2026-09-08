@@ -62,8 +62,8 @@ tracing-appender = "0.2"
 
 # ── Metrics (Prometheus-compatible) ───────────────────────────────────────────
 metrics = "0.24"
-metrics-exporter-prometheus = "0.15"
-metrics-util = "0.17" # MetricKindMask for the exporter idle-timeout (same minor as the exporter's own dep)
+metrics-exporter-prometheus = "0.18"
+metrics-util = "0.20" # MetricKindMask for the exporter idle-timeout (same minor as the exporter's own dep)
 
 # ── Dashboard HTTP server ──────────────────────────────────────────────────────
 axum = "0.8"
