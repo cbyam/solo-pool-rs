@@ -66,7 +66,7 @@ metrics-exporter-prometheus = "0.15"
 metrics-util = "0.17" # MetricKindMask for the exporter idle-timeout (same minor as the exporter's own dep)
 
 # ── Dashboard HTTP server ──────────────────────────────────────────────────────
-axum = "0.7"
+axum = "0.8"
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 uuid = { version = "1", features = ["v4"] }
