@@ -158,8 +158,8 @@ async fn main() {
                 let j: NewExtendedMiningJob = binary_sv2::from_bytes(&mut payload).unwrap();
                 println!(
                     "← 0x1f NewExtendedMiningJob: job_id={} version=0x{:08x} vr_allowed={} merkle_path_len={} cb_prefix={}B cb_suffix={}B",
-                    j.job_id, j.version, j.version_rolling_allowed, j.merkle_path.0.len(),
-                    j.coinbase_tx_prefix.inner_as_ref().len(), j.coinbase_tx_suffix.inner_as_ref().len(),
+                    j.job_id, j.version, j.version_rolling_allowed, j.merkle_path.len(),
+                    j.coinbase_tx_prefix.as_ref().len(), j.coinbase_tx_suffix.as_ref().len(),
                 );
             }
             0x20 => {
@@ -169,7 +169,7 @@ async fn main() {
                     "← 0x20 SetNewPrevHash: job_id={} nbits=0x{:08x} prev_hash={}",
                     p.job_id,
                     p.nbits,
-                    hex::encode(p.prev_hash.inner_as_ref()),
+                    hex::encode(p.prev_hash.as_ref()),
                 );
             }
             other => println!("← 0x{other:02x} (other)"),

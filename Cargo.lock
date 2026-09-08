@@ -200,9 +200,9 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "binary_sv2"
-version = "5.0.1"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b508acc2616ce7faec993f6b4e4d0aa2227d74103552897bf833413bf7406681"
+checksum = "a33bcd3b361e9e673007054cba4d2ac03f326aa1260da556e9f95d66685b43ab"
 dependencies = [
  "derive_codec_sv2",
 ]
@@ -485,9 +485,9 @@ dependencies = [
 
 [[package]]
 name = "codec_sv2"
-version = "5.0.0"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3db4fcf7e30280ed8dc8575ea326933acebb699d9617afd8186e4b62fa88c484"
+checksum = "7ec3f2eb964e9679808eed486de248ea1251addc2f643c83efedd0bdbf8c5253"
 dependencies = [
  "binary_sv2",
  "buffer_sv2",
@@ -499,9 +499,9 @@ dependencies = [
 
 [[package]]
 name = "common_messages_sv2"
-version = "7.1.0"
+version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3476f78449d06e1c198e60f65e27aa9c67ba2490a9640623bc4f8d28ec44f71d"
+checksum = "9dc0cc7206b4f8d31c38a0a693d24392a3ea9d55106254302fc4ef1c902d9a8d"
 dependencies = [
  "binary_sv2",
 ]
@@ -737,9 +737,9 @@ dependencies = [
 
 [[package]]
 name = "derive_codec_sv2"
-version = "1.1.2"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40d67b9d87d96ca3b35000ad98ac7d940ebf8f93527229c5fc0938b0a013ea9e"
+checksum = "28ca1b57bc0bbc0a32af43d0a0430be887bf1c94ce1a25d3a885a9c17978342f"
 
 [[package]]
 name = "digest"
@@ -852,9 +852,9 @@ dependencies = [
 
 [[package]]
 name = "framing_sv2"
-version = "6.0.1"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc22163ceb4d6c0300942035964c466f0c5279fd91dfbae8b01e7295ab30648a"
+checksum = "3a7763216b190464a6cdc09675f49bec208ed4c6eb09d5a464631a5fe2dd4ade"
 dependencies = [
  "binary_sv2",
  "noise_sv2",
@@ -1479,9 +1479,9 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mining_sv2"
-version = "9.0.0"
+version = "11.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd1e80344ddb3290088ea4aee9d5f984bf0799dd8bb2cb56b634207e7f1f95c3"
+checksum = "e7f6b6e922450ed74d984a336009f632889a4e291aec90646f25b2f63b43deeb"
 dependencies = [
  "binary_sv2",
 ]

@@ -96,9 +96,9 @@ pub struct OpenExtended {
 pub fn decode_open_extended(payload: &mut [u8]) -> Result<OpenExtended> {
     let m: OpenExtendedMiningChannel = binary_sv2::from_bytes(payload)
         .map_err(|e| anyhow!("decode OpenExtendedMiningChannel: {e:?}"))?;
-    let user_identity = String::from_utf8_lossy(m.user_identity.inner_as_ref()).into_owned();
+    let user_identity = String::from_utf8_lossy(m.user_identity.as_ref()).into_owned();
     let mut max_target = [0u8; 32];
-    max_target.copy_from_slice(m.max_target.inner_as_ref());
+    max_target.copy_from_slice(m.max_target.as_ref());
     Ok(OpenExtended {
         request_id: m.request_id,
         user_identity,
@@ -130,7 +130,7 @@ pub fn decode_submit_extended(payload: &mut [u8]) -> Result<SubmitExtended> {
         nonce: m.nonce,
         ntime: m.ntime,
         version: m.version,
-        extranonce: m.extranonce.inner_as_ref().to_vec(),
+        extranonce: m.extranonce.as_ref().to_vec(),
     })
 }
 
@@ -277,7 +277,7 @@ mod tests {
         let decoded: SetupConnectionError = binary_sv2::from_bytes(&mut bytes).unwrap();
         assert_eq!(decoded.flags, 0);
         assert_eq!(
-            decoded.error_code.inner_as_ref(),
+            decoded.error_code.as_ref(),
             b"unsupported-protocol" as &[u8]
         );
 
@@ -290,7 +290,7 @@ mod tests {
             FLAG_REQUIRES_STANDARD_JOBS | FLAG_REQUIRES_WORK_SELECTION
         );
         assert_eq!(
-            decoded.error_code.inner_as_ref(),
+            decoded.error_code.as_ref(),
             b"unsupported-feature-flags" as &[u8]
         );
     }
