@@ -9,6 +9,18 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-09-08
+
+### Changed
+- Stratum V2 dependencies moved up to the current SRI set: `binary_sv2` 6,
+  `framing_sv2` 7, `codec_sv2` 6, `common_messages_sv2` 8 and `mining_sv2`
+  11. These crates are released as a matched set and each new major needs
+  the matching `binary_sv2`, so Dependabot's one-crate-at-a-time PRs could
+  not build; they are now grouped as `sv2-stack`. `const_sv2` and
+  `noise_sv2` are unchanged, so the Noise handshake is untouched. Verified
+  against live hardware on both protocols, including a Noise-only
+  NerdQAxe++, across a chain-tip change with no rejected or stale shares.
+
 ### Fixed
 - The `ZMQ never delivered it` warning fired on roughly half of all blocks
   while the subscription was working perfectly. The poll learns of a block up
@@ -31,16 +43,6 @@ everything else bumps the **patch** version.
   a test now renders through the exporter so a future split fails to compile
   instead of silently emptying the endpoint. `deny.toml` allows Zlib for
   `foldhash`, which arrives with `metrics-util` 0.20.
-
-### Changed
-- Stratum V2 dependencies moved up to the current SRI set: `binary_sv2` 6,
-  `framing_sv2` 7, `codec_sv2` 6, `common_messages_sv2` 8 and `mining_sv2`
-  11. These crates are released as a matched set and each new major needs
-  the matching `binary_sv2`, so Dependabot's one-crate-at-a-time PRs could
-  not build; they are now grouped as `sv2-stack`. `const_sv2` and
-  `noise_sv2` are unchanged, so the Noise handshake is untouched. Verified
-  against live hardware on both protocols, including a Noise-only
-  NerdQAxe++, across a chain-tip change with no rejected or stale shares.
 
 ## [0.6.8] - 2026-09-06
 
@@ -862,7 +864,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.8...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.9...HEAD
+[0.6.9]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.8...v0.6.9
 [0.6.8]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.7...v0.6.8
 [0.6.7]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.5...v0.6.6
