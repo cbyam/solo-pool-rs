@@ -123,7 +123,7 @@ Then open the dashboard at `http://<host>:9090/`.
 
 ## Quick start (from source)
 
-Requires **Rust ≥ 1.75** and **libzmq** (`apt-get install libzmq3-dev pkg-config`).
+Requires **Rust ≥ 1.85** and **libzmq** (`apt-get install libzmq3-dev pkg-config`).
 
 ```bash
 git clone https://github.com/cbyam/solo-pool-rs

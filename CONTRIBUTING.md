@@ -27,7 +27,7 @@ cargo test --all
 RUST_LOG=debug cargo run -- config.toml
 ```
 
-The minimum supported Rust version (MSRV) is **1.75.0** (edition 2021).
+The minimum supported Rust version (MSRV) is **1.85.0** (edition 2021).
 
 ## Before you open a PR
 
