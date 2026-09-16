@@ -732,18 +732,8 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 }
 .hero-side .label { margin-bottom: 0.2rem; }
 
-/* ── Round effort: full-width bar under the hero row ── */
-.effort { flex-basis: 100%; padding-top: 1.1rem; border-top: 1px solid var(--border); }
-.effort-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-.effort-head .label { margin-bottom: 0; }
-.effort-pct { font-size: 1.06rem; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
-.effort-pct small { font-size: 0.72rem; font-weight: 500; color: var(--muted); margin-left: 0.4rem; }
-.effort-track { position: relative; height: 6px; border-radius: 3px; background: var(--track); }
-.effort-fill { height: 100%; border-radius: 3px; background: var(--accent); min-width: 2px; width: 0; transition: width 0.6s ease; }
-.effort-tick { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--muted); opacity: 0.5; }
-.effort-ticklabel { position: absolute; top: 10px; font-size: 0.62rem; color: var(--muted); transform: translateX(-50%); font-variant-numeric: tabular-nums; }
-.effort-foot { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-@media (prefers-reduced-motion: reduce) { .effort-fill { transition: none; } }
+/* ── Round footnote: full-width line under the hero row ── */
+.round-note { flex-basis: 100%; padding-top: 1.1rem; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ── KPI strip ── */
 .kpis {
@@ -992,20 +982,9 @@ tr:last-child td { border-bottom: none; }
       <span id="v-prob-powerball" style="color:var(--muted);">vs Powerball: &mdash;</span>
     </div>
 
-    <div class="effort">
-      <div class="effort-head">
-        <div class="label">Round effort <span title="Work submitted since the last block this pool found (or since the pool first ran), as a share of the work one block takes on average at the current network difficulty. 100% is average luck, not a guarantee: most rounds close well before or well after it." style="cursor:help;">&#9432;</span></div>
-        <div class="effort-pct"><span id="v-effort-pct">&mdash;</span><small>of one expected block</small></div>
-      </div>
-      <div class="effort-track" aria-hidden="true">
-        <div class="effort-fill" id="v-effort-fill"></div>
-        <div class="effort-tick" style="left:50%"></div><div class="effort-ticklabel" style="left:50%">50%</div>
-        <div class="effort-tick" style="left:100%"></div><div class="effort-ticklabel" style="left:100%">100%</div>
-      </div>
-      <div class="effort-foot">
-        <span id="v-effort-work">&mdash;</span>
-        <span id="v-effort-since">&mdash;</span>
-      </div>
+    <div class="round-note">
+      <span id="v-round-work" title="Difficulty-work credited since the last block this pool found, or since the pool first ran. The average is that work spread over the round's length: a far longer baseline than the rolling windows above, so a steadier figure to check them against.">&mdash;</span>
+      <span id="v-round-since">&mdash;</span>
     </div>
   </div>
 
@@ -1483,11 +1462,21 @@ function markFoundBlocks(series, c) {
   };
 }
 
-// ── Round effort ─────────────────────────────────────────────────────────────
-// Credited share difficulty since the last block this pool found, over the
-// network difficulty: the share of one average block's work done this round.
+// ── Round footnote ───────────────────────────────────────────────────────────
+// Credited share difficulty since the last block this pool found. Spread over
+// the round's length it is the longest-baseline hashrate figure available, so
+// it cross-checks the rolling windows. There is deliberately no live effort
+// percentage: at solo scale a round runs centuries, so work over network
+// difficulty sits in the fourth decimal place forever, and framing it as
+// progress toward 100% invites the gambler's fallacy. The forward-looking
+// side is the block-odds card above. Effort still appears for a round that
+// actually closed, where it is a real luck figure.
 function fmtPct(pct) {
   if (!isFinite(pct)) return '—';
+  if (pct === 0) return '0%';
+  // A lucky solo round can close in the thousandths of a percent; two
+  // decimals would render every one of them as a flat 0.00%.
+  if (pct < 0.01) return Number(pct.toPrecision(2)) + '%';
   return (pct < 1 ? pct.toFixed(2) : pct < 100 ? pct.toFixed(1) : Math.round(pct).toLocaleString()) + '%';
 }
 
@@ -1495,24 +1484,25 @@ function fmtDate(ts) {
   return new Date(ts * 1000).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function renderRound(d) {
-  const net = d.network_difficulty || 0;
+function renderRound(d, nowSec) {
   const work = d.round_work || 0;
-  const pct = net > 0 ? work / net * 100 : NaN;
-  document.getElementById('v-effort-pct').textContent = fmtPct(pct);
-  document.getElementById('v-effort-fill').style.width = (isFinite(pct) ? Math.min(100, pct) : 0) + '%';
-  document.getElementById('v-effort-work').textContent = net > 0
-    ? fmtDiff(work) + ' of ' + fmtDiff(net) + ' difficulty-work submitted'
-    : 'Waiting for the network difficulty from the node';
+  const start = d.round_start_ts || 0;
+  const age = start > 0 ? nowSec - start : 0;
+  let workText = fmtDiff(work) + ' difficulty-work this round';
+  if (work > 0 && age > 0) {
+    workText += ' · ' + fmtHr(work * 4294967296 / age, false) + ' average';
+  }
+  document.getElementById('v-round-work').textContent = workText;
+
   const blocks = Array.isArray(d.found_blocks) ? d.found_blocks : [];
   const prev = blocks[blocks.length - 1];
-  let since = d.round_start_ts > 0
-    ? 'Round open since ' + fmtDate(d.round_start_ts) + (prev ? '' : ' (pool start)')
+  let since = start > 0
+    ? 'Round open since ' + fmtDate(start) + (prev ? '' : ' (pool start)')
     : 'Round open since this boot (no stats database, so it resets on restart)';
   if (prev && prev.network_difficulty > 0) {
-    since += ' · previous round closed at ' + fmtPct(prev.round_work / prev.network_difficulty * 100);
+    since += ' · previous round closed at ' + fmtPct(prev.round_work / prev.network_difficulty * 100) + ' effort';
   }
-  document.getElementById('v-effort-since').textContent = since;
+  document.getElementById('v-round-since').textContent = since;
 }
 
 // ── Blocks found ─────────────────────────────────────────────────────────────
@@ -1644,8 +1634,9 @@ async function refresh() {
       const btc = d.current_coinbase_value / 1e8;
       document.getElementById('v-block-reward').textContent = 'Reward: ' + btc.toFixed(8) + ' BTC';
     }
-    renderRound(d);
-    renderBlocks(d, Math.floor(Date.now() / 1000));
+    const nowSec = Math.floor(Date.now() / 1000);
+    renderRound(d, nowSec);
+    renderBlocks(d, nowSec);
     renderNode(d);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);

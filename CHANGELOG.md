@@ -32,6 +32,23 @@ everything else bumps the **patch** version.
   which `libzmq5` had been pulling in. One fewer package in the image to
   collect advisories. The compose file, environment and volumes are
   unchanged.
+- The dashboard's round-effort bar is gone, replaced by a one-line footnote
+  under the hero row. The bar showed credited work over network difficulty as
+  a fill from 0 to 100%, which does not survive contact with solo-scale
+  hashrate: a round runs centuries in expectation, so the figure sits in the
+  fourth decimal place and `toFixed(2)` rendered it as a flat `0.00%` that
+  never visibly moved. It also duplicated the block-odds card directly above
+  it, which covers the same ground forward-looking and correctly framed,
+  while the bar's progress-toward-100% shape invited the gambler's fallacy
+  that a long round is somehow "due".
+- The footnote keeps what the bar's numerator was actually good for: total
+  difficulty-work this round, and that work spread over the round's length.
+  The latter is the longest-baseline hashrate figure on the page, so it
+  cross-checks the rolling 10m/3h/24h windows and catches a worker that has
+  been quietly dropping shares.
+- Effort still appears for a round that closed, where it is a real luck
+  figure. `fmtPct` now keeps two significant digits below 0.01% so a lucky
+  solo round does not render as `0.00%`.
 
 ## [0.6.9] - 2026-09-08
 
