@@ -25,6 +25,12 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
     # Other majors stay one PR each so a breaking API change is reviewed alone.
+    ignore:
+      # secp256k1 is pinned by the SRI crates (noise_sv2, key-utils). Bumping
+      # it alone yields two copies and a type mismatch in the Noise handshake.
+      # It moves with the next SV2 family bump; drop this once SRI is on 0.29+.
+      - dependency-name: secp256k1
+        update-types: ["version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
