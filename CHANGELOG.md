@@ -37,6 +37,8 @@ everything else bumps the **patch** version.
 - Effort still appears for a round that closed, where it is a real luck
   figure. `fmtPct` now keeps two significant digits below 0.01% so a lucky
   solo round does not render as `0.00%`.
+- README states that SV2 serves extended channels only and what a Bitaxe
+  set to "standard" sees when it is refused (#113).
 
 ## [0.6.9] - 2026-09-08
 
