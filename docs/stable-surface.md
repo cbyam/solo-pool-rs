@@ -429,7 +429,7 @@ with the text above. They are tracked in `TODO.md` under "Before 1.0".
    `allowed_hosts` cannot, and optional keys cannot be unset.
 7. The binary has no `--version` or `--help`; `CONTRIBUTING.md` tells
    reporters to run `--version`. Add the flags or fix the text.
-8. The MSRV of 1.75 is declared in `Cargo.toml` and the README but CI builds
+8. The MSRV of 1.85 is declared in `Cargo.toml` and the README but CI builds
    on stable only, so the claim is not verified.
 9. The stats-store open failure is a warning, not an error, so a locked file
     silently disables the persistence promised in §8.

@@ -59,6 +59,24 @@ fn restrict_to_owner(path: &str) {
 #[cfg(not(unix))]
 fn restrict_to_owner(_path: &str) {}
 
+/// SQLite integers are i64 and rusqlite (0.30+) refuses `u64` at the
+/// boundary rather than wrap it. Timestamps and difficulties are stored as
+/// u64 everywhere else, so convert only at the read and write edges.
+/// Saturating on write keeps the `?1 > column` monotonic guards correct: a
+/// wrapped negative would compare below every stored value.
+fn db_u64(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// Read a u64 column. A negative value cannot have been written by this
+/// store, so treat it as corruption and fail the read rather than clamp.
+fn get_u64(row: &rusqlite::Row<'_>, idx: usize) -> Result<u64, rusqlite::Error> {
+    let v = row.get::<_, i64>(idx)?;
+    u64::try_from(v).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Integer, Box::new(e))
+    })
+}
+
 struct StatsStore {
     conn: Mutex<Connection>,
 }
@@ -201,10 +219,10 @@ impl StatsStore {
         let mut rows = stmt.query([])?;
         let mut loaded = LoadedStats::default();
         if let Some(row) = rows.next()? {
-            loaded.best_share_difficulty = row.get::<_, u64>(0)?;
+            loaded.best_share_difficulty = get_u64(row, 0)?;
             loaded.best_hashrate_hps = row.get::<_, f64>(1)?;
             loaded.round_work = row.get::<_, f64>(2)?;
-            loaded.round_start_ts = row.get::<_, u64>(3)?;
+            loaded.round_start_ts = get_u64(row, 3)?;
         }
 
         let mut stmt =
@@ -212,7 +230,7 @@ impl StatsStore {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let worker = row.get::<_, String>(0)?;
-            let difficulty = row.get::<_, u64>(1)?;
+            let difficulty = get_u64(row, 1)?;
             loaded.worker_best_shares.insert(worker, difficulty);
         }
 
@@ -224,9 +242,9 @@ impl StatsStore {
         while let Some(row) = rows.next()? {
             loaded.found_blocks.push(FoundBlock {
                 hash: row.get(0)?,
-                height: row.get(1)?,
+                height: get_u64(row, 1)?,
                 worker: row.get(2)?,
-                ts: row.get(3)?,
+                ts: get_u64(row, 3)?,
                 round_work: row.get(4)?,
                 network_difficulty: row.get(5)?,
             });
@@ -238,7 +256,7 @@ impl StatsStore {
     fn set_round(&self, round_work: f64, round_start_ts: u64) {
         if let Err(e) = self.conn.lock().execute(
             "UPDATE pool_stats SET round_work = ?1, round_start_ts = ?2 WHERE id = 1",
-            params![round_work, round_start_ts],
+            params![round_work, db_u64(round_start_ts)],
         ) {
             warn!("Failed to persist round state: {e}");
         }
@@ -251,9 +269,9 @@ impl StatsStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 block.hash,
-                block.height,
+                db_u64(block.height),
                 block.worker,
-                block.ts,
+                db_u64(block.ts),
                 block.round_work,
                 block.network_difficulty
             ],
@@ -270,7 +288,7 @@ impl StatsStore {
         if let Err(e) = self.conn.lock().execute(
             "UPDATE pool_stats SET best_share_difficulty = ?1
              WHERE id = 1 AND ?1 > best_share_difficulty",
-            params![difficulty],
+            params![db_u64(difficulty)],
         ) {
             warn!("Failed to persist best_share_difficulty: {e}");
         }
@@ -303,7 +321,7 @@ impl StatsStore {
         let conn = self.conn.lock();
         if let Err(e) = conn.execute(
             "INSERT OR REPLACE INTO hashrate_history (ts, hashrate_hps) VALUES (?1, ?2)",
-            params![ts, hps],
+            params![db_u64(ts), hps],
         ) {
             warn!("Failed to record hashrate snapshot: {e}");
             return;
@@ -312,7 +330,7 @@ impl StatsStore {
         let cutoff = ts.saturating_sub(6 * 30 * 24 * 3600);
         let _ = conn.execute(
             "DELETE FROM hashrate_history WHERE ts < ?1",
-            params![cutoff],
+            params![db_u64(cutoff)],
         );
     }
 
@@ -324,8 +342,8 @@ impl StatsStore {
             Ok(s) => s,
             Err(_) => return vec![],
         };
-        stmt.query_map(params![since_ts], |row| {
-            Ok((row.get::<_, u64>(0)?, row.get::<_, f64>(1)?))
+        stmt.query_map(params![db_u64(since_ts)], |row| {
+            Ok((get_u64(row, 0)?, row.get::<_, f64>(1)?))
         })
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
@@ -336,7 +354,7 @@ impl StatsStore {
             "INSERT INTO worker_best_shares (worker, best_share_difficulty) VALUES (?1, ?2)
              ON CONFLICT(worker) DO UPDATE SET best_share_difficulty = excluded.best_share_difficulty
              WHERE excluded.best_share_difficulty > worker_best_shares.best_share_difficulty",
-            params![worker, difficulty],
+            params![worker, db_u64(difficulty)],
         ) {
             warn!("Failed to persist worker_best_share for {worker}: {e}");
         }

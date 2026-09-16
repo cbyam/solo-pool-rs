@@ -2,7 +2,7 @@
 name = "solo-pool-rs"
 version = "0.6.9"
 edition = "2021"
-rust-version = "1.75.0"
+rust-version = "1.85.0"
 authors = []
 description = "Solo BTC mining pool for ASIC miners — Stratum V1 and Noise-encrypted Stratum V2, auto-detected on a single port"
 license = "MIT OR Apache-2.0"
@@ -78,7 +78,7 @@ parking_lot = "0.12"
 dashmap = "6"
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
-rusqlite = "0.29"
+rusqlite = "0.40"
 charming = "0.6"
 codec_sv2 = { version = "6.0.0", features = ["noise_sv2"] }
 noise_sv2 = "1.4.2"

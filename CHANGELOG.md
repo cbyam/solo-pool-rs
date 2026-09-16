@@ -9,6 +9,18 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- rusqlite bumped from 0.29 to 0.40. Newer rusqlite refuses `u64` at the
+  SQLite boundary (SQLite integers are `i64`), so the stats store now converts
+  timestamps and difficulties explicitly at each read and write. Writes
+  saturate at `i64::MAX`, which keeps the monotonic `?1 > column` guards
+  correct where a wrapped negative would not have; a negative value read back
+  is reported as a conversion error rather than clamped. The on-disk schema
+  is unchanged.
+- Minimum supported Rust version raised from 1.75 to 1.85, required by the
+  hashlink and hashbrown versions rusqlite 0.40 pulls in. Every build path
+  (CI, release, Docker) already tracks stable.
+
 ## [0.6.9] - 2026-09-08
 
 ### Changed
