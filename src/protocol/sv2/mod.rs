@@ -360,6 +360,9 @@ pub async fn run(
     let uptime = session.connect_time.elapsed().as_secs() as f64;
     if let Some(worker) = &session.worker {
         session.stats.mark_worker_offline(worker);
+        session
+            .stats
+            .stash_share_history(worker, session.vardiff.take_share_history());
         metrics::connection_duration(worker, uptime);
     }
     info!(
@@ -549,6 +552,9 @@ async fn handle_open_extended(
         }
         if let Some(prev) = session.worker.take() {
             session.stats.mark_worker_offline(&prev);
+            session
+                .stats
+                .stash_share_history(&prev, session.vardiff.take_share_history());
         }
     }
 
@@ -586,6 +592,9 @@ async fn handle_open_extended(
         session
             .stats
             .set_worker_protocol(&open.user_identity, "sv2");
+        if let Some(history) = session.stats.take_share_history(&open.user_identity) {
+            session.vardiff.restore_share_history(history);
+        }
     }
     info!(peer = %session.peer, worker = %open.user_identity, channel_id, "SV2 extended channel opened");
 
@@ -741,6 +750,7 @@ async fn handle_submit(
             session.shares_accepted += 1;
             let credited = session.vardiff.credit_for(hash_difficulty);
             session.vardiff.record_share(credited);
+            session.stats.log_share(&worker, credited);
             metrics::share_accepted(credited, &worker);
             session.stats.share_accepted(hash_difficulty, credited);
             session
@@ -776,6 +786,7 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     let credited = session.vardiff.credit_for(hash_difficulty);
                     session.vardiff.record_share(credited);
+                    session.stats.log_share(&worker, credited);
                     session.stats.share_accepted(hash_difficulty, credited);
                     session
                         .stats

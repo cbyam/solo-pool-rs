@@ -25,6 +25,51 @@ const SHARE_RETENTION: Duration = Duration::from_secs(86_400);
 /// until there is a real time base to divide by.
 const MIN_OBSERVATION: Duration = Duration::from_secs(30);
 
+/// The share record a worker's hashrate windows are computed from, detached
+/// from the session that collected it.
+///
+/// A session's `Vardiff` dies with its connection. Without this, a miner
+/// restart (a new TCP session seconds after the old one closed) began every
+/// window from an empty record, so the 3h and 24h columns dropped to the
+/// 60s figure and took hours to recover, while the shares those windows are
+/// meant to cover had all been accepted and were merely forgotten. The
+/// session hands its history to the stats collector on disconnect, keyed by
+/// worker, and the worker's next session takes it back on authorize. Only
+/// the estimate inputs travel; retarget state stays with the session.
+pub struct ShareHistory {
+    share_times: VecDeque<(Instant, u64)>,
+    started_at: Instant,
+}
+
+impl ShareHistory {
+    /// Rebuild a record from persisted `(unix_ts, credited_difficulty)` rows,
+    /// oldest first, for a worker returning after a pool restart.
+    ///
+    /// The observation anchor is the earliest row: the worker was certainly
+    /// being observed from then on, and a session's own anchor sits within
+    /// one share interval of its first share anyway. Rows past retention are
+    /// skipped. Returns `None` when nothing usable remains, so the caller
+    /// starts fresh rather than adopting an empty record with a stale anchor.
+    pub fn from_unix_rows(rows: &[(u64, u64)], now_unix: u64) -> Option<Self> {
+        let now = Instant::now();
+        let share_times: VecDeque<(Instant, u64)> = rows
+            .iter()
+            .filter_map(|&(ts, diff)| {
+                let age = Duration::from_secs(now_unix.saturating_sub(ts));
+                if age > SHARE_RETENTION {
+                    return None;
+                }
+                now.checked_sub(age).map(|at| (at, diff))
+            })
+            .collect();
+        let started_at = share_times.front()?.0;
+        Some(Self {
+            share_times,
+            started_at,
+        })
+    }
+}
+
 pub struct Vardiff {
     cfg: VardiffConfig,
     /// Ring buffer of (arrival_time, assigned_difficulty) for hashrate estimation.
@@ -141,6 +186,35 @@ impl Vardiff {
         {
             self.share_times.pop_front();
         }
+    }
+
+    /// Detach the share record for handoff to the worker's next session,
+    /// leaving this session with an empty record anchored now.
+    pub fn take_share_history(&mut self) -> ShareHistory {
+        ShareHistory {
+            share_times: std::mem::take(&mut self.share_times),
+            started_at: std::mem::replace(&mut self.started_at, Instant::now()),
+        }
+    }
+
+    /// Adopt a previous session's share record ahead of this session's own.
+    ///
+    /// The observation anchor moves back to the earlier of the two starts, so
+    /// a window the previous session had already filled reports at full
+    /// width immediately instead of waiting out `MIN_OBSERVATION` and then
+    /// dividing by the new session's age. Entries past `SHARE_RETENTION` are
+    /// dropped on the way in; a window that the gap outlasted simply finds
+    /// no shares inside it, which is the correct reading for that outage.
+    pub fn restore_share_history(&mut self, history: ShareHistory) {
+        let now = Instant::now();
+        let mut merged: VecDeque<(Instant, u64)> = history
+            .share_times
+            .into_iter()
+            .filter(|&(t, _)| now.duration_since(t) <= SHARE_RETENTION)
+            .collect();
+        merged.extend(self.share_times.drain(..));
+        self.share_times = merged;
+        self.started_at = self.started_at.min(history.started_at);
     }
 
     /// Check if a retarget is due. Returns `Some(new_difficulty)` when the
@@ -444,5 +518,87 @@ mod tests {
         // In range → applied verbatim.
         assert_eq!(vd.suggest(50_000), 50_000);
         assert_eq!(vd.current, 50_000);
+    }
+
+    #[test]
+    fn share_history_carries_the_long_windows_across_a_reconnect() {
+        // Three hours of steady shares, then the miner restarts: the old
+        // session hands off its record and a brand-new session takes it.
+        let diff = 100_000;
+        let three_hours = Duration::from_secs(10_800);
+        let mut old = aged(diff, 720, Duration::from_secs(15), three_hours);
+        let before = old.estimated_hashrate_in_window(three_hours);
+        assert!(before > 0.0);
+
+        let history = old.take_share_history();
+        // The closing session is left empty rather than double-counted.
+        assert_eq!(old.estimated_hashrate_in_window(three_hours), 0.0);
+
+        let mut new = Vardiff::new(cfg(), diff);
+        // Before the handoff a fresh session reports nothing at all.
+        assert_eq!(new.estimated_hashrate_in_window(three_hours), 0.0);
+        new.restore_share_history(history);
+
+        let after = new.estimated_hashrate_in_window(three_hours);
+        assert!(
+            (after - before).abs() / before < 0.01,
+            "{after} vs {before}"
+        );
+        // Retarget state did not travel: the new session still owes a full
+        // interval before it may adjust difficulty.
+        assert!(new.check_retarget().is_none());
+    }
+
+    #[test]
+    fn restored_history_drops_shares_past_retention_and_keeps_new_ones() {
+        let diff = 100_000;
+        let mut old = Vardiff::new(cfg(), diff);
+        let now = Instant::now();
+        old.started_at = now.checked_sub(Duration::from_secs(90_000)).unwrap();
+        // One share outside retention, one well inside.
+        old.share_times.push_back((
+            now - Duration::from_secs(SHARE_RETENTION.as_secs() + 60),
+            diff,
+        ));
+        old.share_times
+            .push_back((now - Duration::from_secs(60), diff));
+        let history = old.take_share_history();
+
+        let mut new = Vardiff::new(cfg(), diff);
+        new.record_share(diff);
+        new.restore_share_history(history);
+
+        assert_eq!(new.share_times.len(), 2);
+        // Oldest first, so the restored share precedes this session's own.
+        assert!(new.share_times[0].0 < new.share_times[1].0);
+        assert!(new.started_at <= now - Duration::from_secs(90_000));
+    }
+
+    #[test]
+    fn persisted_rows_rebuild_a_full_width_window() {
+        // Three hours of 15-second shares as they would come back from the
+        // share log, anchored at the earliest row: the 3h window reports at
+        // full width straight away instead of dividing by a fresh session's
+        // age.
+        let diff = 100_000u64;
+        let now_unix = 1_800_000_000u64;
+        let rows: Vec<(u64, u64)> = (0..720u64)
+            .map(|i| (now_unix - 10_800 + 1 + i * 15, diff))
+            .collect();
+        let history = ShareHistory::from_unix_rows(&rows, now_unix).expect("rows inside retention");
+        let mut vd = Vardiff::new(cfg(), diff);
+        vd.restore_share_history(history);
+
+        let hps = vd.estimated_hashrate_in_window(Duration::from_secs(10_800));
+        let expected = 720.0 * diff as f64 * 4_294_967_296.0 / 10_800.0;
+        assert!(
+            (hps - expected).abs() / expected < 0.01,
+            "{hps} vs {expected}"
+        );
+
+        // Rows past retention are ignored, and nothing usable means no record.
+        let stale = [(now_unix - SHARE_RETENTION.as_secs() - 1, diff)];
+        assert!(ShareHistory::from_unix_rows(&stale, now_unix).is_none());
+        assert!(ShareHistory::from_unix_rows(&[], now_unix).is_none());
     }
 }

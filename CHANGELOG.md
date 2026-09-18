@@ -9,6 +9,29 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- A miner restart no longer resets its 3h and 24h hashrate columns. The
+  share record every window is computed from lived in the connection, so a
+  new session seconds after the old one closed started each window empty:
+  the long windows dropped to the 60s figure and took hours to climb back,
+  while the shares they should have covered had all been accepted and were
+  merely forgotten. A closing session now parks its record with the stats
+  collector under the worker name and the worker's next session adopts it
+  on authorize, so each window again reports the shares actually inside it.
+  The offline decay is unchanged: a worker that stays away sees each window
+  empty out at its own width, and a reconnect after a long outage finds
+  only the shares that really fall inside each window. The record is
+  dropped with the worker's other maps after a day offline.
+- The same windows now survive a pool restart. Accepted shares are queued
+  in memory and written to a new `share_log` table in the stats database
+  every ten seconds and once more at shutdown, off the share path, and a
+  worker that returns with no record in memory rebuilds one from the log.
+  Rows older than 24h are pruned on each flush, so the table holds about
+  six thousand rows per miner per day at the default share target. The
+  table is created on first boot with `CREATE TABLE IF NOT EXISTS`; older
+  binaries ignore it. Pools running without a stats database are
+  unaffected. An unclean stop loses at most the last ten seconds of shares.
+
 ### Changed
 - rusqlite bumped from 0.29 to 0.40. Newer rusqlite refuses `u64` at the
   SQLite boundary (SQLite integers are `i64`), so the stats store now converts
