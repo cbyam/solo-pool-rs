@@ -39,3 +39,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+  # The Dockerfile pins its base images by digest. This moves the pins when
+  # Debian or the Rust image publishes a new build, so OS security fixes in the
+  # runtime image reach :edge on merge instead of waiting for the next release.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

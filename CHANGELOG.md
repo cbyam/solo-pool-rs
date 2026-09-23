@@ -20,6 +20,18 @@ everything else bumps the **patch** version.
 - Minimum supported Rust version raised from 1.75 to 1.85, required by the
   hashlink and hashbrown versions rusqlite 0.40 pulls in. Every build path
   (CI, release, Docker) already tracks stable.
+- The Docker image moves from Debian 12 (bookworm) to Debian 13 (trixie)
+  for both the build and runtime stages. Bookworm's regular security
+  support has ended; trixie is the current stable release. Both base images
+  are pinned by digest, and Dependabot now tracks them, so a patched base
+  image arrives as a PR and reaches `:edge` on merge instead of waiting for
+  the next release.
+- The runtime image no longer installs `libzmq5`. The binary never linked
+  it: zmq-sys compiles libzmq from source and links it statically. It
+  installs `libstdc++6` directly instead, which the static libzmq needs and
+  which `libzmq5` had been pulling in. One fewer package in the image to
+  collect advisories. The compose file, environment and volumes are
+  unchanged.
 
 ## [0.6.9] - 2026-09-08
 
