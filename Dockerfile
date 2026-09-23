@@ -1,9 +1,16 @@
-# ── Builder ──────────────────────────────────────────────────────────────────
-FROM rust:1-bookworm AS builder
+# Both stages are pinned by the multi-arch index digest, so a build is
+# reproducible and a base image update arrives as a reviewable Dependabot PR
+# (see .github/dependabot.yml) rather than silently on the next rebuild. Keep
+# the builder and runtime on the same Debian release: the binary links
+# against the builder's glibc, libstdc++ and libsqlite3.
 
-# tmq → zmq → libzmq: needed to build and link.
+# ── Builder ──────────────────────────────────────────────────────────────────
+FROM rust:1-trixie@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546 AS builder
+
+# rusqlite links the system SQLite, found through pkg-config. No system libzmq
+# is needed: zmq-sys compiles libzmq from source and links it statically.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libzmq3-dev pkg-config \
+        libsqlite3-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -23,12 +30,15 @@ RUN touch src/main.rs src/lib.rs \
     && strip target/release/solo-pool-rs
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
-# Runtime shared libs the binary links: libzmq5 (tmq/ZMQ) and libsqlite3
-# (rusqlite stats DB — without it the dynamic linker fails before main()).
+# Runtime shared libs the binary links: libsqlite3 (rusqlite stats DB) and
+# libstdc++ (the libzmq that zmq-sys builds into the binary is C++). Without
+# either the dynamic linker fails before main(). libzmq itself is not
+# installed: nothing links it, and an unused package still collects
+# advisories.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libzmq5 libsqlite3-0 ca-certificates \
+        libsqlite3-0 libstdc++6 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as a dedicated unprivileged user — the binary needs no root: the stratum
