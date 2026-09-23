@@ -31,8 +31,14 @@ updates:
     ignore:
       # secp256k1 is pinned by the SRI crates (noise_sv2, key-utils). Bumping
       # it alone yields two copies and a type mismatch in the Noise handshake.
-      # It moves with the next SV2 family bump; drop this once SRI is on 0.29+.
+      # SRI v1.12.0 is still on 0.28; drop this once SRI is on 0.29+.
       - dependency-name: secp256k1
+        update-types: ["version-update:semver-minor"]
+      # rand is held for the same reason: secp256k1 0.28, noise_sv2 and
+      # key-utils all take rand 0.8's RNG traits, and the authority key is
+      # generated with rand::thread_rng(), so 0.9 does not compile (#108,
+      # #125). It moves when secp256k1 does; drop both entries together.
+      - dependency-name: rand
         update-types: ["version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
