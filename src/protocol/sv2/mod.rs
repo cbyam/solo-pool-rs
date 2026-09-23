@@ -14,6 +14,8 @@
 //!
 //! SV1 is served by [`crate::network::session`]; the two are auto-detected on a
 //! single port in [`crate::network::server`].
+#[cfg(test)]
+mod golden;
 mod job;
 pub mod messages;
 mod noise;
