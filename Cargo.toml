@@ -45,7 +45,7 @@ tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 # protocols are auto-detected on the same listen port (see network/server.rs).
 # Noise encryption is live: codec_sv2 (noise_sv2 feature) + noise_sv2 below.
 const_sv2 = "4.0.1"            # shared SV2 message-type / channel-bit constants
-binary_sv2 = "6.0.0"           # SV2 binary message (de)serialization
+binary_sv2 = "7.0.0"           # SV2 binary message (de)serialization
 framing_sv2 = "7.0.0"          # SV2 frame header (extension_type, msg_type, length)
 common_messages_sv2 = "8.0.0"  # SetupConnection(Success/Error)
 mining_sv2 = "11.0.0"          # mining protocol messages (extended channel)
