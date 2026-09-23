@@ -8,7 +8,10 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    # Room for a crate family's worth of majors plus the grouped PR. At 5, the
+    # five single-crate SV2 bumps of 2026-09-21 held the whole limit and no
+    # other Cargo update could be proposed until they were closed.
+    open-pull-requests-limit: 10
     groups:
       # The metrics crates pin each other's minors (the exporter depends on
       # the same metrics-util minor the pool imports for MetricKindMask), so
