@@ -8,10 +8,13 @@
 //! ntime in one message. SV2 splits this into [`NewExtendedMiningJob`] (coinbase
 //! prefix/suffix, merkle path, version) and [`SetNewPrevHash`] (prev-hash, nbits,
 //! min-ntime). The mining core is unchanged — only the wire shape differs.
+//!
+//! [`NewExtendedMiningJob`]: mining_sv2::NewExtendedMiningJob
+//! [`SetNewPrevHash`]: mining_sv2::SetNewPrevHash
 use crate::bitcoin::template::{difficulty_to_target, StratumJob};
 use anyhow::{anyhow, Result};
-use binary_sv2::{Seq0255, Sv2Option, B064K, U256};
-use mining_sv2::{NewExtendedMiningJob, SetNewPrevHash};
+use binary_sv2::{B064KOwned, Seq0255Owned, Sv2OptionOwned, U256Owned};
+use mining_sv2::{NewExtendedMiningJobOwned, SetNewPrevHashOwned};
 
 /// Convert a pool share `difficulty` into a Stratum V2 wire target.
 ///
@@ -62,51 +65,56 @@ pub fn stratum_prevhash_to_internal(stratum_hex: &str) -> Result<[u8; 32]> {
 /// (the new-block flow — activated by a later [`SetNewPrevHash`] with a matching
 /// `job_id`); otherwise it carries `min_ntime` and is mineable immediately on
 /// the most recently announced prev-hash.
+///
+/// [`NewExtendedMiningJob`]: mining_sv2::NewExtendedMiningJob
+/// [`SetNewPrevHash`]: mining_sv2::SetNewPrevHash
 pub fn build_new_extended_job(
     job: &StratumJob,
     channel_id: u32,
     job_id: u32,
     future: bool,
-) -> Result<NewExtendedMiningJob<'static>> {
-    let merkle: Vec<U256> = job
+) -> Result<NewExtendedMiningJobOwned> {
+    let merkle: Vec<U256Owned> = job
         .merkle_branch_raw
         .iter()
-        .map(|h| U256::from(*h))
+        .map(|h| U256Owned::from(*h))
         .collect();
 
     let min_ntime = if future {
-        Sv2Option::new(None)
+        Sv2OptionOwned::new(None)
     } else {
-        Sv2Option::new(Some(job.cur_time))
+        Sv2OptionOwned::new(Some(job.cur_time))
     };
 
-    Ok(NewExtendedMiningJob {
+    Ok(NewExtendedMiningJobOwned {
         channel_id,
         job_id,
         min_ntime,
         version: job.version,
         // BIP320 general-purpose bits may be rolled by the device.
         version_rolling_allowed: true,
-        merkle_path: Seq0255::new(merkle).map_err(|e| anyhow!("merkle_path: {e:?}"))?,
-        coinbase_tx_prefix: B064K::try_from(job.coinbase1.clone())
+        merkle_path: Seq0255Owned::new(merkle).map_err(|e| anyhow!("merkle_path: {e:?}"))?,
+        coinbase_tx_prefix: B064KOwned::try_from(job.coinbase1.clone())
             .map_err(|e| anyhow!("coinbase_tx_prefix: {e:?}"))?,
-        coinbase_tx_suffix: B064K::try_from(job.coinbase2.clone())
+        coinbase_tx_suffix: B064KOwned::try_from(job.coinbase2.clone())
             .map_err(|e| anyhow!("coinbase_tx_suffix: {e:?}"))?,
     })
 }
 
 /// Build a [`SetNewPrevHash`] referencing the given job.
+///
+/// [`SetNewPrevHash`]: mining_sv2::SetNewPrevHash
 pub fn build_set_new_prev_hash(
     job: &StratumJob,
     channel_id: u32,
     job_id: u32,
-) -> Result<SetNewPrevHash<'static>> {
+) -> Result<SetNewPrevHashOwned> {
     let prev = stratum_prevhash_to_internal(&job.prev_hash)?;
     let nbits = u32::from_str_radix(&job.bits, 16).map_err(|e| anyhow!("nbits: {e}"))?;
-    Ok(SetNewPrevHash {
+    Ok(SetNewPrevHashOwned {
         channel_id,
         job_id,
-        prev_hash: U256::from(prev),
+        prev_hash: U256Owned::from(prev),
         min_ntime: job.cur_time,
         nbits,
     })

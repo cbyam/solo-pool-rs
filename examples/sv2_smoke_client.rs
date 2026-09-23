@@ -7,19 +7,18 @@
 //! Drives: Noise handshake → SetupConnection → OpenExtendedMiningChannel, then
 //! reads the pushed OpenExtendedMiningChannelSuccess / NewExtendedMiningJob /
 //! SetNewPrevHash and prints a summary. Not part of the shipping pool.
-use binary_sv2::{Str0255, U256};
-use codec_sv2::{NoiseEncoder, StandardNoiseDecoder, State};
-use common_messages_sv2::{Protocol, SetupConnection};
-use framing_sv2::framing::{Frame, Sv2Frame};
-use mining_sv2::{
-    NewExtendedMiningJob, OpenExtendedMiningChannel, SetNewPrevHash, SubmitSharesSuccess,
+use binary_sv2::{Str0255Owned, U256Owned};
+use codec_sv2::{
+    Decrypted, Handshake, NoiseDecoder, NoiseEncoder, TransportDecryptState, TransportEncryptState,
 };
+use common_messages_sv2::{Protocol, SetupConnectionOwned};
+use framing_sv2::framing::SerializedFrame;
+use mining_sv2::{NewExtendedMiningJob, OpenExtendedMiningChannelOwned, SetNewPrevHash};
 use noise_sv2::{Initiator, ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-type Marker = SubmitSharesSuccess;
 const HDR: usize = 6;
 
 fn frame_bytes(msg_type: u8, channel_msg: bool, payload: &[u8]) -> Vec<u8> {
@@ -35,32 +34,32 @@ fn frame_bytes(msg_type: u8, channel_msg: bool, payload: &[u8]) -> Vec<u8> {
 
 async fn send(
     s: &mut TcpStream,
-    enc: &mut NoiseEncoder<Marker>,
-    st: &mut State,
+    enc: &mut NoiseEncoder,
+    st: &mut TransportEncryptState,
     mt: u8,
     ch: bool,
     payload: &[u8],
 ) {
-    let frame: Sv2Frame<Marker, Vec<u8>> =
-        Sv2Frame::from_bytes_unchecked(frame_bytes(mt, ch, payload));
-    let bytes = enc.encode(Frame::Sv2(frame), st).expect("encode");
+    let frame = SerializedFrame::from_bytes(frame_bytes(mt, ch, payload)).expect("frame");
+    let bytes = enc.encode_transport(frame, st).expect("encode");
     s.write_all(bytes.as_ref()).await.unwrap();
     s.flush().await.unwrap();
 }
 
 async fn recv(
     s: &mut TcpStream,
-    dec: &mut StandardNoiseDecoder<Marker>,
-    st: &mut State,
+    dec: &mut NoiseDecoder,
+    st: &mut Option<TransportDecryptState>,
 ) -> (u8, Vec<u8>) {
     loop {
-        match dec.next_frame(st) {
-            Ok(Frame::Sv2(mut f)) => {
-                let mt = f.get_header().unwrap().msg_type();
+        match dec.next_transport_frame(st.take().expect("transport state")) {
+            Ok(Decrypted::Frame(mut f, state)) => {
+                *st = Some(state);
+                let mt = f.header().msg_type();
                 return (mt, f.payload().to_vec());
             }
-            Ok(Frame::HandShake(_)) => panic!("unexpected handshake frame"),
-            Err(codec_sv2::Error::MissingBytes(_)) => {
+            Ok(Decrypted::Incomplete(_, state)) => {
+                *st = Some(state);
                 let w = dec.writable();
                 s.read_exact(w).await.unwrap();
             }
@@ -78,59 +77,60 @@ async fn main() {
     println!("connected to {addr}");
 
     // ── Noise handshake (initiator, no identity verification) ────────────────
-    let mut initiator = Initiator::without_pk().expect("initiator");
-    let first = initiator.step_0().expect("step_0");
-    assert_eq!(first.len(), ELLSWIFT_ENCODING_SIZE);
-    s.write_all(&first).await.unwrap();
+    let initiator = Initiator::without_pk().expect("initiator");
+    let (first, sent) = Handshake::initiator(initiator).step_0().expect("step_0");
+    assert_eq!(first.payload().len(), ELLSWIFT_ENCODING_SIZE);
+    s.write_all(first.payload()).await.unwrap();
     s.flush().await.unwrap();
 
     let mut reply = [0u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE];
     s.read_exact(&mut reply).await.unwrap();
-    let codec = initiator.step_2(reply).expect("step_2");
+    let transport = sent.step_2(reply).expect("step_2");
     println!("Noise handshake complete ✅ (encrypted transport established)");
 
-    let mut state = State::with_transport_mode(codec);
-    let mut enc = NoiseEncoder::<Marker>::new();
-    let mut dec = StandardNoiseDecoder::<Marker>::new();
+    let (mut enc_state, dec_state) = transport.split();
+    let mut dec_state = Some(dec_state);
+    let mut enc = NoiseEncoder::new();
+    let mut dec = NoiseDecoder::new();
 
     // ── SetupConnection ──────────────────────────────────────────────────────
-    let setup = SetupConnection {
+    let setup = SetupConnectionOwned {
         protocol: Protocol::MiningProtocol,
         min_version: 2,
         max_version: 2,
         flags: 0,
-        endpoint_host: Str0255::try_from(String::new()).unwrap(),
+        endpoint_host: Str0255Owned::try_from("").unwrap(),
         endpoint_port: 0,
-        vendor: Str0255::try_from("smoke".to_string()).unwrap(),
-        hardware_version: Str0255::try_from(String::new()).unwrap(),
-        firmware: Str0255::try_from(String::new()).unwrap(),
-        device_id: Str0255::try_from(String::new()).unwrap(),
+        vendor: Str0255Owned::try_from("smoke").unwrap(),
+        hardware_version: Str0255Owned::try_from("").unwrap(),
+        firmware: Str0255Owned::try_from("").unwrap(),
+        device_id: Str0255Owned::try_from("").unwrap(),
     };
     send(
         &mut s,
         &mut enc,
-        &mut state,
+        &mut enc_state,
         0x00,
         false,
         &binary_sv2::to_bytes(setup).unwrap(),
     )
     .await;
-    let (mt, _) = recv(&mut s, &mut dec, &mut state).await;
+    let (mt, _) = recv(&mut s, &mut dec, &mut dec_state).await;
     println!("← msg_type 0x{mt:02x} (expect 0x01 SetupConnectionSuccess)");
     assert_eq!(mt, 0x01);
 
     // ── OpenExtendedMiningChannel ────────────────────────────────────────────
-    let open = OpenExtendedMiningChannel {
+    let open = OpenExtendedMiningChannelOwned {
         request_id: 1,
-        user_identity: Str0255::try_from("smoke.worker".to_string()).unwrap(),
+        user_identity: Str0255Owned::try_from("smoke.worker").unwrap(),
         nominal_hash_rate: 1.0e12,
-        max_target: U256::from([0xffu8; 32]),
+        max_target: U256Owned::from([0xffu8; 32]),
         min_extranonce_size: 8, // NerdQAxe++ asks for 8; pool grants >= this
     };
     send(
         &mut s,
         &mut enc,
-        &mut state,
+        &mut enc_state,
         0x13,
         false,
         &binary_sv2::to_bytes(open).unwrap(),
@@ -141,13 +141,15 @@ async fn main() {
     let mut saw_job = false;
     let mut saw_prevhash = false;
     for _ in 0..6 {
-        let (mt, mut payload) =
-            match tokio::time::timeout(Duration::from_secs(8), recv(&mut s, &mut dec, &mut state))
-                .await
-            {
-                Ok(v) => v,
-                Err(_) => break,
-            };
+        let (mt, mut payload) = match tokio::time::timeout(
+            Duration::from_secs(8),
+            recv(&mut s, &mut dec, &mut dec_state),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => break,
+        };
         match mt {
             0x14 => {
                 saw_success = true;

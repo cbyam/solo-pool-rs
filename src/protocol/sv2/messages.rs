@@ -12,14 +12,14 @@
 //! for the header size constant; the per-frame read/write over tokio is done
 //! here directly (no Noise — see the SV2 dependency note in Cargo.toml).
 use anyhow::{anyhow, Result};
-use binary_sv2::{Str0255, B032, U256};
+use binary_sv2::{B032Owned, Str0255Owned, U256Owned};
 use common_messages_sv2::{
-    Protocol, SetupConnection, SetupConnectionError, SetupConnectionSuccess,
+    Protocol, SetupConnection, SetupConnectionErrorOwned, SetupConnectionSuccess,
 };
 use framing_sv2::header::Header;
 use mining_sv2::{
-    OpenExtendedMiningChannel, OpenExtendedMiningChannelSuccess, OpenMiningChannelError, SetTarget,
-    SubmitSharesError, SubmitSharesExtended, SubmitSharesSuccess,
+    OpenExtendedMiningChannel, OpenExtendedMiningChannelSuccessOwned, OpenMiningChannelErrorOwned,
+    SetTargetOwned, SubmitSharesErrorOwned, SubmitSharesExtended, SubmitSharesSuccess,
 };
 
 /// Standard mining protocol — no negotiated extension.
@@ -157,10 +157,9 @@ pub fn setup_connection_success(used_version: u16) -> Result<Vec<u8>> {
 /// feature flags the server does not support when the code is
 /// `unsupported-feature-flags`, and 0 otherwise.
 pub fn setup_connection_error(code: &str, flags: u32) -> Result<Vec<u8>> {
-    encode(SetupConnectionError {
+    encode(SetupConnectionErrorOwned {
         flags,
-        error_code: Str0255::try_from(code.to_string())
-            .map_err(|e| anyhow!("error_code: {e:?}"))?,
+        error_code: Str0255Owned::try_from(code).map_err(|e| anyhow!("error_code: {e:?}"))?,
     })
 }
 
@@ -171,27 +170,27 @@ pub fn open_extended_success(
     extranonce_size: u16,
     extranonce_prefix: Vec<u8>,
 ) -> Result<Vec<u8>> {
-    encode(OpenExtendedMiningChannelSuccess {
+    encode(OpenExtendedMiningChannelSuccessOwned {
         request_id,
         channel_id,
-        target: U256::from(target_le),
+        target: U256Owned::from(target_le),
         extranonce_size,
-        extranonce_prefix: B032::try_from(extranonce_prefix)
+        extranonce_prefix: B032Owned::try_from(extranonce_prefix)
             .map_err(|e| anyhow!("extranonce_prefix: {e:?}"))?,
         group_channel_id: 0,
     })
 }
 
 pub fn open_channel_error_extranonce(request_id: u32) -> Result<Vec<u8>> {
-    encode(OpenMiningChannelError::unsupported_extranonce_size(
+    encode(OpenMiningChannelErrorOwned::unsupported_extranonce_size(
         request_id,
     ))
 }
 
 pub fn set_target(channel_id: u32, target_le: [u8; 32]) -> Result<Vec<u8>> {
-    encode(SetTarget {
+    encode(SetTargetOwned {
         channel_id,
-        maximum_target: U256::from(target_le),
+        maximum_target: U256Owned::from(target_le),
     })
 }
 
@@ -209,17 +208,18 @@ pub fn submit_shares_success(
 }
 
 pub fn submit_shares_error(channel_id: u32, sequence_number: u32, code: &str) -> Result<Vec<u8>> {
-    encode(SubmitSharesError {
+    encode(SubmitSharesErrorOwned {
         channel_id,
         sequence_number,
-        error_code: Str0255::try_from(code.to_string())
-            .map_err(|e| anyhow!("error_code: {e:?}"))?,
+        error_code: Str0255Owned::try_from(code).map_err(|e| anyhow!("error_code: {e:?}"))?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common_messages_sv2::{SetupConnectionError, SetupConnectionOwned};
+    use mining_sv2::{OpenExtendedMiningChannelOwned, SubmitSharesExtendedOwned};
 
     #[test]
     fn frame_bytes_has_well_formed_header() {
@@ -243,17 +243,17 @@ mod tests {
     #[test]
     fn setup_connection_decode_reports_sub_protocol() {
         let mk = |protocol: Protocol| {
-            let m = SetupConnection {
+            let m = SetupConnectionOwned {
                 protocol,
                 min_version: 2,
                 max_version: 2,
                 flags: 0,
-                endpoint_host: Str0255::try_from(String::new()).unwrap(),
+                endpoint_host: Str0255Owned::try_from("").unwrap(),
                 endpoint_port: 0,
-                vendor: Str0255::try_from("bitaxe".to_string()).unwrap(),
-                hardware_version: Str0255::try_from(String::new()).unwrap(),
-                firmware: Str0255::try_from(String::new()).unwrap(),
-                device_id: Str0255::try_from(String::new()).unwrap(),
+                vendor: Str0255Owned::try_from("bitaxe").unwrap(),
+                hardware_version: Str0255Owned::try_from("").unwrap(),
+                firmware: Str0255Owned::try_from("").unwrap(),
+                device_id: Str0255Owned::try_from("").unwrap(),
             };
             binary_sv2::to_bytes(m).unwrap()
         };
@@ -298,11 +298,11 @@ mod tests {
     #[test]
     fn open_extended_decode_extracts_identity_and_target() {
         let max_target = [0xffu8; 32];
-        let m = OpenExtendedMiningChannel {
+        let m = OpenExtendedMiningChannelOwned {
             request_id: 5,
-            user_identity: Str0255::try_from("bc1qexample.worker1".to_string()).unwrap(),
+            user_identity: Str0255Owned::try_from("bc1qexample.worker1").unwrap(),
             nominal_hash_rate: 1.2e12,
-            max_target: U256::from(max_target),
+            max_target: U256Owned::from(max_target),
             min_extranonce_size: 4,
         };
         let mut bytes = binary_sv2::to_bytes(m).unwrap();
@@ -319,14 +319,14 @@ mod tests {
         // and confirm our decoder recovers every field (validates endianness via
         // binary_sv2 and our extranonce extraction).
         let extranonce = vec![0x11u8, 0x22, 0x33, 0x44];
-        let msg = SubmitSharesExtended {
+        let msg = SubmitSharesExtendedOwned {
             channel_id: 7,
             sequence_number: 42,
             job_id: 99,
             nonce: 0x1234_5678,
             ntime: 0x6500_0000,
             version: 0x2000_2000,
-            extranonce: B032::try_from(extranonce.clone()).unwrap(),
+            extranonce: B032Owned::try_from(extranonce.clone()).unwrap(),
         };
         let mut bytes = binary_sv2::to_bytes(msg).unwrap();
         let decoded = decode_submit_extended(&mut bytes).unwrap();

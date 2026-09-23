@@ -44,11 +44,12 @@ tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 # SV1 is still spoken via the hand-rolled layer in protocol/sv1.rs — both
 # protocols are auto-detected on the same listen port (see network/server.rs).
 # Noise encryption is live: codec_sv2 (noise_sv2 feature) + noise_sv2 below.
-const_sv2 = "4.0.1"            # shared SV2 message-type / channel-bit constants
-binary_sv2 = "6.0.0"           # SV2 binary message (de)serialization
-framing_sv2 = "7.0.0"          # SV2 frame header (extension_type, msg_type, length)
-common_messages_sv2 = "8.0.0"  # SetupConnection(Success/Error)
-mining_sv2 = "11.0.0"          # mining protocol messages (extended channel)
+# The crates are released as a matched set (SRI v1.12.0 here) and move
+# together; the message-type constants live in the protocol crates.
+binary_sv2 = "7.0.0"           # SV2 binary message (de)serialization
+framing_sv2 = "8.0.0"          # SV2 frame header (extension_type, msg_type, length)
+common_messages_sv2 = "9.0.0"  # SetupConnection(Success/Error)
+mining_sv2 = "12.0.0"          # mining protocol messages (extended channel)
 
 # ── Serialization ──────────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
@@ -80,8 +81,8 @@ bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 rusqlite = "0.40"
 charming = "0.6"
-codec_sv2 = { version = "6.0.0", features = ["noise_sv2"] }
-noise_sv2 = "1.4.2"
+codec_sv2 = { version = "7.0.0", features = ["noise_sv2"] }
+noise_sv2 = "2.0.0"
 secp256k1 = { version = "0.28", features = ["rand", "std"] }
 key-utils = "1.2.0"
 

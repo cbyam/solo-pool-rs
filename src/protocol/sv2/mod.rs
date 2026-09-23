@@ -35,12 +35,15 @@ use crate::{
     stats::PoolStats,
 };
 use common_messages_sv2::Protocol;
-use const_sv2::{
+use common_messages_sv2::{
+    MESSAGE_TYPE_SETUP_CONNECTION, MESSAGE_TYPE_SETUP_CONNECTION_ERROR,
+    MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS,
+};
+use mining_sv2::{
     MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB,
-    MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL, MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCES,
-    MESSAGE_TYPE_OPEN_MINING_CHANNEL_ERROR, MESSAGE_TYPE_SETUP_CONNECTION,
-    MESSAGE_TYPE_SETUP_CONNECTION_ERROR, MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS,
-    MESSAGE_TYPE_SET_TARGET, MESSAGE_TYPE_SUBMIT_SHARES_ERROR, MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
+    MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL, MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCESS,
+    MESSAGE_TYPE_OPEN_MINING_CHANNEL_ERROR, MESSAGE_TYPE_SET_TARGET,
+    MESSAGE_TYPE_SUBMIT_SHARES_ERROR, MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
     MESSAGE_TYPE_SUBMIT_SHARES_SUCCESS,
 };
 use std::{
@@ -180,7 +183,7 @@ pub async fn run(
     // session-loop idle timeout only starts once we reach transport mode.
     let mut stream = stream;
     let handshake_timeout = Duration::from_secs(crate::network::server::HANDSHAKE_TIMEOUT_SECS);
-    let state = match tokio::time::timeout(
+    let transport = match tokio::time::timeout(
         handshake_timeout,
         noise::responder_handshake(&mut stream),
     )
@@ -190,7 +193,7 @@ pub async fn run(
             warn!("SV2 {peer} Noise handshake timed out");
             return;
         }
-        Ok(Ok(s)) => s,
+        Ok(Ok(t)) => t,
         Ok(Err(e)) => {
             warn!("SV2 {peer} Noise handshake failed: {e}");
             return;
@@ -206,13 +209,14 @@ pub async fn run(
     let mut session = Sv2Session::new(peer, &config, extranonce_prefix, stats);
     let mut job_rx: broadcast::Receiver<JobBroadcast> = engine.subscribe();
 
-    // Shared cipher state; reader (own task) decrypts, writer (this task) encrypts.
-    let state = Arc::new(tokio::sync::Mutex::new(state));
+    // Reader (own task) decrypts, writer (this task) encrypts; each owns its
+    // half of the transport.
+    let (encrypt, decrypt) = transport.split();
     let (reader_half, writer_half) = stream.into_split();
     // Allow the configured message size plus SV2 framing + Noise AEAD overhead.
     let max_frame = config.security.max_message_bytes.saturating_add(1024);
-    let mut nreader = noise::NoiseReader::new(reader_half, state.clone(), max_frame);
-    let mut writer = NoiseWriter::new(writer_half, state, peer);
+    let mut nreader = noise::NoiseReader::new(reader_half, decrypt, max_frame);
+    let mut writer = NoiseWriter::new(writer_half, encrypt, peer);
 
     // read_exact into the codec buffer is not cancel-safe, so frames are read in
     // a dedicated task and forwarded over a channel the main loop can select on.
@@ -616,7 +620,7 @@ async fn handle_open_extended(
     ) {
         Ok(p) => {
             if !writer
-                .send(MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCES, false, &p)
+                .send(MESSAGE_TYPE_OPEN_EXTENDED_MINING_CHANNEL_SUCCESS, false, &p)
                 .await
             {
                 return Flow::Disconnect("write".into());
@@ -943,8 +947,8 @@ async fn reject(session: &Sv2Session, writer: &mut NoiseWriter, seq: u32, code: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binary_sv2::{Str0255, U256};
-    use mining_sv2::OpenExtendedMiningChannel;
+    use binary_sv2::{Str0255Owned, U256Owned};
+    use mining_sv2::OpenExtendedMiningChannelOwned;
 
     fn example_config() -> Config {
         let src = include_str!("../../../config.toml.example");
@@ -953,11 +957,11 @@ mod tests {
     }
 
     fn open_payload(identity: &str, min_extranonce_size: u16) -> Vec<u8> {
-        binary_sv2::to_bytes(OpenExtendedMiningChannel {
+        binary_sv2::to_bytes(OpenExtendedMiningChannelOwned {
             request_id: 1,
-            user_identity: Str0255::try_from(identity.to_string()).unwrap(),
+            user_identity: Str0255Owned::try_from(identity).unwrap(),
             nominal_hash_rate: 1.0e12,
-            max_target: U256::from([0xffu8; 32]),
+            max_target: U256Owned::from([0xffu8; 32]),
             min_extranonce_size,
         })
         .unwrap()
