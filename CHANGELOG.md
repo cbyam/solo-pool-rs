@@ -21,6 +21,10 @@ everything else bumps the **patch** version.
   it are unchanged, so a miner that pins the key needs no change.
   `const_sv2` is no longer used; the message type constants come from the
   protocol crates.
+- The regtest block-acceptance test in CI now also mines a block over
+  Stratum V2 with Noise, pinning the authority key the pool generated, and
+  requires the node to accept it. Until now the SV2 job and submit path
+  were only covered by unit tests and checks on live hardware.
 - The SV2 oversize-frame check counts the bytes a frame has taken rather
   than judging a single read. The new decoder asks for at most one 64 KB
   chunk at a time, so a check on the request alone would silently stop

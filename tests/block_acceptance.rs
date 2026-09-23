@@ -15,6 +15,13 @@
 //! prev-hash byte order, BIP34 height, merkle root, witness commitment, coinbase
 //! structure, and the submit path itself.
 //!
+//! A second test does the same over Stratum V2: a Noise initiator that pins
+//! the authority key the pool generated, an extended channel, a header built
+//! from `NewExtendedMiningJob` + `SetNewPrevHash`, and `SubmitSharesExtended`.
+//! It is the only check of the SV2 job and submit path against a real node,
+//! and of the Noise transport against a client that is not the pool's own
+//! code under test.
+//!
 //! Ignored by default (needs `bitcoind` + `bitcoin-cli`). Run it explicitly:
 //!
 //! ```text
@@ -42,17 +49,36 @@ fn bitcoind_bin() -> String {
 fn bitcoin_cli_bin() -> String {
     std::env::var("BITCOIN_CLI").unwrap_or_else(|_| "bitcoin-cli".into())
 }
+/// Whether the node binaries can run, probed once per test process.
+///
+/// Once, because the tests run in parallel and Knots writes `settings.json`
+/// into its default datadir even for `-version`: two probes at the same time
+/// race on renaming that file and the loser exits 1, which made one of the
+/// two tests skip itself while the other ran. And when `$BITCOIND` is set,
+/// as it is in CI, a failed probe panics rather than skipping, so a broken
+/// install cannot turn the job green by skipping everything.
 fn have_binaries() -> bool {
-    let probe = |b: &str| {
-        Command::new(b)
-            .arg("-version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    probe(&bitcoind_bin()) && probe(&bitcoin_cli_bin())
+    static PROBED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ok = *PROBED.get_or_init(|| {
+        let probe = |b: &str| {
+            Command::new(b)
+                .arg("-version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        probe(&bitcoind_bin()) && probe(&bitcoin_cli_bin())
+    });
+    if !ok && std::env::var_os("BITCOIND").is_some() {
+        panic!(
+            "$BITCOIND is set but `{} -version` or `{} -version` failed",
+            bitcoind_bin(),
+            bitcoin_cli_bin()
+        );
+    }
+    ok
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -524,15 +550,19 @@ fn grind_respects_deadline() {
 // The test
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[test]
-#[ignore = "needs bitcoind/bitcoin-cli; run with: cargo test --release --test block_acceptance -- --ignored --nocapture"]
-fn pool_block_is_accepted_by_node() {
-    if !have_binaries() {
-        eprintln!("SKIP: bitcoind/bitcoin-cli not found (set $BITCOIND / $BITCOIN_CLI)");
-        return;
-    }
+/// A fresh regtest chain with a wallet, and a pool config pointing at it.
+/// `name` keeps the temp directories of tests running in parallel apart;
+/// `extra_config` is appended to the pool config.
+struct Harness {
+    tmp: PathBuf,
+    node: Regtest,
+    payout: String,
+    stratum_port: u16,
+    cfg_path: PathBuf,
+}
 
-    let tmp = std::env::temp_dir().join(format!("solo-pool-e2e-{}", std::process::id()));
+fn harness(name: &str, extra_config: &str) -> Harness {
+    let tmp = std::env::temp_dir().join(format!("solo-pool-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     let node = Regtest::start(&tmp.join("node"), free_port(), free_port());
     let rpc_port = node.rpc_port;
@@ -595,6 +625,7 @@ stats_db_path = ""
 [logging]
 level = "warn"
 json = false
+{extra_config}
 "#,
             found = tmp.join("found-blocks").display(),
             cookie = cookie.display(),
@@ -602,6 +633,60 @@ json = false
     )
     .unwrap();
 
+    Harness {
+        tmp,
+        node,
+        payout,
+        stratum_port,
+        cfg_path,
+    }
+}
+
+/// The node must have block 1 on its chain, paying `payout`, with the BIP34
+/// small-height encoding (a scriptSig starting with OP_1).
+fn assert_block_one_pays(node: &Regtest, payout: &str) {
+    let mut height = String::new();
+    let hdl = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < hdl {
+        height = node.cli(&["getblockcount"]).unwrap();
+        if height == "1" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(height, "1", "node did not accept the block onto the chain");
+
+    let hash = node.cli(&["getblockhash", "1"]).unwrap();
+    let block: serde_json::Value =
+        serde_json::from_str(&node.cli(&["getblock", &hash, "2"]).unwrap()).unwrap();
+    let coinbase = &block["tx"][0];
+    let paid = coinbase["vout"][0]["scriptPubKey"]["address"]
+        .as_str()
+        .unwrap();
+    assert_eq!(paid, payout, "coinbase did not pay the configured address");
+
+    let script_sig = coinbase["vin"][0]["coinbase"].as_str().unwrap();
+    assert!(
+        script_sig.starts_with("51"),
+        "block-1 coinbase scriptSig should start with OP_1 (0x51): {script_sig}"
+    );
+}
+
+#[test]
+#[ignore = "needs bitcoind/bitcoin-cli; run with: cargo test --release --test block_acceptance -- --ignored --nocapture"]
+fn pool_block_is_accepted_by_node() {
+    if !have_binaries() {
+        eprintln!("SKIP: bitcoind/bitcoin-cli not found (set $BITCOIND / $BITCOIN_CLI)");
+        return;
+    }
+
+    let Harness {
+        tmp,
+        node,
+        payout,
+        stratum_port,
+        cfg_path,
+    } = harness("sv1", "");
     let mut pool = Pool::start(&cfg_path, stratum_port);
 
     // ── Connect as an SV1 miner ───────────────────────────────────────────────
@@ -693,32 +778,7 @@ json = false
     );
 
     // ── Verify on-chain ───────────────────────────────────────────────────────
-    let mut height = String::new();
-    let hdl = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < hdl {
-        height = node.cli(&["getblockcount"]).unwrap();
-        if height == "1" {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    assert_eq!(height, "1", "node did not accept the block onto the chain");
-
-    let hash = node.cli(&["getblockhash", "1"]).unwrap();
-    let block: serde_json::Value =
-        serde_json::from_str(&node.cli(&["getblock", &hash, "2"]).unwrap()).unwrap();
-    let coinbase = &block["tx"][0];
-    let paid = coinbase["vout"][0]["scriptPubKey"]["address"]
-        .as_str()
-        .unwrap();
-    assert_eq!(paid, payout, "coinbase did not pay the configured address");
-
-    // BIP34 small-height path: block 1's coinbase scriptSig begins with OP_1.
-    let script_sig = coinbase["vin"][0]["coinbase"].as_str().unwrap();
-    assert!(
-        script_sig.starts_with("51"),
-        "block-1 coinbase scriptSig should start with OP_1 (0x51): {script_sig}"
-    );
+    assert_block_one_pays(&node, &payout);
 
     // ── Archive lifecycle: confirmed block filed under submitted/ ─────────────
     let found_dir = tmp.join("found-blocks");
@@ -729,7 +789,7 @@ json = false
         "a confirmed block must not remain at the archive top level"
     );
 
-    eprintln!("✅ block 1 accepted by node; coinbase pays {paid}");
+    eprintln!("✅ block 1 accepted by node; coinbase pays {payout}");
 
     // ── Graceful shutdown + boot-time replay ─────────────────────────────────
     // Re-seed the archive as if the pool had died before confirming the
@@ -766,6 +826,349 @@ json = false
     drop(pool);
     drop(node);
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stratum V2 miner over Noise
+// ─────────────────────────────────────────────────────────────────────────────
+
+use binary_sv2::{B032Owned, Str0255Owned, U256Owned};
+use codec_sv2::{
+    Decrypted, Handshake, NoiseDecoder, NoiseEncoder, TransportDecryptState, TransportEncryptState,
+};
+use common_messages_sv2::{Protocol, SetupConnectionOwned};
+use framing_sv2::framing::SerializedFrame;
+use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
+use mining_sv2::{
+    NewExtendedMiningJob, OpenExtendedMiningChannelOwned, OpenExtendedMiningChannelSuccess,
+    SetNewPrevHash, SubmitSharesExtendedOwned,
+};
+use noise_sv2::{Initiator, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE};
+use std::collections::HashMap;
+use std::io::Read;
+
+/// A blocking SV2 client: Noise initiator that pins the pool's authority key,
+/// as a NerdQAxe++ configured with the key does.
+struct Sv2Client {
+    stream: TcpStream,
+    encoder: NoiseEncoder,
+    encrypt: TransportEncryptState,
+    decoder: NoiseDecoder,
+    decrypt: Option<TransportDecryptState>,
+}
+
+impl Sv2Client {
+    fn connect(port: u16, authority_pubkey: [u8; 32]) -> Self {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_nodelay(true).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let initiator = Initiator::from_raw_k(authority_pubkey).expect("initiator");
+        let (first, sent) = Handshake::initiator(initiator).step_0().expect("step_0");
+        stream.write_all(first.payload()).unwrap();
+        let mut reply = [0u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE];
+        stream.read_exact(&mut reply).expect("handshake reply");
+        let (encrypt, decrypt) = sent
+            .step_2(reply)
+            .expect("pool certificate must verify against the pinned authority key")
+            .split();
+        Sv2Client {
+            stream,
+            encoder: NoiseEncoder::new(),
+            encrypt,
+            decoder: NoiseDecoder::new(),
+            decrypt: Some(decrypt),
+        }
+    }
+
+    fn send(&mut self, msg_type: u8, channel_msg: bool, payload: &[u8]) {
+        let ext: u16 = if channel_msg { 0x8000 } else { 0 };
+        let mut frame = Vec::with_capacity(6 + payload.len());
+        frame.extend_from_slice(&ext.to_le_bytes());
+        frame.push(msg_type);
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes()[..3]);
+        frame.extend_from_slice(payload);
+        let frame = SerializedFrame::from_bytes(frame).expect("frame");
+        let bytes = self
+            .encoder
+            .encode_transport(frame, &mut self.encrypt)
+            .expect("encrypt");
+        self.stream.write_all(bytes.as_ref()).unwrap();
+    }
+
+    fn recv(&mut self) -> (u8, Vec<u8>) {
+        loop {
+            let state = self.decrypt.take().expect("transport state");
+            match self.decoder.next_transport_frame(state) {
+                Ok(Decrypted::Frame(mut f, state)) => {
+                    self.decrypt = Some(state);
+                    return (f.header().msg_type(), f.payload().to_vec());
+                }
+                Ok(Decrypted::Incomplete(_, state)) => {
+                    self.decrypt = Some(state);
+                    let buf = self.decoder.writable();
+                    self.stream.read_exact(buf).expect("read from pool");
+                }
+                Err(e) => panic!("noise decode: {e:?}"),
+            }
+        }
+    }
+}
+
+struct Sv2Job {
+    version: u32,
+    merkle_path: Vec<[u8; 32]>,
+    coinbase_prefix: Vec<u8>,
+    coinbase_suffix: Vec<u8>,
+}
+
+struct Sv2PrevHash {
+    prev: [u8; 32],
+    min_ntime: u32,
+    nbits: u32,
+}
+
+/// What the miner has been told so far. SV2 splits the SV1 notify in two: a
+/// job announced without `min_ntime` is a future job, activated by the
+/// `SetNewPrevHash` naming it; one with `min_ntime` is active at once on the
+/// current prev-hash.
+#[derive(Default)]
+struct Sv2Work {
+    jobs: HashMap<u32, Sv2Job>,
+    prev_hash: Option<Sv2PrevHash>,
+    active: Option<u32>,
+}
+
+impl Sv2Work {
+    /// Apply a job or prev-hash message; ignore anything else.
+    fn apply(&mut self, msg_type: u8, payload: &mut [u8]) {
+        match msg_type {
+            0x1f => {
+                let j: NewExtendedMiningJob = binary_sv2::from_bytes(payload).unwrap();
+                let future = j.min_ntime.clone().into_inner().is_none();
+                let job_id = j.job_id;
+                let merkle_path = j
+                    .merkle_path
+                    .into_inner()
+                    .iter()
+                    .map(|h| h.as_ref().try_into().unwrap())
+                    .collect();
+                self.jobs.insert(
+                    job_id,
+                    Sv2Job {
+                        version: j.version,
+                        merkle_path,
+                        coinbase_prefix: j.coinbase_tx_prefix.as_ref().to_vec(),
+                        coinbase_suffix: j.coinbase_tx_suffix.as_ref().to_vec(),
+                    },
+                );
+                if !future {
+                    self.active = Some(job_id);
+                }
+            }
+            0x20 => {
+                let p: SetNewPrevHash = binary_sv2::from_bytes(payload).unwrap();
+                self.prev_hash = Some(Sv2PrevHash {
+                    prev: p.prev_hash.as_ref().try_into().unwrap(),
+                    min_ntime: p.min_ntime,
+                    nbits: p.nbits,
+                });
+                self.active = Some(p.job_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn ready(&self) -> Option<(u32, &Sv2Job, &Sv2PrevHash)> {
+        let id = self.active?;
+        Some((id, self.jobs.get(&id)?, self.prev_hash.as_ref()?))
+    }
+}
+
+/// The 76-byte header prefix for an SV2 extended job: the coinbase is the
+/// job's prefix, the pool's extranonce prefix, the miner's extranonce and the
+/// job's suffix, and the prev-hash is already in header byte order.
+fn sv2_header_prefix(
+    job: &Sv2Job,
+    prev: &Sv2PrevHash,
+    extranonce_prefix: &[u8],
+    extranonce: &[u8],
+) -> [u8; 76] {
+    let mut coinbase = job.coinbase_prefix.clone();
+    coinbase.extend_from_slice(extranonce_prefix);
+    coinbase.extend_from_slice(extranonce);
+    coinbase.extend_from_slice(&job.coinbase_suffix);
+    let mut root = sha256d(&coinbase);
+    for branch in &job.merkle_path {
+        let mut buf = [0u8; 64];
+        buf[..32].copy_from_slice(&root);
+        buf[32..].copy_from_slice(branch);
+        root = sha256d(&buf);
+    }
+    let mut hdr = [0u8; 76];
+    hdr[0..4].copy_from_slice(&job.version.to_le_bytes());
+    hdr[4..36].copy_from_slice(&prev.prev);
+    hdr[36..68].copy_from_slice(&root);
+    hdr[68..72].copy_from_slice(&prev.min_ntime.to_le_bytes());
+    hdr[72..76].copy_from_slice(&prev.nbits.to_le_bytes());
+    hdr
+}
+
+/// The SV1 test's counterpart over Stratum V2 with Noise: pin the authority
+/// key the pool generated, open an extended channel, build the header from
+/// `NewExtendedMiningJob` + `SetNewPrevHash`, and submit a network-target
+/// share with `SubmitSharesExtended`. The node must accept block 1. This is
+/// the only test that drives the SV2 job and submit path against a real
+/// node, so it guards the SV2 byte orders (prev-hash, targets, extranonce
+/// split) that the SV1 test never touches.
+#[test]
+#[ignore = "needs bitcoind/bitcoin-cli; run with: cargo test --release --test block_acceptance -- --ignored --nocapture"]
+fn pool_block_over_sv2_noise_is_accepted_by_node() {
+    if !have_binaries() {
+        eprintln!("SKIP: bitcoind/bitcoin-cli not found (set $BITCOIND / $BITCOIN_CLI)");
+        return;
+    }
+
+    let key_path =
+        std::env::temp_dir().join(format!("solo-pool-e2e-sv2-{}.key", std::process::id()));
+    let _ = std::fs::remove_file(&key_path);
+    let Harness {
+        tmp,
+        node,
+        payout,
+        stratum_port,
+        cfg_path,
+    } = harness(
+        "sv2",
+        &format!(
+            r#"
+[sv2]
+enabled = true
+persist_authority_key = true
+authority_key_file = "{}"
+cert_validity_secs = 3600
+"#,
+            key_path.display()
+        ),
+    );
+    let pool = Pool::start(&cfg_path, stratum_port);
+
+    // Pin the key the pool generated on first boot, as a configured miner does.
+    let secret: Secp256k1SecretKey = std::fs::read_to_string(&key_path)
+        .expect("pool writes its authority key on boot")
+        .trim()
+        .parse()
+        .expect("authority key file");
+    let pubkey = Secp256k1PublicKey::from(secret).into_bytes();
+    let mut client = Sv2Client::connect(stratum_port, pubkey);
+
+    // ── SetupConnection → OpenExtendedMiningChannel ──────────────────────────
+    let setup = SetupConnectionOwned {
+        protocol: Protocol::MiningProtocol,
+        min_version: 2,
+        max_version: 2,
+        flags: 0,
+        endpoint_host: Str0255Owned::try_from("127.0.0.1").unwrap(),
+        endpoint_port: stratum_port,
+        vendor: Str0255Owned::try_from("e2e").unwrap(),
+        hardware_version: Str0255Owned::try_from("").unwrap(),
+        firmware: Str0255Owned::try_from("").unwrap(),
+        device_id: Str0255Owned::try_from("").unwrap(),
+    };
+    client.send(0x00, false, &binary_sv2::to_bytes(setup).unwrap());
+    let (msg_type, _) = client.recv();
+    assert_eq!(msg_type, 0x01, "expected SetupConnection.Success");
+
+    let open = OpenExtendedMiningChannelOwned {
+        request_id: 1,
+        user_identity: Str0255Owned::try_from("e2e.sv2").unwrap(),
+        nominal_hash_rate: 1.0e12,
+        max_target: U256Owned::from([0xffu8; 32]),
+        min_extranonce_size: 4,
+    };
+    client.send(0x13, false, &binary_sv2::to_bytes(open).unwrap());
+
+    let mut work = Sv2Work::default();
+    let (channel_id, extranonce_prefix, extranonce_size) = loop {
+        let (msg_type, mut payload) = client.recv();
+        if msg_type == 0x14 {
+            let s: OpenExtendedMiningChannelSuccess = binary_sv2::from_bytes(&mut payload).unwrap();
+            break (
+                s.channel_id,
+                s.extranonce_prefix.as_ref().to_vec(),
+                s.extranonce_size as usize,
+            );
+        }
+        assert_ne!(msg_type, 0x12, "pool refused the channel");
+        work.apply(msg_type, &mut payload);
+    };
+    assert_eq!(extranonce_size, 4, "pool must grant the requested size");
+
+    // ── Grind + submit until the pool accepts ────────────────────────────────
+    let t0 = Instant::now();
+    let mut extranonce_counter: u32 = 0;
+    let mut sequence: u32 = 0;
+    let mut accepted = false;
+    while t0.elapsed() < Duration::from_secs(900) {
+        let Some((job_id, job, prev)) = work.ready() else {
+            let (msg_type, mut payload) = client.recv();
+            work.apply(msg_type, &mut payload);
+            continue;
+        };
+        extranonce_counter += 1;
+        let extranonce = extranonce_counter.to_be_bytes().to_vec();
+        let prefix = sv2_header_prefix(job, prev, &extranonce_prefix, &extranonce);
+        let target = compact_to_target_be(prev.nbits);
+        let Some(nonce) = grind_to_target(&prefix, &target, Instant::now() + GRIND_CHUNK) else {
+            continue;
+        };
+        eprintln!(
+            "SV2: found network-target nonce {nonce} in {:.1}s (job {job_id}, nbits {:08x})",
+            t0.elapsed().as_secs_f64(),
+            prev.nbits
+        );
+        sequence += 1;
+        let submit = SubmitSharesExtendedOwned {
+            channel_id,
+            sequence_number: sequence,
+            job_id,
+            nonce,
+            ntime: prev.min_ntime,
+            version: job.version,
+            extranonce: B032Owned::try_from(extranonce).unwrap(),
+        };
+        client.send(0x1b, true, &binary_sv2::to_bytes(submit).unwrap());
+
+        // Jobs and targets may arrive before the verdict; keep them.
+        loop {
+            let (msg_type, mut payload) = client.recv();
+            match msg_type {
+                0x1c => {
+                    accepted = true;
+                    break;
+                }
+                0x1d => {
+                    eprintln!("SV2 submit rejected; retrying on the latest job");
+                    break;
+                }
+                _ => work.apply(msg_type, &mut payload),
+            }
+        }
+        if accepted {
+            break;
+        }
+    }
+    assert!(accepted, "pool never accepted an SV2 block within 15 min");
+
+    assert_block_one_pays(&node, &payout);
+    eprintln!("✅ SV2 block 1 accepted by node; coinbase pays {payout}");
+
+    drop(client);
+    drop(pool);
+    drop(node);
+    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_file(&key_path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

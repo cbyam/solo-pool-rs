@@ -3,7 +3,9 @@ name: E2E block acceptance
 # The one test that exercises the path no unit test can: mine a real block
 # through the pool and have a real bitcoind accept it onto the chain. Guards the
 # bugs that are invisible until a block is actually found (prev-hash byte order,
-# BIP34 height, merkle root, witness commitment, the submit path).
+# BIP34 height, merkle root, witness commitment, the submit path). A block is
+# mined once over Stratum V1 and once over Stratum V2 with Noise, so an SRI
+# crate upgrade is checked end to end on every PR.
 #
 # Runs against Bitcoin Knots, not Core, because that is what the pool is actually
 # deployed against and it is the node whose acceptance decides whether a found
