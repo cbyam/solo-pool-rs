@@ -68,7 +68,7 @@ refuse to start.
 | | `poll_fallback` | bool, required | Poll the tip over RPC when ZMQ is silent. |
 | | `poll_interval_ms` | integer, required | Poll cadence. |
 | `[vardiff]` | `target_share_time_secs` | integer, at least 1 | Seconds per share the retarget aims for. |
-| | `retarget_interval_secs` | integer, at least 1 | How often a session is retargeted. Evaluated on inbound traffic, never on a timer. |
+| | `retarget_interval_secs` | integer, at least 1 | How often a session is retargeted. Runs on a timer per session, so a silent miner is still retargeted. |
 | | `min_difficulty` | integer, at least 1 | Floor. Shares are accepted against this value, never against the session's current difficulty. See §5. |
 | | `max_difficulty` | integer, at least `min_difficulty` | Ceiling. Equal to the floor is allowed and pins every miner. |
 | | `max_retarget_factor` | float, at least 1.0 | Largest ratio one retarget may move by. |
@@ -199,9 +199,16 @@ Plain JSON-RPC lines over TCP, `\n` or `\r\n` terminated.
 - A session starts at `initial_difficulty` (or a valid suggestion), and is
   retargeted every `retarget_interval_secs` toward one share per
   `target_share_time_secs`, moving by at most `max_retarget_factor` per step,
-  clamped to the floor and ceiling, and only announced when the change exceeds
-  5%. A window with no shares halves the difficulty, floored at
-  `min_difficulty`.
+  clamped to the floor and ceiling. Each retarget judges the work the
+  worker's shares proved (the sum of their credited difficulties) over the
+  trailing 20 × `target_share_time_secs`, or one retarget interval if that is
+  longer, not the number of shares. A worker's record carries across a
+  reconnect, so a returning miner is judged on its real rate straight away.
+  A retarget is only announced when the observed rate is more than 1.5x off
+  the target in either direction; inside that band the difficulty holds.
+  Within 3x of the target a retarget moves by the square root of the observed
+  ratio, and beyond that by the whole ratio. A window with no shares is judged
+  as if one share had landed at its end, and is floored at `min_difficulty`.
 - Shares are accepted against `min_difficulty`, so firmware that ignores
   difficulty changes keeps mining.
 - Each accepted share is credited at the threshold it actually cleared: the
@@ -290,6 +297,7 @@ are not covered.
 | `pool_rpc_fallback_used_total` | counter | |
 | `pool_worker_difficulty` | gauge | `worker` |
 | `pool_vardiff_change_ratio` | histogram | |
+| `pool_vardiff_retargets_total` | counter | `direction`, `worker` |
 | `pool_hashrate_estimated_hps` | gauge | `worker` |
 
 Any series not written for 24 hours is dropped from the exposition. This

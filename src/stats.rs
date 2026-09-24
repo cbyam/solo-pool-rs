@@ -3,6 +3,7 @@
 /// In-process pool statistics — updated by session tasks, read by the dashboard.
 ///
 /// Uses atomics and DashMap so updates are lock-free from any async task.
+use crate::mining::vardiff::ShareHistory;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
@@ -158,6 +159,23 @@ impl StatsStore {
              key TEXT PRIMARY KEY,
              value TEXT NOT NULL
              )",
+            [],
+        )?;
+
+        // One row per accepted share, kept for the longest hashrate window,
+        // so a worker's 3h/24h estimates survive a pool restart (see
+        // `ShareHistory`). Appended in batches by the flush task, never from
+        // the share path itself.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS share_log (
+             worker TEXT NOT NULL,
+             ts INTEGER NOT NULL,
+             credited_difficulty INTEGER NOT NULL
+             )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS share_log_worker_ts ON share_log (worker, ts)",
             [],
         )?;
 
@@ -349,6 +367,60 @@ impl StatsStore {
         .unwrap_or_default()
     }
 
+    /// Append a batch of shares in one transaction and drop rows older than
+    /// the longest window. Returns false if the batch was not written.
+    fn append_shares(&self, batch: &[LoggedShare], now: u64) -> bool {
+        let mut conn = self.conn.lock();
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                warn!("Failed to open share_log transaction: {e}");
+                return false;
+            }
+        };
+        let written = (|| -> Result<(), rusqlite::Error> {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO share_log (worker, ts, credited_difficulty) VALUES (?1, ?2, ?3)",
+            )?;
+            for s in batch {
+                stmt.execute(params![s.worker, db_u64(s.ts), db_u64(s.credited)])?;
+            }
+            drop(stmt);
+            tx.execute(
+                "DELETE FROM share_log WHERE ts < ?1",
+                params![db_u64(now.saturating_sub(HASHRATE_WINDOW_24H))],
+            )?;
+            Ok(())
+        })();
+        match written.and_then(|_| tx.commit()) {
+            Ok(()) => true,
+            Err(e) => {
+                warn!("Failed to write {} shares to share_log: {e}", batch.len());
+                false
+            }
+        }
+    }
+
+    /// Every logged share for `worker` since `since_ts`, oldest first.
+    fn get_shares(&self, worker: &str, since_ts: u64) -> Vec<(u64, u64)> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare_cached(
+            "SELECT ts, credited_difficulty FROM share_log
+             WHERE worker = ?1 AND ts >= ?2 ORDER BY ts ASC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to read share_log for {worker}: {e}");
+                return vec![];
+            }
+        };
+        stmt.query_map(params![worker, db_u64(since_ts)], |row| {
+            Ok((get_u64(row, 0)?, get_u64(row, 1)?))
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     fn set_worker_best_share(&self, worker: &str, difficulty: u64) {
         if let Err(e) = self.conn.lock().execute(
             "INSERT INTO worker_best_shares (worker, best_share_difficulty) VALUES (?1, ?2)
@@ -360,6 +432,19 @@ impl StatsStore {
         }
     }
 }
+
+/// An accepted share waiting for the next `share_log` flush.
+struct LoggedShare {
+    worker: String,
+    ts: u64,
+    credited: u64,
+}
+
+/// Shares buffered past this count are dropped with a warning rather than
+/// held. The flush runs every few seconds and a solo fleet logs a share
+/// every several seconds per miner, so reaching this means the flush task
+/// is stuck, not that the fleet is large.
+const MAX_PENDING_SHARES: usize = 65_536;
 
 /// Everything the store hands back at boot.
 #[derive(Default)]
@@ -433,6 +518,14 @@ pub struct PoolStats {
     /// anchor for decaying an offline worker's frozen values out of each
     /// window (see `worker_hashrates`).
     worker_hashrate_updated_ts: DashMap<String, u64>,
+    /// Share records parked by a closed session for the worker's next one, so
+    /// the 3h/24h windows carry across a miner restart (see
+    /// `ShareHistory`). Present only while the worker has no live session
+    /// holding the record; evicted with the rest of the worker's maps.
+    worker_share_history: DashMap<String, ShareHistory>,
+    /// Accepted shares not yet written to `share_log`. The share path only
+    /// pushes here; `flush_share_log` drains it off the hot path.
+    pending_shares: Mutex<Vec<LoggedShare>>,
     worker_protocol: DashMap<String, String>,
     worker_last_submit_ts: DashMap<String, u64>,
     worker_best_shares: DashMap<String, u64>,
@@ -520,6 +613,8 @@ impl PoolStats {
             worker_hashrates_3h: DashMap::new(),
             worker_hashrates_24h: DashMap::new(),
             worker_hashrate_updated_ts: DashMap::new(),
+            worker_share_history: DashMap::new(),
+            pending_shares: Mutex::new(Vec::new()),
             worker_protocol: DashMap::new(),
             worker_last_submit_ts: DashMap::new(),
             worker_best_shares,
@@ -896,6 +991,76 @@ impl PoolStats {
         }
     }
 
+    /// Park a closing session's share record for `worker`'s next session.
+    pub fn stash_share_history(&self, worker: &str, history: ShareHistory) {
+        self.worker_share_history
+            .insert(worker.to_string(), history);
+    }
+
+    /// Hand a parked share record to `worker`'s new session, if one exists.
+    ///
+    /// A record parked by a session this boot wins. Failing that, the
+    /// persisted share log is consulted, which is how a worker returning
+    /// after a pool restart gets its windows back. The log is read only on
+    /// this first return: from then on the record lives in memory, and the
+    /// log keeps growing for the next restart. A worker running two sessions
+    /// under one name has both sessions' shares in the log, so the one that
+    /// returns first after a restart briefly reads as both.
+    pub fn take_share_history(&self, worker: &str) -> Option<ShareHistory> {
+        if let Some((_, history)) = self.worker_share_history.remove(worker) {
+            return Some(history);
+        }
+        let store = self.store.as_ref()?;
+        let now = Self::now_secs();
+        let rows = store.get_shares(worker, now.saturating_sub(HASHRATE_WINDOW_24H));
+        let history = ShareHistory::from_unix_rows(&rows, now);
+        if history.is_some() {
+            info!(
+                worker,
+                shares = rows.len(),
+                "Restored share history from the stats store"
+            );
+        }
+        history
+    }
+
+    /// Queue an accepted share for the persisted share log. Cheap and
+    /// non-blocking: a push under an uncontended mutex, and nothing at all
+    /// when the pool runs without a stats store.
+    pub fn log_share(&self, worker: &str, credited: u64) {
+        if self.store.is_none() {
+            return;
+        }
+        let mut pending = self.pending_shares.lock();
+        if pending.len() >= MAX_PENDING_SHARES {
+            warn!(
+                "share_log buffer full ({} shares); dropping this share",
+                pending.len()
+            );
+            return;
+        }
+        pending.push(LoggedShare {
+            worker: worker.to_string(),
+            ts: Self::now_secs(),
+            credited,
+        });
+    }
+
+    /// Write every queued share to `share_log` in one transaction and prune
+    /// rows older than the longest window. Called from the background flush
+    /// task and once more at shutdown. A failed write drops the batch: the
+    /// log is an estimate input, and holding it would only grow the buffer.
+    pub fn flush_share_log(&self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let batch = std::mem::take(&mut *self.pending_shares.lock());
+        if batch.is_empty() {
+            return;
+        }
+        store.append_shares(&batch, Self::now_secs());
+    }
+
     pub fn update_worker_vardiff(&self, worker: &str, vardiff: u64) {
         if let Some(mut state) = self.worker_states.get_mut(worker) {
             state.current_vardiff = vardiff;
@@ -967,6 +1132,7 @@ impl PoolStats {
             self.worker_hashrates_3h.remove(w);
             self.worker_hashrates_24h.remove(w);
             self.worker_hashrate_updated_ts.remove(w);
+            self.worker_share_history.remove(w);
             self.worker_protocol.remove(w);
             self.worker_last_submit_ts.remove(w);
         }
@@ -1500,6 +1666,143 @@ mod tests {
         assert!(stats.worker_states.get("online").is_some());
         assert!(stats.worker_states.get("recent").is_some());
         assert!(stats.worker_states.get("idle").is_none());
+    }
+
+    #[test]
+    fn parked_share_history_is_handed_over_once_and_evicted_with_the_worker() {
+        use crate::config::VardiffConfig;
+        use crate::mining::vardiff::Vardiff;
+
+        let cfg = VardiffConfig {
+            target_share_time_secs: 15,
+            retarget_interval_secs: 60,
+            min_difficulty: 1024,
+            max_difficulty: 1_000_000_000,
+            max_retarget_factor: 4.0,
+        };
+        let stats = PoolStats::new_with_store(None);
+        let mut vd = Vardiff::new(cfg, 1_000);
+        vd.record_share(1_000);
+
+        stats.mark_worker_online("w", 1_000);
+        stats.mark_worker_offline("w");
+        stats.stash_share_history("w", vd.take_share_history());
+
+        // The next session takes it; a second take finds nothing.
+        assert!(stats.take_share_history("w").is_some());
+        assert!(stats.take_share_history("w").is_none());
+        assert!(stats.take_share_history("other").is_none());
+
+        // A record the worker never came back for leaves with the worker.
+        stats.stash_share_history("w", vd.take_share_history());
+        stats.worker_states.get_mut("w").unwrap().connected_ts =
+            PoolStats::now_secs() - IDLE_WORKER_EVICT_SECS - 60;
+        stats.prune_idle_workers();
+        assert!(stats.worker_share_history.get("w").is_none());
+    }
+
+    #[test]
+    fn share_log_rebuilds_a_workers_windows_after_a_pool_restart() {
+        use crate::config::VardiffConfig;
+        use crate::mining::vardiff::Vardiff;
+
+        let cfg = VardiffConfig {
+            target_share_time_secs: 15,
+            retarget_interval_secs: 60,
+            min_difficulty: 1024,
+            max_difficulty: 1_000_000_000,
+            max_retarget_factor: 4.0,
+        };
+        let db_path = make_temp_db();
+        let diff = 100_000u64;
+
+        // Boot one: log some shares and shut down cleanly.
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            for _ in 0..8 {
+                stats.log_share("axe", diff);
+            }
+            // Another worker's shares must not bleed in.
+            stats.log_share("other", diff);
+            // Nothing is on disk until a flush.
+            assert!(stats
+                .store
+                .as_ref()
+                .unwrap()
+                .get_shares("axe", 0)
+                .is_empty());
+            stats.flush_share_log();
+            assert_eq!(stats.store.as_ref().unwrap().get_shares("axe", 0).len(), 8);
+
+            // The eight above all carry this second's timestamp. Stand in
+            // for an hour of steady mining before them so the restored
+            // record has a real time base (the estimator reports nothing
+            // for a record observed under 30 seconds).
+            let now = PoolStats::now_secs();
+            let hour: Vec<LoggedShare> = (0..240u64)
+                .map(|i| LoggedShare {
+                    worker: "axe".into(),
+                    ts: now - 3_600 + i * 15,
+                    credited: diff,
+                })
+                .collect();
+            assert!(stats.store.as_ref().unwrap().append_shares(&hour, now));
+        }
+
+        // Boot two: the worker reconnects and its record comes back from disk.
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            assert!(stats.worker_share_history.is_empty());
+            let history = stats
+                .take_share_history("axe")
+                .expect("history restored from share_log");
+            let mut vd = Vardiff::new(cfg.clone(), diff);
+            vd.restore_share_history(history);
+            // 248 shares over an observed hour, at full 3h-window width.
+            let hps = vd.estimated_hashrate_in_window(std::time::Duration::from_secs(10_800));
+            let expected = 248.0 * diff as f64 * 4_294_967_296.0 / 3_600.0;
+            assert!(
+                (hps - expected).abs() / expected < 0.02,
+                "{hps} vs {expected}"
+            );
+
+            // The in-memory path now owns it: the log is not consulted again
+            // while a parked record exists, but a worker with no parked
+            // record and no rows gets nothing.
+            assert!(stats.take_share_history("never-seen").is_none());
+        }
+
+        // Rows older than the longest window are pruned on flush.
+        {
+            let stats = PoolStats::new_with_store(Some(db_path.clone()));
+            let store = stats.store.as_ref().unwrap();
+            let old = PoolStats::now_secs() - HASHRATE_WINDOW_24H - 60;
+            store.append_shares(
+                &[LoggedShare {
+                    worker: "axe".into(),
+                    ts: old,
+                    credited: diff,
+                }],
+                old,
+            );
+            assert_eq!(store.get_shares("axe", 0).len(), 249);
+            stats.log_share("axe", diff);
+            stats.flush_share_log();
+            assert_eq!(
+                store.get_shares("axe", 0).len(),
+                249,
+                "old row gone, new row in"
+            );
+            assert!(store.get_shares("axe", 0).iter().all(|&(ts, _)| ts > old));
+        }
+
+        // Without a store nothing is queued and nothing is restored.
+        let stats = PoolStats::new_with_store(None);
+        stats.log_share("axe", diff);
+        assert!(stats.pending_shares.lock().is_empty());
+        assert!(stats.take_share_history("axe").is_none());
+
+        std::fs::remove_file(db_path).ok();
     }
 
     #[test]

@@ -299,23 +299,7 @@ pub async fn run(
                     }
                 }
 
-                // Vardiff retarget → SetTarget
                 if session.channel_open {
-                    if let Some(new_diff) = session.vardiff.check_retarget() {
-                        let old_diff = session.difficulty;
-                        session.difficulty = new_diff;
-                        if let Some(worker) = &session.worker {
-                            metrics::vardiff_retarget(worker, old_diff, new_diff);
-                            session.stats.update_worker_vardiff(worker, new_diff);
-                        }
-                        let target = job::difficulty_to_sv2_target(new_diff);
-                        debug!(peer = %peer, worker = ?session.worker, difficulty = new_diff, "Sending SV2 set_target");
-                        match messages::set_target(session.channel_id, target) {
-                            Ok(p) => if !writer.send(MESSAGE_TYPE_SET_TARGET, true, &p).await { break; },
-                            Err(e) => { error!("encode set_target: {e}"); break; }
-                        }
-                    }
-
                     // Worker hashrate stats (mirrors SV1 cadence)
                     let hr_60s = session.vardiff.estimated_hashrate_in_window(Duration::from_secs(60));
                     let hr_10m = session.vardiff.estimated_hashrate_in_window(Duration::from_secs(600));
@@ -324,6 +308,29 @@ pub async fn run(
                     if let Some(worker) = &session.worker {
                         metrics::update_hashrate(hr_10m, worker);
                         session.stats.update_worker_hashrate(worker, hr_60s, hr_10m, hr_3h, hr_24h);
+                    }
+                }
+            }
+
+            // ── Vardiff retarget → SetTarget, on its own clock ──────────────
+            // A timer rather than inbound traffic, as in SV1: a miner whose
+            // target is too hard goes quiet, and that silence is the evidence
+            // the retarget has to act on.
+            _ = tokio::time::sleep_until(session.vardiff.retarget_due().into()),
+                if session.channel_open =>
+            {
+                if let Some(new_diff) = session.vardiff.check_retarget() {
+                    let old_diff = session.difficulty;
+                    session.difficulty = new_diff;
+                    if let Some(worker) = &session.worker {
+                        metrics::vardiff_retarget(worker, old_diff, new_diff);
+                        session.stats.update_worker_vardiff(worker, new_diff);
+                    }
+                    let target = job::difficulty_to_sv2_target(new_diff);
+                    debug!(peer = %peer, worker = ?session.worker, difficulty = new_diff, "Sending SV2 set_target");
+                    match messages::set_target(session.channel_id, target) {
+                        Ok(p) => if !writer.send(MESSAGE_TYPE_SET_TARGET, true, &p).await { break; },
+                        Err(e) => { error!("encode set_target: {e}"); break; }
                     }
                 }
             }
@@ -360,6 +367,9 @@ pub async fn run(
     let uptime = session.connect_time.elapsed().as_secs() as f64;
     if let Some(worker) = &session.worker {
         session.stats.mark_worker_offline(worker);
+        session
+            .stats
+            .stash_share_history(worker, session.vardiff.take_share_history());
         metrics::connection_duration(worker, uptime);
     }
     info!(
@@ -549,6 +559,9 @@ async fn handle_open_extended(
         }
         if let Some(prev) = session.worker.take() {
             session.stats.mark_worker_offline(&prev);
+            session
+                .stats
+                .stash_share_history(&prev, session.vardiff.take_share_history());
         }
     }
 
@@ -586,6 +599,9 @@ async fn handle_open_extended(
         session
             .stats
             .set_worker_protocol(&open.user_identity, "sv2");
+        if let Some(history) = session.stats.take_share_history(&open.user_identity) {
+            session.vardiff.restore_share_history(history);
+        }
     }
     info!(peer = %session.peer, worker = %open.user_identity, channel_id, "SV2 extended channel opened");
 
@@ -741,6 +757,7 @@ async fn handle_submit(
             session.shares_accepted += 1;
             let credited = session.vardiff.credit_for(hash_difficulty);
             session.vardiff.record_share(credited);
+            session.stats.log_share(&worker, credited);
             metrics::share_accepted(credited, &worker);
             session.stats.share_accepted(hash_difficulty, credited);
             session
@@ -776,6 +793,7 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     let credited = session.vardiff.credit_for(hash_difficulty);
                     session.vardiff.record_share(credited);
+                    session.stats.log_share(&worker, credited);
                     session.stats.share_accepted(hash_difficulty, credited);
                     session
                         .stats

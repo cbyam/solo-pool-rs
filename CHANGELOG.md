@@ -9,7 +9,64 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- `pool_vardiff_retargets_total{worker,direction}` counts retargets up and
+  down per worker. `pool_vardiff_change_ratio` is exported as a summary over
+  a one-minute rolling window, and retargets are sparse enough that its
+  quantiles usually read 0, so the retarget rate was not visible.
+
+### Fixed
+- A miner restart no longer resets its 3h and 24h hashrate columns. The
+  share record every window is computed from lived in the connection, so a
+  new session seconds after the old one closed started each window empty:
+  the long windows dropped to the 60s figure and took hours to climb back,
+  while the shares they should have covered had all been accepted and were
+  merely forgotten. A closing session now parks its record with the stats
+  collector under the worker name and the worker's next session adopts it
+  on authorize, so each window again reports the shares actually inside it.
+  The offline decay is unchanged: a worker that stays away sees each window
+  empty out at its own width, and a reconnect after a long outage finds
+  only the shares that really fall inside each window. The record is
+  dropped with the worker's other maps after a day offline.
+- The same windows now survive a pool restart. Accepted shares are queued
+  in memory and written to a new `share_log` table in the stats database
+  every ten seconds and once more at shutdown, off the share path, and a
+  worker that returns with no record in memory rebuilds one from the log.
+  Rows older than 24h are pruned on each flush, so the table holds about
+  six thousand rows per miner per day at the default share target. The
+  table is created on first boot with `CREATE TABLE IF NOT EXISTS`; older
+  binaries ignore it. Pools running without a stats database are
+  unaffected. An unclean stop loses at most the last ten seconds of shares.
+
 ### Changed
+- Vardiff judges a miner on the work its shares proved, the sum of their
+  credited difficulties, instead of counting them. Counting assumed every
+  share was mined at the session's current difficulty, which is false for
+  in-flight work landing after a raise (the window looked fast and the
+  difficulty was raised again, a ratchet) and for hardware that never
+  follows `set_difficulty` (forty floor shares looked like forty shares at
+  the assignment and drove the device to the ceiling). Both now settle at
+  the rate the shares support.
+- Each retarget judges the trailing 20 × `target_share_time_secs` of that
+  work (five minutes at the default 15s target), not only the shares since
+  the previous retarget. One 90s interval holds about six shares, and a rate
+  read off six Poisson arrivals is off by about 40% one standard deviation
+  of the time; twenty shares bring that to about 22%. Because a worker's
+  share record carries across a reconnect, a returning miner's first
+  retarget is judged on its real rate rather than on a few fresh shares.
+- The 5% retarget deadband is replaced by a 1.5x hysteresis band, and a
+  retarget outside it moves by the square root of the observed ratio (half
+  the distance in log terms) unless the miner is more than 3x off, where it
+  moves by the whole ratio as before. A full step on a noisy reading put the
+  miner off target for real, and the next retarget usually reversed it, so
+  a converged miner saw its difficulty swing roughly ×2 and back.
+  `max_retarget_factor` still limits every step.
+- Retargets run on a timer per session instead of after each inbound
+  message. Once mining, a miner sends little but shares, so one whose
+  difficulty was too high went unjudged until its next share arrived. A
+  window with no shares is judged as if one share had landed at its end,
+  the smallest drop the silence supports, limited by `max_retarget_factor`,
+  instead of a fixed halving.
 - rusqlite bumped from 0.29 to 0.40. Newer rusqlite refuses `u64` at the
   SQLite boundary (SQLite integers are `i64`), so the stats store now converts
   timestamps and difficulties explicitly at each read and write. Writes
@@ -32,6 +89,25 @@ everything else bumps the **patch** version.
   which `libzmq5` had been pulling in. One fewer package in the image to
   collect advisories. The compose file, environment and volumes are
   unchanged.
+- The dashboard's round-effort bar is gone, replaced by a one-line footnote
+  under the hero row. The bar showed credited work over network difficulty as
+  a fill from 0 to 100%, which does not survive contact with solo-scale
+  hashrate: a round runs centuries in expectation, so the figure sits in the
+  fourth decimal place and `toFixed(2)` rendered it as a flat `0.00%` that
+  never visibly moved. It also duplicated the block-odds card directly above
+  it, which covers the same ground forward-looking and correctly framed,
+  while the bar's progress-toward-100% shape invited the gambler's fallacy
+  that a long round is somehow "due".
+- The footnote keeps what the bar's numerator was actually good for: total
+  difficulty-work this round, and that work spread over the round's length.
+  The latter is the longest-baseline hashrate figure on the page, so it
+  cross-checks the rolling 10m/3h/24h windows and catches a worker that has
+  been quietly dropping shares.
+- Effort still appears for a round that closed, where it is a real luck
+  figure. `fmtPct` now keeps two significant digits below 0.01% so a lucky
+  solo round does not render as `0.00%`.
+- README states that SV2 serves extended channels only and what a Bitaxe
+  set to "standard" sees when it is refused (#113).
 
 ## [0.6.9] - 2026-09-08
 

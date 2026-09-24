@@ -124,6 +124,16 @@ pub fn rpc_fallback_used() {
 pub fn vardiff_retarget(worker: &str, old_diff: u64, new_diff: u64) {
     gauge!("pool_worker_difficulty", "worker" => worker.to_string()).set(new_diff as f64);
     histogram!("pool_vardiff_change_ratio").record(new_diff as f64 / old_diff as f64);
+    // The ratio is exported as a summary over a short rolling window, and
+    // retargets are sparse enough that its quantiles mostly read 0. A counter
+    // makes the retarget rate itself something a dashboard can plot.
+    let direction = if new_diff > old_diff { "up" } else { "down" };
+    counter!(
+        "pool_vardiff_retargets_total",
+        "worker" => worker.to_string(),
+        "direction" => direction
+    )
+    .increment(1);
 }
 
 pub fn block_found() {

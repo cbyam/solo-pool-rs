@@ -240,23 +240,6 @@ pub async fn run(
                             }
                         }
 
-                        if let Some(new_diff) = session.vardiff.check_retarget() {
-                            let old_diff = session.difficulty;
-                            session.difficulty = new_diff;
-                            if let Some(worker) = &session.worker {
-                                metrics::vardiff_retarget(worker, old_diff, new_diff);                                session.stats.update_worker_vardiff(worker, new_diff);                            }
-                            let msg = ResponseBuilder::set_difficulty(new_diff);
-                            debug!(
-                                peer = %session.peer,
-                                worker = ?session.worker,
-                                difficulty = new_diff,
-                                "Sending vardiff update"
-                            );
-                            if !send_messages(&writer, peer, vec![msg]).await {
-                                break;
-                            }
-                        }
-
                         let hr_60s  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(60));
                         let hr_10m  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(600));
                         let hr_3h   = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(10_800));
@@ -267,6 +250,33 @@ pub async fn run(
                                 .stats
                                 .update_worker_hashrate(worker, hr_60s, hr_10m, hr_3h, hr_24h);
                         }
+                    }
+                }
+            }
+
+            // ── Vardiff retarget, on its own clock ──────────────────────────
+            // A timer rather than inbound traffic: a miner whose difficulty is
+            // too high goes quiet, and that silence is the evidence the
+            // retarget has to act on.
+            _ = tokio::time::sleep_until(session.vardiff.retarget_due().into()),
+                if session.subscribed && session.authorized =>
+            {
+                if let Some(new_diff) = session.vardiff.check_retarget() {
+                    let old_diff = session.difficulty;
+                    session.difficulty = new_diff;
+                    if let Some(worker) = &session.worker {
+                        metrics::vardiff_retarget(worker, old_diff, new_diff);
+                        session.stats.update_worker_vardiff(worker, new_diff);
+                    }
+                    let msg = ResponseBuilder::set_difficulty(new_diff);
+                    debug!(
+                        peer = %session.peer,
+                        worker = ?session.worker,
+                        difficulty = new_diff,
+                        "Sending vardiff update"
+                    );
+                    if !send_messages(&writer, peer, vec![msg]).await {
+                        break;
                     }
                 }
             }
@@ -320,6 +330,9 @@ pub async fn run(
     let uptime = session.connect_time.elapsed().as_secs() as f64;
     if let Some(worker) = &session.worker {
         session.stats.mark_worker_offline(worker);
+        session
+            .stats
+            .stash_share_history(worker, session.vardiff.take_share_history());
         metrics::connection_duration(worker, uptime);
     }
     info!(
@@ -619,11 +632,17 @@ async fn handle_authorize(
         }
         if let Some(prev) = session.worker.take() {
             session.stats.mark_worker_offline(&prev);
+            session
+                .stats
+                .stash_share_history(&prev, session.vardiff.take_share_history());
         }
         session
             .stats
             .mark_worker_online(&params.worker, session.difficulty);
         session.stats.set_worker_protocol(&params.worker, "sv1");
+        if let Some(history) = session.stats.take_share_history(&params.worker) {
+            session.vardiff.restore_share_history(history);
+        }
     }
     session.authorized = true;
     session.worker = Some(params.worker.clone());
@@ -836,6 +855,7 @@ async fn handle_submit(
             session.shares_accepted += 1;
             let credited = session.vardiff.credit_for(hash_difficulty);
             session.vardiff.record_share(credited);
+            session.stats.log_share(worker, credited);
             metrics::share_accepted(credited, worker);
             session.stats.share_accepted(hash_difficulty, credited);
             session.stats.worker_share_accepted(worker, hash_difficulty);
@@ -874,6 +894,7 @@ async fn handle_submit(
                     session.shares_accepted += 1;
                     let credited = session.vardiff.credit_for(hash_difficulty);
                     session.vardiff.record_share(credited);
+                    session.stats.log_share(worker, credited);
                     session.stats.share_accepted(hash_difficulty, credited);
                     session.stats.worker_share_accepted(worker, hash_difficulty);
                     session.stats.mark_worker_submit(worker);

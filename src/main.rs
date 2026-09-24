@@ -86,6 +86,24 @@ async fn main() -> Result<()> {
         });
     }
 
+    // ── Share log flush (every 10 seconds) ───────────────────────────────────
+    // Accepted shares queue in memory and land in SQLite here, off the share
+    // path, so a worker's 3h/24h windows can be rebuilt after a restart. The
+    // write is synchronous rusqlite, so it runs on the blocking pool.
+    {
+        let stats = stats.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                let stats = stats.clone();
+                if let Err(e) = tokio::task::spawn_blocking(move || stats.flush_share_log()).await {
+                    tracing::warn!("Share log flush task failed: {e}");
+                }
+            }
+        });
+    }
+
     // ── Prometheus hashrate refresh for offline workers ──────────────────────
     // The per-worker gauge is pushed from the session loop, so it only moves
     // while a miner is delivering traffic. Re-push decayed values for offline
@@ -217,8 +235,9 @@ async fn main() -> Result<()> {
     // ten-minute snapshot cadence, then give any inline block submission a
     // few seconds to reach the node. A block still unconfirmed after that is
     // in the archive and replays on the next boot.
-    info!("Shutting down: writing final hashrate snapshot");
+    info!("Shutting down: writing final hashrate snapshot and share log");
     stats.record_hashrate_snapshot();
+    stats.flush_share_log();
     if !engine
         .wait_for_inflight_submits(std::time::Duration::from_secs(5))
         .await
