@@ -25,8 +25,20 @@ updates:
       sv2-stack:
         patterns: ["*_sv2"]
       # Patch and minor bumps are lockfile-only and land together.
+      #
+      # The exclusions are what make the two groups above work. A dependency
+      # matching several groups is assigned to the one Dependabot scores most
+      # specific, and this pattern-less group outranks wildcard patterns: its
+      # job log showed every *_sv2 crate, metrics-util and
+      # metrics-exporter-prometheus "belongs to more specific group
+      # 'minor-and-patch'", leaving sv2-stack empty. A major bump then fell
+      # out of every group and got its own PR (#118-#122, #126), and a
+      # metrics-stack PR could only ever hold `metrics` (#98, which split the
+      # stack and emptied /metrics). Excluded here, each family matches one
+      # group only, so its minor, patch and major bumps arrive as one PR.
       minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["*_sv2", "metrics", "metrics-*"]
     # Other majors stay one PR each so a breaking API change is reviewed alone.
     ignore:
       # secp256k1 is pinned by the SRI crates (noise_sv2, key-utils). Bumping
