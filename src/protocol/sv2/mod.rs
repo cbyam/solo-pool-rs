@@ -299,23 +299,7 @@ pub async fn run(
                     }
                 }
 
-                // Vardiff retarget → SetTarget
                 if session.channel_open {
-                    if let Some(new_diff) = session.vardiff.check_retarget() {
-                        let old_diff = session.difficulty;
-                        session.difficulty = new_diff;
-                        if let Some(worker) = &session.worker {
-                            metrics::vardiff_retarget(worker, old_diff, new_diff);
-                            session.stats.update_worker_vardiff(worker, new_diff);
-                        }
-                        let target = job::difficulty_to_sv2_target(new_diff);
-                        debug!(peer = %peer, worker = ?session.worker, difficulty = new_diff, "Sending SV2 set_target");
-                        match messages::set_target(session.channel_id, target) {
-                            Ok(p) => if !writer.send(MESSAGE_TYPE_SET_TARGET, true, &p).await { break; },
-                            Err(e) => { error!("encode set_target: {e}"); break; }
-                        }
-                    }
-
                     // Worker hashrate stats (mirrors SV1 cadence)
                     let hr_60s = session.vardiff.estimated_hashrate_in_window(Duration::from_secs(60));
                     let hr_10m = session.vardiff.estimated_hashrate_in_window(Duration::from_secs(600));
@@ -324,6 +308,29 @@ pub async fn run(
                     if let Some(worker) = &session.worker {
                         metrics::update_hashrate(hr_10m, worker);
                         session.stats.update_worker_hashrate(worker, hr_60s, hr_10m, hr_3h, hr_24h);
+                    }
+                }
+            }
+
+            // ── Vardiff retarget → SetTarget, on its own clock ──────────────
+            // A timer rather than inbound traffic, as in SV1: a miner whose
+            // target is too hard goes quiet, and that silence is the evidence
+            // the retarget has to act on.
+            _ = tokio::time::sleep_until(session.vardiff.retarget_due().into()),
+                if session.channel_open =>
+            {
+                if let Some(new_diff) = session.vardiff.check_retarget() {
+                    let old_diff = session.difficulty;
+                    session.difficulty = new_diff;
+                    if let Some(worker) = &session.worker {
+                        metrics::vardiff_retarget(worker, old_diff, new_diff);
+                        session.stats.update_worker_vardiff(worker, new_diff);
+                    }
+                    let target = job::difficulty_to_sv2_target(new_diff);
+                    debug!(peer = %peer, worker = ?session.worker, difficulty = new_diff, "Sending SV2 set_target");
+                    match messages::set_target(session.channel_id, target) {
+                        Ok(p) => if !writer.send(MESSAGE_TYPE_SET_TARGET, true, &p).await { break; },
+                        Err(e) => { error!("encode set_target: {e}"); break; }
                     }
                 }
             }

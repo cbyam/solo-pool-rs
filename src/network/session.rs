@@ -240,23 +240,6 @@ pub async fn run(
                             }
                         }
 
-                        if let Some(new_diff) = session.vardiff.check_retarget() {
-                            let old_diff = session.difficulty;
-                            session.difficulty = new_diff;
-                            if let Some(worker) = &session.worker {
-                                metrics::vardiff_retarget(worker, old_diff, new_diff);                                session.stats.update_worker_vardiff(worker, new_diff);                            }
-                            let msg = ResponseBuilder::set_difficulty(new_diff);
-                            debug!(
-                                peer = %session.peer,
-                                worker = ?session.worker,
-                                difficulty = new_diff,
-                                "Sending vardiff update"
-                            );
-                            if !send_messages(&writer, peer, vec![msg]).await {
-                                break;
-                            }
-                        }
-
                         let hr_60s  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(60));
                         let hr_10m  = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(600));
                         let hr_3h   = session.vardiff.estimated_hashrate_in_window(std::time::Duration::from_secs(10_800));
@@ -267,6 +250,33 @@ pub async fn run(
                                 .stats
                                 .update_worker_hashrate(worker, hr_60s, hr_10m, hr_3h, hr_24h);
                         }
+                    }
+                }
+            }
+
+            // ── Vardiff retarget, on its own clock ──────────────────────────
+            // A timer rather than inbound traffic: a miner whose difficulty is
+            // too high goes quiet, and that silence is the evidence the
+            // retarget has to act on.
+            _ = tokio::time::sleep_until(session.vardiff.retarget_due().into()),
+                if session.subscribed && session.authorized =>
+            {
+                if let Some(new_diff) = session.vardiff.check_retarget() {
+                    let old_diff = session.difficulty;
+                    session.difficulty = new_diff;
+                    if let Some(worker) = &session.worker {
+                        metrics::vardiff_retarget(worker, old_diff, new_diff);
+                        session.stats.update_worker_vardiff(worker, new_diff);
+                    }
+                    let msg = ResponseBuilder::set_difficulty(new_diff);
+                    debug!(
+                        peer = %session.peer,
+                        worker = ?session.worker,
+                        difficulty = new_diff,
+                        "Sending vardiff update"
+                    );
+                    if !send_messages(&writer, peer, vec![msg]).await {
+                        break;
                     }
                 }
             }

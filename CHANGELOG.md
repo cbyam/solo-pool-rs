@@ -9,6 +9,12 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- `pool_vardiff_retargets_total{worker,direction}` counts retargets up and
+  down per worker. `pool_vardiff_change_ratio` is exported as a summary over
+  a one-minute rolling window, and retargets are sparse enough that its
+  quantiles usually read 0, so the retarget rate was not visible.
+
 ### Fixed
 - A miner restart no longer resets its 3h and 24h hashrate columns. The
   share record every window is computed from lived in the connection, so a
@@ -33,6 +39,34 @@ everything else bumps the **patch** version.
   unaffected. An unclean stop loses at most the last ten seconds of shares.
 
 ### Changed
+- Vardiff judges a miner on the work its shares proved, the sum of their
+  credited difficulties, instead of counting them. Counting assumed every
+  share was mined at the session's current difficulty, which is false for
+  in-flight work landing after a raise (the window looked fast and the
+  difficulty was raised again, a ratchet) and for hardware that never
+  follows `set_difficulty` (forty floor shares looked like forty shares at
+  the assignment and drove the device to the ceiling). Both now settle at
+  the rate the shares support.
+- Each retarget judges the trailing 20 × `target_share_time_secs` of that
+  work (five minutes at the default 15s target), not only the shares since
+  the previous retarget. One 90s interval holds about six shares, and a rate
+  read off six Poisson arrivals is off by about 40% one standard deviation
+  of the time; twenty shares bring that to about 22%. Because a worker's
+  share record carries across a reconnect, a returning miner's first
+  retarget is judged on its real rate rather than on a few fresh shares.
+- The 5% retarget deadband is replaced by a 1.5x hysteresis band, and a
+  retarget outside it moves by the square root of the observed ratio (half
+  the distance in log terms) unless the miner is more than 3x off, where it
+  moves by the whole ratio as before. A full step on a noisy reading put the
+  miner off target for real, and the next retarget usually reversed it, so
+  a converged miner saw its difficulty swing roughly ×2 and back.
+  `max_retarget_factor` still limits every step.
+- Retargets run on a timer per session instead of after each inbound
+  message. Once mining, a miner sends little but shares, so one whose
+  difficulty was too high went unjudged until its next share arrived. A
+  window with no shares is judged as if one share had landed at its end,
+  the smallest drop the silence supports, limited by `max_retarget_factor`,
+  instead of a fixed halving.
 - rusqlite bumped from 0.29 to 0.40. Newer rusqlite refuses `u64` at the
   SQLite boundary (SQLite integers are `i64`), so the stats store now converts
   timestamps and difficulties explicitly at each read and write. Writes
