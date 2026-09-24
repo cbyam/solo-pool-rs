@@ -63,9 +63,6 @@ of scope by decision, and 1.0 puts that in writing.
   - `SetupConnection` rejects only `min_version > 2`; a client offering
     `max_version = 1` gets `SetupConnectionSuccess { used_version: 1 }` and then
     is spoken to in v2. Add the `max_version < 2` rejection.
-  - The Noise decoder resizes its buffer to the attacker-declared frame size
-    before the `max_frame` check runs, so a peer can force a ~16 MB allocation
-    per connection before being dropped. Compare `writable_len()` first.
   - A repeat `OpenExtendedMiningChannel` on an open channel re-allocates the
     channel id and extranonce prefix without closing the previous one, leaving
     in-flight shares validating against a prefix the device no longer has.

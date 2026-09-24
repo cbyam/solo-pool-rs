@@ -9,6 +9,29 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- Stratum V2 dependencies moved to the SRI v1.12.0 set: `binary_sv2` 7,
+  `framing_sv2` 8, `codec_sv2` 7, `common_messages_sv2` 9, `mining_sv2` 12
+  and `noise_sv2` 2. Upstream reworked the codec and the Noise transport,
+  largely as hardening from an outside audit, and every changed crate took a
+  new major. The wire format is unchanged: new tests check every message
+  the pool sends and decodes against byte layouts written out from the
+  spec, independent of the SRI crates, and they pass on both the old and
+  the new crates. The authority key file and the public key derived from
+  it are unchanged, so a miner that pins the key needs no change.
+  `const_sv2` is no longer used; the message type constants come from the
+  protocol crates.
+- The regtest block-acceptance test in CI now also mines a block over
+  Stratum V2 with Noise, pinning the authority key the pool generated, and
+  requires the node to accept it. Until now the SV2 job and submit path
+  were only covered by unit tests and checks on live hardware.
+- The SV2 oversize-frame check counts the bytes a frame has taken rather
+  than judging a single read. The new decoder asks for at most one 64 KB
+  chunk at a time, so a check on the request alone would silently stop
+  working if `max_message_bytes` were raised past 64 KB. The count refuses
+  within one chunk of the cap at any setting, and on the header alone below
+  one chunk, as before.
+
 ## [0.6.10] - 2026-09-24
 
 ### Added

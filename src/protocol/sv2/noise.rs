@@ -9,7 +9,9 @@
 //!
 //! Devices such as the NerdQAxe++ require this — they will not speak plaintext
 //! SV2. We use the SRI `noise_sv2` responder for the handshake and `codec_sv2`'s
-//! noise codec for the encrypted transport.
+//! noise codec for the encrypted transport. The finished handshake splits into
+//! independent encrypt and decrypt halves, so the reader task and the session's
+//! writer each own theirs and share no lock.
 //!
 //! The certificate is signed by the pool's authority key. By default that key
 //! persists in `[sv2] authority_key_file` so the base58check-encoded public
@@ -18,29 +20,24 @@
 //! `persist_authority_key = false` reverts to a fresh key per process, which
 //! any pinning miner will reject after a restart.
 use anyhow::{anyhow, Context, Result};
-use codec_sv2::{NoiseEncoder, StandardNoiseDecoder, State};
-use framing_sv2::framing::{Frame, Sv2Frame};
+use codec_sv2::{
+    Decrypted, Handshake, NoiseDecoder, NoiseEncoder, Transport, TransportDecryptState,
+    TransportEncryptState,
+};
+use framing_sv2::framing::SerializedFrame;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use noise_sv2::{Responder, ELLSWIFT_ENCODING_SIZE};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
     net::TcpStream,
-    sync::Mutex,
 };
 use tracing::warn;
 
 use super::messages;
 use crate::config::Sv2Config;
-
-/// Phantom message type for the codec generics. The decoder never deserializes
-/// into it (we read raw payload bytes) and the encoder is fed already-serialized
-/// frames, so any no-lifetime SV2 message that implements the codec bounds works.
-type Marker = mining_sv2::SubmitSharesSuccess;
-type Decoder = StandardNoiseDecoder<Marker>;
-type Encoder = NoiseEncoder<Marker>;
 
 /// Process-wide authority key + certificate validity, set once by [`init`] at
 /// boot. Falls back to an ephemeral key with the default validity if [`init`]
@@ -200,23 +197,23 @@ fn io_err(msg: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(msg.to_string())
 }
 
-/// The one reader failure that earns a ban: a frame header declaring more
-/// than the configured maximum. Same kind the SV1 line reader uses for an
-/// oversize line, so both protocols take the same path in the session.
-fn oversize_err(declared: usize, max_frame: usize) -> std::io::Error {
+/// The one reader failure that earns a ban: a frame larger than the
+/// configured maximum. Same kind the SV1 line reader uses for an oversize
+/// line, so both protocols take the same path in the session.
+fn oversize_err(at_least: usize, max_frame: usize) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        format!("SV2 frame too large: {declared} > {max_frame} bytes"),
+        format!("SV2 frame too large: at least {at_least} > {max_frame} bytes"),
     )
 }
 
-/// Run the responder side of the Noise handshake on the raw stream, returning a
-/// transport-mode codec [`State`] ready for encrypted framing.
+/// Run the responder side of the Noise handshake on the raw stream, returning
+/// the [`Transport`] to split into encrypted reader and writer halves.
 ///
 /// Wire sequence (no length prefixes — fixed sizes):
 ///   initiator → 64-byte ElligatorSwift ephemeral key
 ///   responder → `INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE`-byte reply
-pub async fn responder_handshake(stream: &mut TcpStream) -> Result<State> {
+pub async fn responder_handshake(stream: &mut TcpStream) -> Result<Transport> {
     let auth = authority();
     responder_handshake_with(stream, &auth.secret, auth.cert_validity_secs).await
 }
@@ -225,79 +222,84 @@ async fn responder_handshake_with(
     stream: &mut TcpStream,
     secret: &[u8; 32],
     cert_validity_secs: u32,
-) -> Result<State> {
+) -> Result<Transport> {
     let secp = Secp256k1::new();
     let sk = SecretKey::from_slice(secret).expect("valid authority secret");
     let kp = Keypair::from_secret_key(&secp, &sk);
-    let mut responder = Responder::new(kp, cert_validity_secs);
+    let responder = Responder::new(kp, cert_validity_secs);
 
     let mut re_pub = [0u8; ELLSWIFT_ENCODING_SIZE];
     stream.read_exact(&mut re_pub).await?;
 
-    let (response, codec) = responder
+    let (response, transport) = Handshake::responder(responder)
         .step_1(re_pub)
         .map_err(|e| anyhow!("noise handshake step_1 failed: {e:?}"))?;
 
-    stream.write_all(&response).await?;
+    stream.write_all(response.payload()).await?;
     stream.flush().await?;
 
-    Ok(State::with_transport_mode(codec))
+    Ok(transport)
 }
 
-/// Encrypted SV2 frame reader (owns the read half + decoder; shares cipher
-/// state with the writer via `state`).
+/// Encrypted SV2 frame reader (owns the read half, the decoder and the
+/// decrypt half of the transport).
 pub struct NoiseReader {
     reader: OwnedReadHalf,
-    decoder: Decoder,
-    state: Arc<Mutex<State>>,
-    /// Upper bound on the bytes we will read for a single frame chunk before
-    /// rejecting the connection. The SV2 frame header carries an attacker-chosen
-    /// u24 length (up to ~16 MB); without this cap the decoder would allocate and
-    /// `read_exact` that whole frame (and AEAD-decrypt it) before the post-decode
-    /// `check_message_size` ever runs. Set from `security.max_message_bytes` plus
-    /// framing/AEAD overhead. Compared against the decoder's `MissingBytes`
-    /// hint, which is known before `writable()` grows the buffer to fit it.
+    decoder: NoiseDecoder,
+    /// Handed to the decoder for each step and handed back with its result.
+    /// A decode error consumes it, and the connection cannot be read again.
+    state: Option<TransportDecryptState>,
+    /// Upper bound on the encrypted bytes one frame may take before the
+    /// connection is refused. The SV2 frame header carries an attacker-chosen
+    /// u24 length (up to ~16 MB); without this cap the reader would pull in and
+    /// AEAD-decrypt that whole frame before the post-decode
+    /// `check_message_size` ever runs. Set from `security.max_message_bytes`
+    /// plus framing/AEAD overhead.
     max_frame: usize,
+    /// Encrypted bytes already read toward the frame being decoded.
+    frame_read: usize,
 }
 
 impl NoiseReader {
-    pub fn new(reader: OwnedReadHalf, state: Arc<Mutex<State>>, max_frame: usize) -> Self {
+    pub fn new(reader: OwnedReadHalf, state: TransportDecryptState, max_frame: usize) -> Self {
         Self {
             reader,
-            decoder: Decoder::new(),
-            state,
+            decoder: NoiseDecoder::new(),
+            state: Some(state),
             max_frame,
+            frame_read: 0,
         }
     }
 
     /// Read, decrypt and frame one SV2 message, returning `(msg_type, payload)`.
     pub async fn read(&mut self) -> std::io::Result<(u8, Vec<u8>)> {
         loop {
-            let decoded = {
-                let mut st = self.state.lock().await;
-                self.decoder.next_frame(&mut st)
-            };
-            match decoded {
-                Ok(Frame::Sv2(mut frame)) => {
-                    let header = frame
-                        .get_header()
-                        .ok_or_else(|| io_err("SV2 frame missing header"))?;
-                    let payload = frame.payload().to_vec();
-                    return Ok((header.msg_type(), payload));
+            let state = self
+                .state
+                .take()
+                .ok_or_else(|| io_err("noise transport unusable after a decode error"))?;
+            match self.decoder.next_transport_frame(state) {
+                Ok(Decrypted::Frame(mut frame, state)) => {
+                    self.state = Some(state);
+                    self.frame_read = 0;
+                    let msg_type = frame.header().msg_type();
+                    return Ok((msg_type, frame.payload().to_vec()));
                 }
-                Ok(Frame::HandShake(_)) => {
-                    return Err(io_err("unexpected handshake frame in transport mode"))
-                }
-                Err(codec_sv2::Error::MissingBytes(missing)) => {
-                    // `next_frame` only records the hint; the allocation
-                    // happens inside `writable()`. Refuse before that call so
-                    // a 16 MB declared length costs the peer nothing but its
-                    // connection, and costs this process no memory at all.
-                    if missing > self.max_frame {
-                        return Err(oversize_err(missing, self.max_frame));
+                Ok(Decrypted::Incomplete(missing, state)) => {
+                    self.state = Some(state);
+                    // `missing` is the next read, at most one 64 KB chunk,
+                    // not the length the header declared, so the guard counts
+                    // what the frame has taken so far. Below one chunk it
+                    // refuses on the header alone, as before; above it, within
+                    // one chunk of the cap. Either way it refuses before
+                    // `writable()` grows the buffer for the read.
+                    let total = self.frame_read.saturating_add(missing);
+                    if total > self.max_frame {
+                        return Err(oversize_err(total, self.max_frame));
                     }
                     let writable = self.decoder.writable();
                     self.reader.read_exact(writable).await?;
+                    self.frame_read = total;
                 }
                 Err(e) => return Err(io_err(format!("noise decode error: {e:?}"))),
             }
@@ -305,24 +307,24 @@ impl NoiseReader {
     }
 }
 
-/// Encrypted SV2 frame writer (owns the write half + encoder; shares cipher
-/// state with the reader via `state`).
+/// Encrypted SV2 frame writer (owns the write half, the encoder and the
+/// encrypt half of the transport).
 pub struct NoiseWriter {
     writer: OwnedWriteHalf,
-    encoder: Encoder,
-    state: Arc<Mutex<State>>,
+    encoder: NoiseEncoder,
+    state: TransportEncryptState,
     peer: std::net::SocketAddr,
 }
 
 impl NoiseWriter {
     pub fn new(
         writer: OwnedWriteHalf,
-        state: Arc<Mutex<State>>,
+        state: TransportEncryptState,
         peer: std::net::SocketAddr,
     ) -> Self {
         Self {
             writer,
-            encoder: Encoder::new(),
+            encoder: NoiseEncoder::new(),
             state,
             peer,
         }
@@ -334,17 +336,24 @@ impl NoiseWriter {
         tracing::trace!(peer = %self.peer, msg_type, len = payload.len(), "→ sv2 pool (noise)");
 
         let full = messages::frame_bytes(msg_type, channel_msg, payload);
-        let frame: Sv2Frame<Marker, Vec<u8>> = Sv2Frame::from_bytes_unchecked(full);
-        let item = Frame::Sv2(frame);
+        // Checks the header against the bytes, which catches a payload too
+        // long for the u24 length field.
+        let frame = match SerializedFrame::from_bytes(full) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(
+                    "SV2 frame to {} does not match its header: {e:?}",
+                    self.peer
+                );
+                return false;
+            }
+        };
 
-        let encrypted = {
-            let mut st = self.state.lock().await;
-            match self.encoder.encode(item, &mut st) {
-                Ok(b) => b,
-                Err(e) => {
-                    warn!("SV2 noise encode error to {}: {e:?}", self.peer);
-                    return false;
-                }
+        let encrypted = match self.encoder.encode_transport(frame, &mut self.state) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("SV2 noise encode error to {}: {e:?}", self.peer);
+                return false;
             }
         };
 
@@ -455,26 +464,26 @@ pub(crate) mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let state = responder_handshake_with(&mut sock, &secret, 3600)
+            let transport = responder_handshake_with(&mut sock, &secret, 3600)
                 .await
                 .unwrap();
-            (sock, state)
+            (sock, transport)
         });
 
         let mut client = TcpStream::connect(addr).await.unwrap();
-        let mut initiator = Initiator::without_pk().unwrap();
-        let first = initiator.step_0().unwrap();
-        client.write_all(&first).await.unwrap();
+        let initiator = Initiator::without_pk().unwrap();
+        let (first, sent) = Handshake::initiator(initiator).step_0().unwrap();
+        client.write_all(first.payload()).await.unwrap();
         let mut reply = [0u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE];
         client.read_exact(&mut reply).await.unwrap();
-        let codec = initiator.step_2(reply).unwrap();
-        let client_state = Arc::new(Mutex::new(State::with_transport_mode(codec)));
+        let (client_enc, _client_dec) = sent.step_2(reply).unwrap().split();
         let (_client_rx, client_tx) = client.into_split();
-        let writer = NoiseWriter::new(client_tx, client_state, addr);
+        let writer = NoiseWriter::new(client_tx, client_enc, addr);
 
-        let (sock, state) = server.await.unwrap();
+        let (sock, transport) = server.await.unwrap();
+        let (_server_enc, server_dec) = transport.split();
         let (server_rx, _server_tx) = sock.into_split();
-        let reader = NoiseReader::new(server_rx, Arc::new(Mutex::new(state)), max_frame);
+        let reader = NoiseReader::new(server_rx, server_dec, max_frame);
         (writer, reader)
     }
 
@@ -499,6 +508,33 @@ pub(crate) mod tests {
         let err = reader.read().await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_cap_above_one_chunk_still_refuses_an_oversize_frame() {
+        // The decoder asks for at most one 64 KB chunk per read, so a cap
+        // above that cannot be checked against a single request. The reader
+        // counts what the frame has taken instead and refuses once it passes
+        // the cap, well before the 200 KB frame has been read.
+        let (mut writer, mut reader) = transport_pair(100_000).await;
+        let payload = vec![0xAB; 200_000];
+        assert!(writer.send(0x1F, true, &payload).await);
+        let err = reader.read().await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn multi_chunk_frames_within_the_cap_are_each_delivered() {
+        // Each 80 KB frame spans two chunks and fits the cap on its own, but
+        // two of them together do not: the count must restart per frame.
+        let (mut writer, mut reader) = transport_pair(100_000).await;
+        let first = vec![0x11; 80_000];
+        let second = vec![0x22; 80_000];
+        assert!(writer.send(0x1F, true, &first).await);
+        assert!(writer.send(0x20, true, &second).await);
+        assert_eq!(reader.read().await.unwrap(), (0x1F, first));
+        assert_eq!(reader.read().await.unwrap(), (0x20, second));
     }
 
     fn temp_key_path(name: &str) -> std::path::PathBuf {
