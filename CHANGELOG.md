@@ -9,34 +9,13 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-09-24
+
 ### Added
 - `pool_vardiff_retargets_total{worker,direction}` counts retargets up and
   down per worker. `pool_vardiff_change_ratio` is exported as a summary over
   a one-minute rolling window, and retargets are sparse enough that its
   quantiles usually read 0, so the retarget rate was not visible.
-
-### Fixed
-- A miner restart no longer resets its 3h and 24h hashrate columns. The
-  share record every window is computed from lived in the connection, so a
-  new session seconds after the old one closed started each window empty:
-  the long windows dropped to the 60s figure and took hours to climb back,
-  while the shares they should have covered had all been accepted and were
-  merely forgotten. A closing session now parks its record with the stats
-  collector under the worker name and the worker's next session adopts it
-  on authorize, so each window again reports the shares actually inside it.
-  The offline decay is unchanged: a worker that stays away sees each window
-  empty out at its own width, and a reconnect after a long outage finds
-  only the shares that really fall inside each window. The record is
-  dropped with the worker's other maps after a day offline.
-- The same windows now survive a pool restart. Accepted shares are queued
-  in memory and written to a new `share_log` table in the stats database
-  every ten seconds and once more at shutdown, off the share path, and a
-  worker that returns with no record in memory rebuilds one from the log.
-  Rows older than 24h are pruned on each flush, so the table holds about
-  six thousand rows per miner per day at the default share target. The
-  table is created on first boot with `CREATE TABLE IF NOT EXISTS`; older
-  binaries ignore it. Pools running without a stats database are
-  unaffected. An unclean stop loses at most the last ten seconds of shares.
 
 ### Changed
 - Vardiff judges a miner on the work its shares proved, the sum of their
@@ -108,6 +87,40 @@ everything else bumps the **patch** version.
   solo round does not render as `0.00%`.
 - README states that SV2 serves extended channels only and what a Bitaxe
   set to "standard" sees when it is refused (#113).
+- Dependency updates: dashmap 5 to 6 (#106), toml and uuid patch
+  releases (#112), and rand 0.8.6 to 0.8.8 (#128). The rand 0.8.7 fix
+  concerns deserializing `UniformChar` behind the `serde1` feature, which
+  the pool does not enable.
+
+### Fixed
+- A miner restart no longer resets its 3h and 24h hashrate columns. The
+  share record every window is computed from lived in the connection, so a
+  new session seconds after the old one closed started each window empty:
+  the long windows dropped to the 60s figure and took hours to climb back,
+  while the shares they should have covered had all been accepted and were
+  merely forgotten. A closing session now parks its record with the stats
+  collector under the worker name and the worker's next session adopts it
+  on authorize, so each window again reports the shares actually inside it.
+  The offline decay is unchanged: a worker that stays away sees each window
+  empty out at its own width, and a reconnect after a long outage finds
+  only the shares that really fall inside each window. The record is
+  dropped with the worker's other maps after a day offline.
+- The same windows now survive a pool restart. Accepted shares are queued
+  in memory and written to a new `share_log` table in the stats database
+  every ten seconds and once more at shutdown, off the share path, and a
+  worker that returns with no record in memory rebuilds one from the log.
+  Rows older than 24h are pruned on each flush, so the table holds about
+  six thousand rows per miner per day at the default share target. The
+  table is created on first boot with `CREATE TABLE IF NOT EXISTS`; older
+  binaries ignore it. Pools running without a stats database are
+  unaffected. An unclean stop loses at most the last ten seconds of shares.
+
+### Security
+- rustls 0.23.37 to 0.23.45 for RUSTSEC-2026-0285 (TLS 1.3 handshake
+  messages accepted across encryption level boundaries). rustls is only a
+  transitive dependency of the Prometheus exporter and the pool never opens
+  a TLS connection with it, so there was no exposure; the daily
+  supply-chain check is green again (#117).
 
 ## [0.6.9] - 2026-09-08
 
@@ -964,7 +977,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.9...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.10...HEAD
+[0.6.10]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.9...v0.6.10
 [0.6.9]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.8...v0.6.9
 [0.6.8]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.7...v0.6.8
 [0.6.7]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.6...v0.6.7
