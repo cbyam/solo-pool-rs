@@ -30,8 +30,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install libzmq
-        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+      # rusqlite links the system SQLite. libzmq needs no package: zmq-sys
+      # compiles it from source and links it statically.
+      - name: Install SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -74,6 +76,9 @@ jobs:
         with:
           files: solo-pool-rs-*.tar.gz
           generate_release_notes: true
+          # A tag with a SemVer pre-release suffix (v1.0.0-rc.1) publishes a
+          # pre-release, so it is not shown as the latest release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             ## solo-pool-rs ${{ github.ref_name }}
 
