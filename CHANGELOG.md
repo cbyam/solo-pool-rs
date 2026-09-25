@@ -32,6 +32,10 @@ everything else bumps the **patch** version.
   within one chunk of the cap at any setting, and on the header alone below
   one chunk, as before.
 
+### Fixed
+- `packaging/install.sh --list` now marks the active version. A trailing slash
+  in the path comparison had kept the marker from ever showing.
+
 ## [0.6.10] - 2026-09-24
 
 ### Added
