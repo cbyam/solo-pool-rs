@@ -6,9 +6,10 @@
 #   cargo build --release
 #   ./target/release/solo-pool-rs config.toml
 #
-# Every value can be overridden by an environment variable named
-# SOLO_POOL_<SECTION>__<KEY> (double underscore between section and key) —
-# useful for container platforms that configure apps through env vars:
+# Every scalar value (string, number, boolean) can be overridden by an
+# environment variable named SOLO_POOL_<SECTION>__<KEY> (double underscore
+# between section and key), which suits container platforms that configure
+# apps through env vars. Lists such as allowed_hosts cannot be overridden:
 #
 #   SOLO_POOL_POOL__COINBASE_ADDRESS=bc1q...     # [pool] coinbase_address
 #   SOLO_POOL_BITCOIN_RPC__URL=http://10.0.0.5:8332
@@ -26,8 +27,8 @@ listen_addr = "0.0.0.0:3333"
 coinbase_address = "bc1qyouraddresshere"
 
 # Tag embedded in the coinbase scriptSig. The scriptSig is capped at 100 bytes
-# including the height push and the extranonce, so about 90 bytes are
-# available at the default extranonce size; longer is refused at boot.
+# including the height push and the extranonce, so 87 bytes are available at
+# the default extranonce sizes; longer is refused at boot.
 coinbase_tag = "/solo-pool-rs/"
 
 # Optional safety assertion. The pool always detects the actual network from
@@ -38,17 +39,24 @@ coinbase_tag = "/solo-pool-rs/"
 # network = "mainnet"
 
 # Initial share difficulty assigned to new miners.
-# Vardiff will adjust from here. Set near the expected steady-state value
-# for your hardware to avoid excessive rejects on first connect.
+# Vardiff will adjust from here. Setting it near the expected steady-state
+# value for your hardware saves the first few retargets. Shares are accepted
+# down to [vardiff] min_difficulty whatever this is, so a high value costs no
+# rejects; a value far too low floods the pool with shares until the first
+# retarget. Keep it at or above min_difficulty: it is not clamped.
 #
-# Rough guide (targeting 1 share every 15 seconds):
-#   1 TH/s  →  ~4 096
-#   5 TH/s  →  ~20 000
-#   10 TH/s →  ~40 000
-#   100 TH/s → ~400 000
+# Rough guide (one share every 15 seconds, difficulty = H/s × 15 / 2^32):
+#   500 GH/s  →  ~1 750      (USB stick, small Bitaxe)
+#   1 TH/s    →  ~3 500      (Bitaxe Gamma)
+#   10 TH/s   →  ~35 000
+#   100 TH/s  →  ~350 000
+#   500 TH/s  →  ~1 750 000  (current flagship ASIC)
+# The default suits a mixed fleet: small devices come down and large ones go
+# up within a few retargets.
 initial_difficulty = 4096
 
-# Extranonce1 length in bytes (4 is standard; supports up to 255 miners)
+# Extranonce1 length in bytes. Each connection gets its own prefix from a
+# counter; 4 bytes allows about 4 billion connections before it wraps.
 extranonce1_size = 4
 
 # Extranonce2 size advertised to SV1 miners (bytes). The Avalon Nano needs 4.
@@ -66,8 +74,9 @@ max_connections = 256
 # Idle connection timeout (seconds) — disconnect miners that stop responding
 idle_timeout_secs = 300
 
-# Directory where the raw hex of every found block is archived before
-# submission, so a failed submitblock can be retried automatically or replayed
+# Directory where the raw hex of every found block is archived, in parallel
+# with submission and never delaying it, so a failed submitblock can be retried
+# automatically or replayed
 # by hand (`bitcoin-cli submitblock "$(cat <file>)"`). Relative paths resolve
 # against the service working directory, like stats_db_path.
 found_block_dir = "found-blocks"
@@ -106,20 +115,20 @@ cert_validity_secs = 31536000
 # Bitcoin RPC endpoint (core/knots)
 url = "http://127.0.0.1:8332"
 
-# Cookie-file authentication (leave user/password empty when using cookie)
-# Default location: ~/.bitcoin/.cookie
-# Override with an absolute path if using a custom datadir or rpccookiefile=
+# Cookie-file authentication. The cookie is always tried first: this path,
+# or ~/.bitcoin/.cookie if the key is omitted. Use an absolute path for a
+# custom datadir or rpccookiefile=, or when the service user has no home.
 cookie_path = "~/.bitcoin/.cookie"
 
-# Uncomment to use explicit credentials instead of cookie
+# Explicit credentials, used only when no cookie can be read
 # user = "rpcuser"
 # password = "rpcpassword"
 
-# RPC timeout (seconds)
+# RPC timeout (seconds). Values below 5 are raised to 5 with a warning.
 timeout_secs = 10
 
 [zmq]
-# ZMQ endpoint for Bitcoin Knots block/hashblock notifications
+# ZMQ endpoint for the node's hashblock notifications
 # Enable in bitcoin.conf:  zmqpubhashblock=tcp://127.0.0.1:28332
 hashblock_endpoint = "tcp://127.0.0.1:28332"
 
@@ -141,24 +150,42 @@ poll_interval_ms = 1000
 # Target number of seconds between share submissions per miner
 target_share_time_secs = 15
 
-# How often (seconds) to re-evaluate and adjust difficulty
+# How often (seconds) each miner is re-judged. Runs on a timer, so a miner
+# that sends no shares is still retargeted. Each judgement looks at the work
+# proved over the last 20 target share times (5 minutes at 15 s), or one
+# interval if that is longer.
 retarget_interval_secs = 60
 
-# Hard floor / ceiling on per-miner difficulty
-# Floor should be above 1 but low enough for vardiff to work on small miners.
-# Note: for cgminer/Avalon hardware the floor is sent as minimum-difficulty at
-# session start and cannot be changed without a reconnect.
-min_difficulty = 4096
-max_difficulty = 65536
+# Floor and ceiling on per-miner difficulty. The defaults span a ~10 GH/s
+# USB stick to ~1.2 PH/s on one connection (the largest single machines, or
+# a farm behind a proxy). Vardiff is per connection, so a wide range costs
+# nothing: each miner settles at its own rate. Raise the ceiling for a proxy
+# carrying more than ~1.2 PH/s.
+#
+# Below about 150 GH/s a miner sits at the floor and submits more slowly than
+# the target. Keep that interval under [pool] idle_timeout_secs or the miner is
+# disconnected between shares; at 512 it holds down to about 10 GH/s. Lower
+# the floor (or raise the timeout) for anything slower.
+#
+# Shares are accepted down to the floor on every connection, whatever the
+# assigned difficulty, because cgminer/Avalon firmware fixes its submission
+# threshold at connect (from the minimum-difficulty in the mining.configure
+# reply) and ignores later set_difficulty. Each share is credited at the
+# difficulty it actually cleared, so a low floor does not distort hashrate.
+min_difficulty = 512
+max_difficulty = 4194304
 
-# Maximum difficulty adjustment ratio per retarget (e.g. 4 = up to 4× change)
+# Cap on one retarget step (e.g. 4 = up to 4× change). Inside that cap the
+# difficulty holds while the observed rate is within 1.5× of target, moves by
+# the square root of the ratio within 3×, and by the full ratio beyond that.
 max_retarget_factor = 4.0
 
 [security]
 # Rate-limit: max new TCP connections per IP per minute. Count every device
 # that shares one address (a proxy, a rack behind NAT) and add headroom for a
-# power-cycle reconnect burst; 8 suits a rack of a few miners. Exceeding it
-# refuses the connection; it never bans.
+# power-cycle reconnect burst. 5 suits one or two devices per address; raise
+# it to 8 or more for a rack behind one address. Exceeding it refuses the
+# connection; it never bans.
 max_connections_per_ip = 5
 
 # Max inbound messages per second per connection (token bucket). Exceeding it
@@ -174,11 +201,15 @@ max_shares_per_sec = 500
 # saves the cost of repeated reconnects. 0 disables bans entirely.
 ban_duration_secs = 300
 
-# Maximum genuinely invalid shares (bad nonce/duplicate) before disconnect (0 = disabled)
-# Low-difficulty and stale shares are NOT counted — they're expected during transitions.
+# Maximum genuinely invalid shares before disconnect (0 = disabled). Counted:
+# bad nonce, duplicate, out-of-range ntime, wrong extranonce length, and on SV2
+# a submit for an unknown job. Low-difficulty shares and SV1 stale-job submits
+# are not counted, since they are expected around block changes.
 max_invalid_shares = 5
 
-# JSON message size limit per line (bytes) — protects against oversized payloads
+# Maximum SV1 line / SV2 message size (bytes). SV2 frames get 1024 extra bytes
+# for framing and encryption overhead. Exceeding it disconnects and bans the
+# address for ban_duration_secs.
 max_message_bytes = 4096
 
 # Maximum byte length of an accepted worker/user-identity name. Bounds the
@@ -186,26 +217,31 @@ max_message_bytes = 4096
 # untrusted names. 128 fits a bech32m payout address plus a `.worker` suffix.
 max_worker_name_len = 128
 
-# Maximum number of DISTINCT worker identities one connection may authorize
-# (SV1 mining.authorize / SV2 OpenExtendedMiningChannel). Each distinct name
-# creates per-worker stats entries and Prometheus label series, so this bounds
-# how much a single connection can grow them. Real miners authorize once.
+# Maximum number of times one connection may switch to a new worker identity
+# (SV1 mining.authorize / SV2 OpenExtendedMiningChannel). Re-authorizing the
+# current name does not count; switching back to an earlier name does. Each
+# new name creates per-worker stats entries and Prometheus label series, so
+# this bounds how much a single connection can grow them. Real miners
+# authorize once.
 # 0 = disabled.
 max_authorizations_per_session = 8
 
 [metrics]
-# Prometheus metrics HTTP endpoint (empty string to disable)
+# HTTP address for the dashboard, its Settings page, and Prometheus /metrics.
+# An empty string disables all of them.
 prometheus_addr = "0.0.0.0:9090"
 
 # Optional SQLite file for state that must survive restarts: all-time best
 # share and hashrate, every block found and the running round, six months of
-# hashrate history, and the payout address saved from the dashboard (which
-# then wins over coinbase_address above). Leave empty or omit to disable.
+# hashrate history, the last 24 hours of accepted shares per worker (to restore
+# the 3h/24h hashrate windows), and the payout address saved from the dashboard
+# (which then wins over coinbase_address above). Leave empty or omit to
+# disable.
 stats_db_path = "pool_stats.sqlite"
 
 # Allow changing the payout address from the dashboard Settings page (the
-# network is read from the node and cannot be changed). The dashboard has no authentication of its own: on an untrusted LAN
-# either set this to false or front the dashboard with an authenticating
+# network is read from the node and cannot be changed). The dashboard has no
+# authentication of its own: on an untrusted LAN either set this to false or front the dashboard with an authenticating
 # proxy (Umbrel's app_proxy does this automatically).
 allow_runtime_settings = true
 

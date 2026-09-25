@@ -112,7 +112,6 @@ pub fn job_broadcast(miners_count: usize) {
     counter!("pool_job_broadcasts_total").increment(1);
 }
 
-#[allow(dead_code)]
 pub fn zmq_reconnect() {
     counter!("pool_zmq_reconnects_total").increment(1);
 }

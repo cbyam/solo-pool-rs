@@ -11,10 +11,10 @@
 # Runs entirely in regtest against a throwaway datadir. It never touches mainnet
 # state, the production config, or the stats database.
 #
-# IMPORTANT: builds into a private CARGO_TARGET_DIR. /usr/local/bin/solo-pool-rs
-# is a symlink into the repo's target/release, so building there would silently
-# replace the binary the live pool starts on its next restart. Do not remove the
-# override without fixing that first.
+# Builds into a private CARGO_TARGET_DIR so a scheduled run never contends with,
+# or overwrites, a build in the working tree. The live pool runs a copy
+# installed by packaging/install.sh, so the repo's target/ is not what it
+# starts.
 
 set -euo pipefail
 
@@ -24,8 +24,9 @@ export CARGO_TERM_COLOR=never
 
 cd "$REPO"
 
-# Pin to the node the pool is actually deployed against, not whatever is on PATH,
-# so the result says something about production rather than about this host.
+# Use $BITCOIND / $BITCOIN_CLI if set, else the node binaries on PATH. Set
+# BITCOIND in the unit to pin the production node's binary, so the result says
+# something about production rather than about this host.
 export BITCOIND="${BITCOIND:-$(command -v bitcoind)}"
 export BITCOIN_CLI="${BITCOIN_CLI:-$(command -v bitcoin-cli)}"
 

@@ -15,8 +15,8 @@
 # symlink at it. Building never touches what is installed, upgrades are one
 # command, and rollback is the same command against an older version.
 #
-#   sudo packaging/install.sh              # build and install the current version
-#   sudo packaging/install.sh --rollback   # relink the previously installed one
+#   sudo packaging/install.sh              # install the built current version (cargo build --release first)
+#   sudo packaging/install.sh --rollback   # relink the newest installed version other than the active one
 #   packaging/install.sh --list            # show what is installed (no root)
 #
 # Restarting is left to you. Installing does not restart the pool.
@@ -34,6 +34,7 @@ list() {
   if [ -d "$LIBDIR" ]; then
     for d in "$LIBDIR"/*/; do
       [ -d "$d" ] || continue
+      d="${d%/}"
       v="$(basename "$d")"
       marker=""
       [ "$(readlink -f "$LINK" 2>/dev/null)" = "$d/solo-pool-rs" ] && marker="  <- active"
