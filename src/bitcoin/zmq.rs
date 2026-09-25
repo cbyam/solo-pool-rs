@@ -101,6 +101,7 @@ pub async fn start(cfg: &ZmqConfig, rpc: Arc<crate::bitcoin::rpc::RpcClient>) ->
                     warn!("ZMQ listener failed ({e}); reconnecting in {ZMQ_RECONNECT_SECS}s");
                 }
                 tokio::time::sleep(tokio::time::Duration::from_secs(ZMQ_RECONNECT_SECS)).await;
+                metrics::zmq_reconnect();
             }
         });
     }
