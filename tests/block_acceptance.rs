@@ -492,7 +492,7 @@ fn grind_to_target(prefix: &[u8; 76], target: &[u8; 32], deadline: Instant) -> O
                     // Check the stop flag and deadline occasionally, not
                     // every iteration.
                     counter = counter.wrapping_add(1);
-                    if counter % 8192 == 0
+                    if counter.is_multiple_of(8192)
                         && (stop.load(Ordering::Relaxed) || Instant::now() >= deadline)
                     {
                         return;
