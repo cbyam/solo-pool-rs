@@ -18,6 +18,10 @@ pub struct Config {
     /// Stratum V2 settings. Optional — defaults to enabled if the section is absent.
     #[serde(default)]
     pub sv2: Sv2Config,
+    /// `section.key` names applied from `SOLO_POOL_*` environment overrides,
+    /// for the caller to log once tracing is up (load runs before it is).
+    #[serde(skip)]
+    pub env_overrides: Vec<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +67,9 @@ pub struct Sv2Config {
     /// same listen port as SV1. The protocol is auto-detected from the first
     /// byte of each connection ('{' → SV1 JSON, otherwise → SV2 Noise
     /// handshake). When false, the pool rejects SV2 and only serves SV1.
+    /// Defaults to true, so a partial `[sv2]` section (or an `SOLO_POOL_SV2__*`
+    /// override, which creates one) keeps SV2 on.
+    #[serde(default = "default_sv2_enabled")]
     pub enabled: bool,
     /// Persist the Noise authority key across restarts so miners can pin the
     /// pool's identity (configure the pool's authority public key on the
@@ -85,6 +92,10 @@ pub struct Sv2Config {
     pub cert_validity_secs: u32,
 }
 
+fn default_sv2_enabled() -> bool {
+    true
+}
+
 fn default_persist_authority_key() -> bool {
     true
 }
@@ -100,7 +111,7 @@ fn default_cert_validity_secs() -> u32 {
 impl Default for Sv2Config {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: default_sv2_enabled(),
             persist_authority_key: default_persist_authority_key(),
             authority_key_file: default_authority_key_file(),
             cert_validity_secs: default_cert_validity_secs(),
@@ -468,8 +479,9 @@ pub fn load(path: &str) -> Result<Config> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("Opening config file: {path}"))?;
     let mut value: toml::Value = toml::from_str(&raw).context("Parsing config TOML")?;
-    apply_env_overrides(&mut value, std::env::vars())?;
-    let config: Config = value.try_into().context("Interpreting config")?;
+    let env_overrides = apply_env_overrides(&mut value, std::env::vars())?;
+    let mut config: Config = value.try_into().context("Interpreting config")?;
+    config.env_overrides = env_overrides;
     config.validate()?;
     Ok(config)
 }
@@ -491,13 +503,16 @@ const ENV_PREFIX: &str = "SOLO_POOL_";
 /// absent, `true`/`false` become booleans and numbers become numbers — wrap
 /// the value in double quotes to force a string (e.g. an all-numeric RPC
 /// password).
+///
+/// Returns the `section.key` names applied, in order.
 fn apply_env_overrides(
     value: &mut toml::Value,
     vars: impl Iterator<Item = (String, String)>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let root = value
         .as_table_mut()
         .context("Config root is not a TOML table")?;
+    let mut applied = Vec::new();
 
     for (name, raw) in vars {
         let Some(rest) = name.strip_prefix(ENV_PREFIX) else {
@@ -534,11 +549,11 @@ fn apply_env_overrides(
             Some(_) => anyhow::bail!("{name}: cannot override non-scalar {section}.{key}"),
             None => infer_toml_scalar(raw),
         };
-        // Names only — values may be credentials.
-        tracing::info!("Config override from environment: {section}.{key}");
+        // Names only: values may be credentials.
+        applied.push(format!("{section}.{key}"));
         table.insert(key, parsed);
     }
-    Ok(())
+    Ok(applied)
 }
 
 /// Best-effort scalar typing for keys not present in the config file.
