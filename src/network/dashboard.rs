@@ -899,6 +899,16 @@ tr:last-child td { border-bottom: none; }
 }
 #node-pill.show { display: inline-flex; }
 #node-pill.bad { color: var(--bad); border-color: var(--bad); }
+/* Rail "stats not saving" pill: a configured stats database failed to open or
+   stopped taking writes. Mining is unaffected; found blocks, the round and the
+   best shares are what is at risk. The error text rides in the tooltip. */
+#store-pill {
+  display: none; align-items: center; gap: 0.35rem; cursor: help;
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
+  padding: 0.3rem 0.5rem;
+}
+#store-pill.show { display: inline-flex; }
 
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
@@ -962,6 +972,7 @@ tr:last-child td { border-bottom: none; }
   <div class="rail-foot">
     <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
     <button id="node-pill" title="No fresh block template from bitcoind — see the Network section">&#9888; Node stale</button>
+    <span id="store-pill" role="status">&#9888; Stats not saving</span>
     <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
     <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
     <span id="rail-node" title="Age of the newest block template the pool built from bitcoind"><span id="node-led" class="led led-off rail-led"></span>Node &middot; <span id="rail-node-text">&mdash;</span></span>
@@ -1670,6 +1681,17 @@ function renderNode(d) {
   pill.classList.toggle('bad', level === 'bad');
 }
 
+// Stats database health: the pool keeps mining without it, so the only sign
+// of a broken store would otherwise be a found block missing after a restart.
+function renderStore(d) {
+  const pill = document.getElementById('store-pill');
+  const err = d.stats_store_error || '';
+  pill.classList.toggle('show', !!err);
+  pill.title = err
+    ? 'The stats database is not saving (' + err + '). Mining is unaffected; found blocks, the round and best shares will not survive a restart until it is fixed.'
+    : '';
+}
+
 // ── Stats refresh ────────────────────────────────────────────────────────────
 async function refresh() {
   try {
@@ -1710,6 +1732,7 @@ async function refresh() {
     renderRound(d, nowSec);
     renderBlocks(d, nowSec);
     renderNode(d);
+    renderStore(d);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
     document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';

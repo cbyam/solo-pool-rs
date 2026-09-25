@@ -145,13 +145,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ── Prometheus hashrate refresh for offline workers ──────────────────────
-    // The per-worker gauge is pushed from the session loop, so it only moves
-    // while a miner is delivering traffic. Re-push decayed values for offline
-    // workers so scrapes match the dashboard instead of holding the last
-    // live value until the exporter's idle timeout. Pushing stops once the
-    // pruner evicts the worker from stats, after which the idle timeout
-    // expires the series.
+    // ── Prometheus refresh (every 30 seconds) ────────────────────────────────
+    // The per-worker hashrate gauge is pushed from the session loop, so it
+    // only moves while a miner is delivering traffic. Re-push decayed values
+    // for offline workers so scrapes match the dashboard instead of holding
+    // the last live value until the exporter's idle timeout. The same tick
+    // sets the worker liveness gauges and the stats-store gauge, and touches
+    // the pool-wide series so the idle timeout only ever expires worker
+    // series. Pushing stops once the pruner evicts a worker from stats, after
+    // which the idle timeout expires its series.
     if prometheus_handle.is_some() {
         let stats = stats.clone();
         tokio::spawn(async move {
@@ -161,6 +163,13 @@ async fn main() -> Result<()> {
                 for (worker, hps) in stats.offline_worker_hashrates_10m() {
                     metrics::update_hashrate(hps, &worker);
                 }
+                for (worker, online, last_share_ts) in stats.worker_liveness() {
+                    metrics::worker_liveness(&worker, online, last_share_ts);
+                }
+                if stats.store_configured() {
+                    metrics::stats_store_ok(stats.store_error().is_none());
+                }
+                metrics::keep_pool_series_alive();
             }
         });
     }
