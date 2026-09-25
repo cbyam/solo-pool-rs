@@ -18,8 +18,6 @@
 # Overrides are parsed as the type the key has in this file. For keys absent
 # from the file, true/false and numbers are typed as such — wrap the value in
 # double quotes to force a string (e.g. an all-numeric RPC password).
-# Any SOLO_POOL_SV2__* override needs `enabled` under [sv2] in this file (or
-# SOLO_POOL_SV2__ENABLED set too); boot fails with "missing field" otherwise.
 
 [pool]
 # Address and port miners connect to
@@ -47,11 +45,14 @@ coinbase_tag = "/solo-pool-rs/"
 # rejects; a value far too low floods the pool with shares until the first
 # retarget. Keep it at or above min_difficulty: it is not clamped.
 #
-# Rough guide (targeting 1 share every 15 seconds):
-#   1 TH/s  →  ~4 096
-#   5 TH/s  →  ~20 000
-#   10 TH/s →  ~40 000
-#   100 TH/s → ~400 000   (raise [vardiff] max_difficulty to match)
+# Rough guide (one share every 15 seconds, difficulty = H/s × 15 / 2^32):
+#   500 GH/s  →  ~1 750      (USB stick, small Bitaxe)
+#   1 TH/s    →  ~3 500      (Bitaxe Gamma)
+#   10 TH/s   →  ~35 000
+#   100 TH/s  →  ~350 000
+#   500 TH/s  →  ~1 750 000  (current flagship ASIC)
+# The default suits a mixed fleet: small devices come down and large ones go
+# up within a few retargets.
 initial_difficulty = 4096
 
 # Extranonce1 length in bytes. Each connection gets its own prefix from a
@@ -155,15 +156,24 @@ target_share_time_secs = 15
 # interval if that is longer.
 retarget_interval_secs = 60
 
-# Hard floor / ceiling on per-miner difficulty.
-# Floor should be above 1 but low enough for vardiff to work on small miners.
+# Floor and ceiling on per-miner difficulty. The defaults span a ~10 GH/s
+# USB stick to ~1.2 PH/s on one connection (the largest single machines, or
+# a farm behind a proxy). Vardiff is per connection, so a wide range costs
+# nothing: each miner settles at its own rate. Raise the ceiling for a proxy
+# carrying more than ~1.2 PH/s.
+#
+# Below about 150 GH/s a miner sits at the floor and submits more slowly than
+# the target. Keep that interval under [pool] idle_timeout_secs or the miner is
+# disconnected between shares; at 512 it holds down to about 10 GH/s. Lower
+# the floor (or raise the timeout) for anything slower.
+#
 # Shares are accepted down to the floor on every connection, whatever the
 # assigned difficulty, because cgminer/Avalon firmware fixes its submission
 # threshold at connect (from the minimum-difficulty in the mining.configure
-# reply) and ignores later set_difficulty. The default ceiling fits up to
-# about 19 TH/s per connection; raise it for faster machines.
-min_difficulty = 4096
-max_difficulty = 65536
+# reply) and ignores later set_difficulty. Each share is credited at the
+# difficulty it actually cleared, so a low floor does not distort hashrate.
+min_difficulty = 512
+max_difficulty = 4194304
 
 # Cap on one retarget step (e.g. 4 = up to 4× change). Inside that cap the
 # difficulty holds while the observed rate is within 1.5× of target, moves by

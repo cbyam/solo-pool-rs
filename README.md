@@ -144,6 +144,7 @@ cargo build --release
 
 The only argument is the config path (`--config <path>` also works). With no
 argument the pool reads `config.toml` from the working directory.
+`solo-pool-rs --version` prints the version.
 
 Prebuilt Linux binaries are also attached to each [release](https://github.com/cbyam/solo-pool-rs/releases). They link the system SQLite and C++ runtime (`libsqlite3-0` and `libstdc++6`, present on most distributions).
 
@@ -271,7 +272,7 @@ will not load. These are the ones you will almost certainly change:
 [pool]
 listen_addr = "0.0.0.0:3333"
 coinbase_address = "bc1qyouraddresshere"   # ← YOUR address
-initial_difficulty = 4096                  # ~1 TH/s at 15s/share; vardiff ramps from here
+initial_difficulty = 4096                  # starting point; vardiff settles each miner from here
 
 [sv2]
 enabled = true                             # accept SV2 on the same port (false = SV1 only)
@@ -300,31 +301,31 @@ SOLO_POOL_BITCOIN_RPC__USER=umbrel              # [bitcoin_rpc] user
 SOLO_POOL_SV2__ENABLED=false                    # [sv2] enabled
 ```
 
-Setting any `SOLO_POOL_SV2__*` variable requires `enabled` to be present
-under `[sv2]` in the file (or set through `SOLO_POOL_SV2__ENABLED`).
+### Difficulty: from USB sticks to racks
 
-### Difficulty and small / large miners
+`[vardiff]` tracks each connection's hashrate and settles it at one share per
+15 s, between a floor and a ceiling (`min_difficulty` / `max_difficulty`).
+Vardiff is per connection, so a mixed fleet needs no tuning: the example's
+range of **512** to **4,194,304** covers everything from a ~10 GH/s USB stick
+through a Bitaxe or Avalon Nano to the largest single ASICs, and up to about
+1.2 PH/s on one connection (a farm behind a proxy).
 
-`[vardiff]` automatically tracks each miner's hashrate, but it works within a
-configured floor and ceiling (`min_difficulty` / `max_difficulty`). The default
-floor of **4096** suits roughly **1 TH/s and up** (a Bitaxe, Avalon Nano, or
-larger) at the 15 s target share time. Two cases to know about:
-
-- **Low-hashrate devices** (USB sticks, NerdMiner-class lottery miners, ~sub-0.3 TH/s)
-  will be pinned at the floor and submit shares slowly, or for very tiny
-  devices almost never. This is purely cosmetic: **share difficulty has no
-  payout effect in solo mining** (you're paid on blocks, 100%, regardless), so
-  such a device still finds and submits a real block normally; it just shows
-  little or no hashrate on the dashboard. If you want better telemetry for small
-  hardware, lower `min_difficulty`.
-- **Fast machines**: the default ceiling of 65536 fits up to about 19 TH/s per
-  connection at the 15 s target. Anything faster sits at the ceiling and
-  submits shares faster than the target, so raise `max_difficulty` to match.
-  Vardiff is per connection, so a farm of small devices needs no change.
+- **Small devices** (below about 150 GH/s) sit at the floor and submit more
+  slowly than the target. That is cosmetic: **share difficulty has no payout
+  effect in solo mining** (you're paid on blocks, 100%, regardless), so such a
+  device still finds and submits a real block normally; the dashboard just
+  sees few shares. What matters is `[pool] idle_timeout_secs` (300): a miner
+  that sends nothing for that long is disconnected. At the 512 floor that
+  holds down to about 10 GH/s. For anything slower (an ESP32 NerdMiner-class
+  lottery device), lower `min_difficulty` or raise the timeout.
+- **Large miners** start at `initial_difficulty` (4096) and climb by up to 4×
+  per minute, so a 500 TH/s machine settles within about five minutes. Past
+  1.2 PH/s on one connection, raise `max_difficulty`.
 
 Shares are accepted against the floor on every connection, whatever
 difficulty vardiff has assigned, so firmware that ignores difficulty changes
-keeps mining.
+keeps mining. Each share is credited at the difficulty it actually cleared,
+so hashrate stays accurate.
 
 Miners that send `mining.suggest_difficulty` (e.g. AxeOS's "pool difficulty"
 field) are honored as a **starting** difficulty, clamped to this floor/ceiling;
