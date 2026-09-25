@@ -2044,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    fn a_store_that_will_not_open_is_reported_not_just_logged() {
+    fn a_store_that_will_not_open_raises_an_alarm() {
         let stats = PoolStats::new_with_store(Some(
             "/nonexistent-dir-for-solo-pool-test/pool_stats.sqlite".into(),
         ));

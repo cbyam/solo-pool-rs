@@ -41,8 +41,8 @@ proof is in the repo and runs on every change:
   Noise-encrypted SV2), grinds a real share that is also a valid block, submits
   it, and **asserts the node accepted it onto the chain and that the coinbase
   pays the pool's configured address**. This is the one path no unit test can
-  fake. It guards the bugs that stay invisible until a block is genuinely
-  found: prev-hash byte order, BIP34 height, merkle root, witness commitment,
+  fake. It guards the bugs that stay invisible until the pool finds a
+  block: prev-hash byte order, BIP34 height, merkle root, witness commitment,
   and the `submitblock` path itself. See
   [`tests/block_acceptance.rs`](tests/block_acceptance.rs) and the
   [`e2e.yml`](.github/workflows/e2e.yml) workflow. A green badge above means the
@@ -306,7 +306,7 @@ SOLO_POOL_SV2__ENABLED=false                    # [sv2] enabled
 `[vardiff]` tracks each connection's hashrate and settles it at one share per
 15 s, between a floor and a ceiling (`min_difficulty` / `max_difficulty`).
 Vardiff is per connection, so a mixed fleet needs no tuning: the example's
-range of **512** to **4,194,304** covers everything from a ~10 GH/s USB stick
+range of 512 to 4,194,304 covers everything from a ~10 GH/s USB stick
 through a Bitaxe or Avalon Nano to the largest single ASICs, and up to about
 1.2 PH/s on one connection (a farm behind a proxy).
 
@@ -324,7 +324,7 @@ through a Bitaxe or Avalon Nano to the largest single ASICs, and up to about
 
 Shares are accepted against the floor on every connection, whatever
 difficulty vardiff has assigned, so firmware that ignores difficulty changes
-keeps mining. Each share is credited at the difficulty it actually cleared,
+keeps mining. Each share is credited at the difficulty it cleared,
 so hashrate stays accurate.
 
 Miners that send `mining.suggest_difficulty` (e.g. AxeOS's "pool difficulty"

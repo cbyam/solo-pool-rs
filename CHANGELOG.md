@@ -10,9 +10,9 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
-- A stats database that fails to open or stops taking writes is reported,
-  not just logged. The pool still mines without it, but the failure is
-  logged at error level, shown as a red "Stats not saving" pill on the
+- A stats database that fails to open or stops taking writes now raises an
+  alarm. The pool still mines without it, but the failure is logged at
+  error level, shown as a red "Stats not saving" pill on the
   dashboard, returned in `/stats` as `stats_store_error`, and exported as
   `pool_stats_store_ok 0`. The next successful write clears it. Until now
   a locked or unwritable file left one warning in the log while found
@@ -98,7 +98,7 @@ everything else bumps the **patch** version.
   The declared minimum Rust version is now 1.90, which the locked
   dependencies already required. The README describes systemd's restart
   limit, `--rollback` and the cookie path under the service user as they
-  actually behave, and the Docker section notes that the container must be
+  behave, and the Docker section notes that the container must be
   restarted after the node renews its cookie. The config example's vardiff,
   invalid-share, authorization-cap, cookie and extranonce comments describe
   the current code. `docs/stable-surface.md` is corrected where it had
