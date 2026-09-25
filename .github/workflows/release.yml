@@ -86,5 +86,6 @@ jobs:
             ```
 
             **Binary** — the attached tarballs are dynamically linked Linux
-            builds (x86_64 and aarch64) and require `libzmq5` on the host
-            (`apt-get install libzmq5`).
+            builds (x86_64 and aarch64). They need the system SQLite and C++
+            runtime on the host (`apt-get install libsqlite3-0 libstdc++6`,
+            present on most distributions). libzmq is compiled in.

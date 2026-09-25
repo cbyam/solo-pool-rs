@@ -1,14 +1,16 @@
+//! solo-pool-rs: solo BTC mining pool (Stratum V1 + V2, auto-detected on one port)
+//!
+//! Usage: `solo-pool-rs [--config] [path]`, default `config.toml`.
+//!
+//! Startup sequence:
+//!   1. Load config.toml
+//!   2. Initialise tracing (structured or plain)
+//!   3. Start Prometheus metrics endpoint
+//!   4. Connect to the Bitcoin node's RPC (cookie, else user/password)
+//!   5. Start the ZMQ block-notification listener and the RPC tip poll beside it
+//!   6. Bootstrap the template engine and build first job
+//!   7. Start the TCP accept loop
 use anyhow::{Context, Result};
-/// solo-pool-rs — Solo BTC mining pool (Stratum V1 + V2, auto-detected on one port)
-///
-/// Startup sequence:
-///   1. Load config.toml
-///   2. Initialise tracing (structured or plain)
-///   3. Start Prometheus metrics endpoint
-///   4. Connect to Bitcoin Knots RPC (cookie auth)
-///   5. Start ZMQ block-notification listener (or RPC poll fallback)
-///   6. Bootstrap the template engine and build first job
-///   7. Start the TCP accept loop
 use solo_pool_rs::{
     bitcoin::{rpc::RpcClient, zmq},
     config, metrics,
