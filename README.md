@@ -414,12 +414,21 @@ Key Prometheus metrics:
 | `pool_blocks_found_total` | 🏆 Blocks found and accepted by the node |
 | `pool_hashrate_estimated_hps{worker}` | Per-worker estimated H/s |
 | `pool_job_height` | Current template block height |
+| `pool_worker_online{worker}` | 1 while the worker is connected, 0 while it is not |
+| `pool_worker_last_share_timestamp_seconds{worker}` | When the worker last submitted a share |
+| `pool_stats_store_ok` | 0 while the stats database is not saving |
 
-The full list is in [`docs/stable-surface.md`](docs/stable-surface.md). Any
-series not written for 24 hours is dropped from the exposition, which bounds
-the `worker` label; a scraper sees an idle worker's series disappear and a
-counter such as `pool_blocks_found_total` restart from zero after a quiet
-day.
+The full list is in [`docs/stable-surface.md`](docs/stable-surface.md). A
+series with a `worker` label is dropped after 24 hours without an update,
+which bounds that label. The two liveness gauges are kept for as long as the
+pool knows the worker (24 hours after it goes offline), so an alert on
+`pool_worker_online == 0`, or on the age of
+`pool_worker_last_share_timestamp_seconds`, keeps firing while a miner is
+down. Pool-wide series never expire.
+
+If the stats database cannot be opened, or stops taking writes, the pool keeps
+mining and shows a red **Stats not saving** pill on the dashboard until the
+problem clears; found blocks, the round and best shares are what is at risk.
 
 ---
 
