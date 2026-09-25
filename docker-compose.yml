@@ -29,6 +29,8 @@ services:
       # datadir — change it if you use a custom datadir); right side matches the
       # default cookie_path = "~/.bitcoin/.cookie" inside the container, which now
       # expands under the non-root home /home/solo-pool.
+      # bitcoind writes a new cookie each time it starts and this single-file
+      # mount keeps the old one, so restart this container after the node.
       - ${HOME}/.bitcoin/.cookie:/home/solo-pool/.bitcoin/.cookie:ro
       # Persist all-time stats and found-block archives. The image runs as uid
       # 10001, so this host dir must be writable by that uid:
@@ -44,5 +46,7 @@ services:
 #   ports:
 #     - "3333:3333"   # stratum (match listen_addr)
 #     - "9090:9090"   # dashboard + metrics
-# and set bitcoin_rpc.url in config.toml to host.docker.internal:8332
-# (Docker Desktop) or your host's LAN IP.
+# and point both bitcoin_rpc.url and zmq.hashblock_endpoint in config.toml at
+# host.docker.internal (Docker Desktop) or your host's LAN IP. bitcoind must
+# listen on that address too: rpcbind/rpcallowip for RPC, and
+# zmqpubhashblock=tcp://0.0.0.0:28332 for ZMQ.

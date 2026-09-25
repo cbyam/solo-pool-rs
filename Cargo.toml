@@ -2,7 +2,7 @@
 name = "solo-pool-rs"
 version = "0.6.10"
 edition = "2021"
-rust-version = "1.85.0"
+rust-version = "1.90"
 authors = []
 description = "Solo BTC mining pool for ASIC miners — Stratum V1 and Noise-encrypted Stratum V2, auto-detected on a single port"
 license = "MIT OR Apache-2.0"

@@ -16,9 +16,10 @@ ExecStart=/opt/solo-pool-rs/packaging/systemd/solo-pool-rs-e2e.sh
 # Building and running a regtest node is slow on small hardware; give it room.
 TimeoutStartSec=45min
 
-# Keep the build off the repo's target dir, which /usr/local/bin/solo-pool-rs
-# symlinks into. Without this, a scheduled test run would replace the binary the
-# live pool starts on its next restart.
+# Keep the build off the repo's target dir so a scheduled run never contends
+# with, or overwrites, a build in the working tree. The live pool runs a copy
+# installed by packaging/install.sh, so this is hygiene, not a live-binary
+# guard.
 Environment=CARGO_TARGET_DIR=/var/tmp/solo-pool-rs-e2e-target
 
 # Never let the test disturb the running pool.

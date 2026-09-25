@@ -11,26 +11,24 @@ are as of the review that raised each item and may drift.
 
 Gates, in the order they can be closed:
 
-- [ ] **Cut 0.6.7** with the dashboard work merged 2026-09-06 (round effort,
+- [x] **Cut 0.6.7** with the dashboard work merged 2026-09-06 (round effort,
   persisted found blocks, node health, chart downtime gap, BIP110 card removal)
-  and move the community-store pin to it.
-- [ ] **Write the stable-surface doc.** Names what the promise covers: config
-  file keys and their meaning, Stratum V1/V2 behaviour on the wire, the compose
-  and environment contract Umbrel depends on, the stats database migrating
-  forward across versions, and the `/stats` and `/api/*` JSON the dashboard
-  reads. Names what it excludes: dashboard layout and copy, log text, metric
-  names, internal module structure. Records the deferred stances (TLS,
-  fees/multi-coin/cloud non-goals, RPC failover) so no pending decision can
-  force a config break later. Ships as the headline of the rc.
-- [ ] **Submit the official Umbrel app-store PR.** Test install on real Umbrel
-  hardware, produce the 1440×900 gallery PNGs (the 256 SVG icon exists), open
-  the PR against getumbrel/umbrel-apps. Review time is outside our control, so
-  this goes in before the rc, not after.
-- [ ] **Decide the RPC failover config shape, without building it.** Today a
-  single `bitcoin_rpc.url`. If failover ever lands as a list of endpoints, that
-  is a config-shape change. Either commit in the stable-surface doc that a
-  future list key sits beside `url` and `url` keeps working, or defer the
-  feature there in writing. See the feature entry under "After 1.0".
+  and move the community-store pin to it. Releases have since reached 0.6.10.
+- [x] **Write the stable-surface doc.** Drafted as `docs/stable-surface.md`:
+  config keys and their meaning, Stratum V1/V2 behaviour on the wire, the
+  HTTP JSON, metric names and labels, files on disk, the packaging contract
+  Umbrel depends on, and the deferred stances (TLS, fees/multi-coin/cloud
+  non-goals, RPC failover). Ships as the headline of the rc once its open
+  items close (next gate).
+- [ ] **Close the stable-surface "Before this is final" list.** Each item is
+  a place where the code and the draft disagree; settle every one in the code
+  or the doc before the rc.
+- [x] **Submit the official Umbrel app-store PR.** Opened 2026-09-06 as
+  getumbrel/umbrel-apps#6064 with 0.6.8 pinned, after a test install in an
+  umbrelOS guest. Review is pending and outside our control.
+- [x] **Decide the RPC failover config shape, without building it.** Decided in
+  the stable-surface Stances: a future list key sits beside `url`, and the
+  single-URL form is never removed in 1.x.
 - [ ] **Fail loudly when the stats store will not open.** A locked file or
   transient I/O error at boot leaves `store = None` behind a single `warn!`.
   The database now holds the found-block list and the running round as well as

@@ -31,6 +31,24 @@ everything else bumps the **patch** version.
   working if `max_message_bytes` were raised past 64 KB. The count refuses
   within one chunk of the cap at any setting, and on the header alone below
   one chunk, as before.
+- Documentation brought in line with the code again, from a review of every
+  doc against it. Build and install instructions drop the libzmq packages
+  (libzmq has been compiled into the binary for some time) and name what is
+  needed instead: SQLite headers and a C++ compiler to build, `libsqlite3-0`
+  and `libstdc++6` to run a release binary, including in the release notes.
+  The declared minimum Rust version is now 1.90, which the locked
+  dependencies already required. The README describes systemd's restart
+  limit, `--rollback` and the cookie path under the service user as they
+  actually behave, and the Docker section notes that the container must be
+  restarted after the node renews its cookie. The config example's vardiff,
+  invalid-share, authorization-cap, cookie and extranonce comments describe
+  the current code. `docs/stable-surface.md` is corrected where it had
+  drifted (version-rolling grant, repeated difficulty suggestions, the ntime
+  window, per-step handshake deadlines, V2 bans on decrypted size, retry
+  and rejection handling, summary rather than histogram metrics, the
+  24-hour share log, extra `/stats` fields) and its open-items list now
+  holds only what is still open. The README's architecture map and release
+  steps move to CONTRIBUTING.md.
 
 ### Fixed
 - `packaging/install.sh --list` now marks the active version. A trailing slash
