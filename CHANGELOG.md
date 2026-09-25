@@ -10,6 +10,12 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
+- `docs/faq.md`: what each dashboard warning means and what to check
+  (degraded, rejecting, stats not saving, node stale, mining paused), plus
+  the questions operators have asked: a Bitaxe falling back on SV2, small
+  miners with little hashrate, pinning the pool's identity, block odds. The
+  dashboard gains a Help link in the side rail, and the "Stats not saving"
+  pill and the Rejects card's miner line link to their answers.
 - A stats database that fails to open or stops taking writes now raises an
   alarm. The pool still mines without it, but the failure is logged at
   error level, shown as a red "Stats not saving" pill on the
@@ -41,6 +47,9 @@ everything else bumps the **patch** version.
   dependency that raises it fails a PR instead of a user's build.
 
 ### Changed
+- The README's BIP110 section is now a short note for Knots users: stay on
+  29.3.knots20260507 or earlier, or run Bitcoin Core. Readers on Core no
+  longer have to read the August 2026 history to set up a node.
 - Pool-wide Prometheus series no longer expire. The 24-hour idle timeout,
   meant to bound the `worker` label, also dropped `pool_blocks_found_total`
   a day after a block (a scraper then saw it restart at 0) and

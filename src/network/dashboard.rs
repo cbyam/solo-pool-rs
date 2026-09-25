@@ -746,6 +746,10 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 .kpi .val.muted { color: var(--muted); font-weight: 500; }
 .kpi .sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; font-variant-numeric: tabular-nums; }
 .kpi .sub.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A sub line that links to its FAQ answer (the Rejects card's miner line). */
+.kpi a.sub { display: block; text-decoration: none; }
+.kpi a.sub[hidden] { display: none; }
+.kpi a.sub:hover { text-decoration: underline; }
 .ok  { color: var(--ok); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
@@ -903,7 +907,7 @@ tr:last-child td { border-bottom: none; }
    stopped taking writes. Mining is unaffected; found blocks, the round and the
    best shares are what is at risk. The error text rides in the tooltip. */
 #store-pill {
-  display: none; align-items: center; gap: 0.35rem; cursor: help;
+  display: none; align-items: center; gap: 0.35rem; cursor: pointer; text-decoration: none;
   font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--bad); border: 1px solid var(--bad); border-radius: 5px;
   padding: 0.3rem 0.5rem;
@@ -968,11 +972,12 @@ tr:last-child td { border-bottom: none; }
     <button type="button" class="nav-btn" id="open-connect">Connect</button>
     <button type="button" class="nav-btn" id="open-settings">Settings</button>
     <a href="/metrics">Raw metrics &#8599;</a>
+    <a href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md" target="_blank" rel="noopener">Help &#8599;</a>
   </nav>
   <div class="rail-foot">
     <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
     <button id="node-pill" title="No fresh block template from bitcoind — see the Network section">&#9888; Node stale</button>
-    <span id="store-pill" role="status">&#9888; Stats not saving</span>
+    <a id="store-pill" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md#stats-not-saving" target="_blank" rel="noopener">&#9888; Stats not saving</a>
     <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
     <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
     <span id="rail-node" title="Age of the newest block template the pool built from bitcoind"><span id="node-led" class="led led-off rail-led"></span>Node &middot; <span id="rail-node-text">&mdash;</span></span>
@@ -1018,7 +1023,7 @@ tr:last-child td { border-bottom: none; }
       <div class="label">Rejects</div>
       <div class="val" id="v-reject-rate">&mdash;</div>
       <div class="sub" id="v-stale-rate">Stale: &mdash;</div>
-      <div class="sub trunc" id="v-reject-health"></div>
+      <a class="sub trunc" id="v-reject-health" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md#a-miner-is-marked-rejecting" target="_blank" rel="noopener" hidden></a>
     </div>
     <div class="kpi">
       <div class="label">Best share</div>
@@ -1688,7 +1693,7 @@ function renderStore(d) {
   const err = d.stats_store_error || '';
   pill.classList.toggle('show', !!err);
   pill.title = err
-    ? 'The stats database is not saving (' + err + '). Mining is unaffected; found blocks, the round and best shares will not survive a restart until it is fixed.'
+    ? 'The stats database is not saving (' + err + '). Mining is unaffected; found blocks, the round and best shares will not survive a restart until it is fixed. Click for what to check.'
     : '';
 }
 
@@ -1796,12 +1801,14 @@ async function refresh() {
       const name = worst.w.worker.includes('.') ? worst.w.worker.split('.')[1] : worst.w.worker;
       const more = flagged.length > 1 ? ' (+' + (flagged.length - 1) + ' more)' : '';
       healthEl.textContent = name + ': ' + worst.h.text + more;
-      healthEl.title = worst.h.title;
+      healthEl.title = worst.h.title + ' · click for what it means';
       healthEl.className = 'sub trunc ' + levelCls(worst.h.level);
+      healthEl.hidden = false;
     } else {
       healthEl.textContent = '';
       healthEl.title = '';
       healthEl.className = 'sub trunc';
+      healthEl.hidden = true;
     }
 
     // Workers table. Rows are built with DOM calls and textContent, never

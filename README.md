@@ -230,34 +230,12 @@ rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 ```
 
-### Which node build: BIP110/RDTS
-
-The pool copies its block template from the node, so it mines whatever chain
-the node follows. Node choice started deciding real money in August 2026:
-BIP110 (RDTS) entered mandatory signaling at block 961,632 with under 3% miner
-support, and enforcing nodes split onto a minority chain that stalled two
-blocks later.
-
-- **Knots 29.3.knots20260507 and earlier**: RDTS off by default. Follows the
-  majority chain. This is what the pool is deployed and tested against.
-- **Knots 29.3.knots20260508 and later**: RDTS enforcement is mandatory. These
-  builds reject the majority chain at 961,632 and follow the stalled minority
-  chain. **Do not point the pool at one**: every block found there is worthless
-  on the majority chain.
-- **Bitcoin Core**: does not implement BIP110. Follows the majority chain.
-  Tested in CI as a second target.
-
-If you run Knots for its stricter data-carrier policy, none of this takes that
-away. Policy shapes what enters your node's mempool and therefore what goes
-into the templates your pool mines, so a non-enforcing Knots still mines
-blocks without the data you filter. Only consensus enforcement, rejecting
-other miners' blocks, is what strands a node.
-
-As of August 2026 Knots has not announced dropping mandatory enforcement, so
-hold node upgrades at 20260507 until a release without it exists. You can
-verify which side your node is on yourself: a stranded node shows a frozen tip
-height (compare `getblockcount`, or the dashboard's Chain tip card, against any
-block explorer).
+If you run Knots, stay on 29.3.knots20260507 or earlier, or use Bitcoin Core.
+Knots 29.3.knots20260508 and later enforce BIP110 (RDTS) and follow the
+minority chain that stalled at block 961,633 in August 2026, so any block
+found against one of those nodes is worthless. Bitcoin Core does not
+implement BIP110. The E2E test mines against both Core and the pinned Knots
+build.
 
 ---
 
@@ -429,6 +407,8 @@ down. Pool-wide series never expire.
 If the stats database cannot be opened, or stops taking writes, the pool keeps
 mining and shows a red **Stats not saving** pill on the dashboard until the
 problem clears; found blocks, the round and best shares are what is at risk.
+The [FAQ](docs/faq.md) covers what each dashboard warning means and what to
+check.
 
 ---
 
@@ -449,6 +429,9 @@ cargo test --release --test block_acceptance -- --ignored --nocapture
 CI runs fmt, clippy, tests, and a release build on every PR and every push to
 main; the separate E2E workflow runs the block-acceptance test on the same
 triggers and once a week.
+
+Questions about a warning on the dashboard, a miner that will not stay
+connected, or a reject rate are answered in [docs/faq.md](docs/faq.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks a PR must pass,
 commit/PR conventions, a map of the source tree, and how releases are cut.
