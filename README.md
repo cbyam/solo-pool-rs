@@ -384,6 +384,16 @@ the Prometheus endpoint from one HTTP server. An empty value turns both off.
 | `POST /api/reset-best-hashrate` | Clear the all-time best-hashrate watermark (same guards as the settings POST) |
 | `GET /metrics` | Prometheus text exposition |
 
+**Reject health.** The dashboard judges each miner's rejects over the last
+hour and names the worst one on the Rejects card. Stale shares come from
+timing and never reach zero, so they are judged as a rate: amber at 1%, red
+at 2%, once a miner has sent about 200 shares. Every other reject (invalid,
+duplicate, low difficulty, bad extranonce) is a device fault that healthy
+hardware never produces, so the first one turns the miner amber, and
+repeated ones (1% or more) turn it red. A miner that stops misbehaving
+clears on its own as the hour rolls past, and its row notes the recovery
+for a day afterwards.
+
 The two `POST` routes (`/api/settings` and `/api/reset-best-hashrate`) refuse
 requests whose `Host` header is a public DNS name, or whose `Origin` names a
 different site. This stops DNS rebinding and cross-site form posts from
