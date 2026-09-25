@@ -409,12 +409,12 @@ pub fn compute_merkle_branch_raw(txids: &[[u8; 32]]) -> Vec<[u8; 32]> {
     level.extend(txids.iter().copied().map(Some));
 
     while level.len() > 1 {
-        if level.len() % 2 != 0 {
+        if !level.len().is_multiple_of(2) {
             let last = *level.last().expect("non-empty merkle level");
             level.push(last);
         }
 
-        let sibling_index = if path_index % 2 == 0 {
+        let sibling_index = if path_index.is_multiple_of(2) {
             path_index + 1
         } else {
             path_index - 1
