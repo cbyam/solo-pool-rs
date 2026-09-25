@@ -10,6 +10,17 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
+- Reject health on the dashboard. Each worker's rejects are judged over the
+  last hour: stale shares as a rate (amber at 1%, red at 2%, once there are
+  about 200 shares to judge), every other reject as a device fault that
+  should never happen (amber at the first, red when repeated). The Rejects
+  card turns amber or red and names the worst miner, the Workers card counts
+  the miners that need a look, and each flagged worker row carries a tag
+  saying why. A miner that recovers clears on its own as the hour rolls
+  past, and its row shows "recovered" for a day. `/stats` gains the
+  per-worker fields behind it: `last_hour_accepted`, `last_hour_stale`,
+  `last_hour_other_rejects`, `last_other_reject_ts` and
+  `last_other_reject_reason`.
 - `solo-pool-rs --version` (`-V`) prints the version and `--help` (`-h`)
   prints usage; both exit without reading a config. Until now either flag
   was taken as a config path and boot failed.

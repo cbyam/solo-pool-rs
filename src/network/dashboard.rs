@@ -747,6 +747,7 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
 .kpi .sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; font-variant-numeric: tabular-nums; }
 .kpi .sub.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ok  { color: var(--ok); }
+.warn { color: var(--warn); }
 .bad { color: var(--bad); }
 .accent { color: var(--accent); }
 
@@ -786,6 +787,13 @@ tr:last-child td { border-bottom: none; }
 .led-off { background: var(--muted); opacity: 0.45; }
 .led-sm { width: 7px; height: 7px; margin-right: 0.3rem; }
 .col-led { text-align: center; }
+/* Reject-health tag beside a worker's reject count: amber/red while the worker
+   is misbehaving, muted once it has recovered. */
+.rj-tag {
+  display: inline-block; margin-left: 0.45rem; padding: 0.02rem 0.35rem;
+  font-size: 0.68rem; border: 1px solid currentColor; border-radius: 4px;
+}
+.rj-tag.recovered { color: var(--muted); border-color: var(--border); }
 /* New chain tip: pulse the number itself in the accent color (two beats),
    matching the other highlighted values instead of flashing the background. */
 @keyframes blockPulse {
@@ -993,12 +1001,13 @@ tr:last-child td { border-bottom: none; }
       <div class="label">Miners</div>
       <div class="val" id="v-miners">&mdash;</div>
       <div class="sub"><span id="v-workers-online">Online: &mdash;</span> &middot; <span id="v-workers-degraded">Degraded: &mdash;</span></div>
-      <div class="sub" id="v-workers-offline">Offline: &mdash;</div>
+      <div class="sub"><span id="v-workers-offline">Offline: &mdash;</span> &middot; <span id="v-workers-rejecting" title="Workers whose rejects in the last hour need a look">Rejecting: &mdash;</span></div>
     </div>
     <div class="kpi">
       <div class="label">Rejects</div>
       <div class="val" id="v-reject-rate">&mdash;</div>
       <div class="sub" id="v-stale-rate">Stale: &mdash;</div>
+      <div class="sub trunc" id="v-reject-health"></div>
     </div>
     <div class="kpi">
       <div class="label">Best share</div>
@@ -1242,6 +1251,69 @@ function workerLed(w, nowSec) {
     return { cls: 'led-warn', title: 'Degraded — no share in ' + fmtUptime(nowSec - w.last_submit_ts) + ' (well past its usual cadence)' };
   }
   return { cls: 'led-on', title: 'Online' };
+}
+
+// Reject health, judged per worker over the last hour (the /stats last_hour_*
+// fields), so a miner that stops misbehaving clears on its own.
+//   Stale rejects come from timing (work that outlived its job) and cannot
+//   reach zero, so they are judged as a rate, and only once there are enough
+//   shares for a rate to mean anything.
+//   Every other reject (invalid, duplicate, low difficulty, bad extranonce) is
+//   a device fault that honest hardware never sends, so one is enough to flag.
+const STALE_WATCH_PCT = 1;      // amber
+const STALE_ACT_PCT = 2;        // red
+const STALE_MIN_SHARES = 200;   // about 50 minutes at the 15 s target
+const OTHER_ACT_PCT = 1;        // red once device faults are repeated and
+const OTHER_ACT_MIN = 3;        // at least this many
+const RECOVERED_SECS = 86400;   // a cleared fault stays visible for a day
+const HEALTH_RANK = { ok: 0, recovered: 1, watch: 2, act: 3 };
+
+function otherRejectText(other) {
+  return Object.entries(other)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `${n} ${rejectLabel(r).toLowerCase()}`)
+    .join(', ');
+}
+
+// { level: ok | recovered | watch | act, text, title } for one worker.
+function rejectHealth(w, nowSec) {
+  const other = w.last_hour_other_rejects || {};
+  const otherN = Object.values(other).reduce((a, n) => a + n, 0);
+  const stale = w.last_hour_stale || 0;
+  const total = (w.last_hour_accepted || 0) + stale + otherN;
+  const stalePct = total > 0 ? stale / total * 100 : 0;
+  const otherPct = total > 0 ? otherN / total * 100 : 0;
+  const staleJudged = total >= STALE_MIN_SHARES;
+
+  const parts = [];
+  let level = 'ok';
+  if (otherN > 0) {
+    level = (otherN >= OTHER_ACT_MIN && otherPct >= OTHER_ACT_PCT) ? 'act' : 'watch';
+    parts.push(otherRejectText(other) + ' · ' + fmtUptime(nowSec - w.last_other_reject_ts) + ' ago');
+  }
+  if (staleJudged && stalePct >= STALE_WATCH_PCT) {
+    if (stalePct >= STALE_ACT_PCT) level = 'act';
+    else if (level === 'ok') level = 'watch';
+    parts.push('stale ' + stalePct.toFixed(1) + '%');
+  }
+  if (level !== 'ok') {
+    return {
+      level,
+      text: parts.join(' · '),
+      title: 'Last hour: ' + total.toLocaleString() + ' shares, ' + stale.toLocaleString() +
+        ' stale' + (otherN ? ', ' + otherRejectText(other) : ''),
+    };
+  }
+  const since = nowSec - (w.last_other_reject_ts || 0);
+  if (w.last_other_reject_ts > 0 && since < RECOVERED_SECS) {
+    const reason = rejectLabel(w.last_other_reject_reason || '').toLowerCase();
+    return {
+      level: 'recovered',
+      text: 'recovered · last ' + reason + ' ' + fmtUptime(since) + ' ago',
+      title: 'No device rejects in the last hour',
+    };
+  }
+  return { level: 'ok', text: '', title: '' };
 }
 // Timestamp (ms) of the last successful /stats refresh. Drives the rail
 // connectivity LED: green while updates are landing, grey once they go stale.
@@ -1684,6 +1756,31 @@ async function refresh() {
     document.getElementById('v-workers-offline').textContent = 'Offline: ' + offlineCount;
     document.getElementById('v-workers-degraded').textContent = 'Degraded: ' + degradedCount;
 
+    // Reject health: count the workers that need a look, and name the worst
+    // one on the Rejects card so it can be found without opening the table.
+    const health = workers.map(w => ({ w, h: rejectHealth(w, nowSecKpi) }));
+    const flagged = health.filter(x => x.h.level === 'watch' || x.h.level === 'act');
+    const worst = health
+      .filter(x => x.h.level !== 'ok')
+      .sort((a, b) => HEALTH_RANK[b.h.level] - HEALTH_RANK[a.h.level])[0];
+    const levelCls = lv => (lv === 'act' ? 'bad' : lv === 'watch' ? 'warn' : '');
+    const rejEl = document.getElementById('v-workers-rejecting');
+    rejEl.textContent = 'Rejecting: ' + flagged.length;
+    rejEl.className = flagged.length ? levelCls(worst.h.level) : '';
+    document.getElementById('v-reject-rate').className = 'val ' + levelCls(worst ? worst.h.level : 'ok');
+    const healthEl = document.getElementById('v-reject-health');
+    if (worst) {
+      const name = worst.w.worker.includes('.') ? worst.w.worker.split('.')[1] : worst.w.worker;
+      const more = flagged.length > 1 ? ' (+' + (flagged.length - 1) + ' more)' : '';
+      healthEl.textContent = name + ': ' + worst.h.text + more;
+      healthEl.title = worst.h.title;
+      healthEl.className = 'sub trunc ' + levelCls(worst.h.level);
+    } else {
+      healthEl.textContent = '';
+      healthEl.title = '';
+      healthEl.className = 'sub trunc';
+    }
+
     // Workers table. Rows are built with DOM calls and textContent, never
     // from HTML strings: worker names are miner-supplied, and building nodes
     // means there is no escaping step to get wrong or forget.
@@ -1722,7 +1819,7 @@ async function refresh() {
             cell(fmtHr(w.hashrate_3h_hps, false)),
             cell(fmtHr(w.hashrate_24h_hps, false)),
             cell(w.shares_accepted.toLocaleString()),
-            cell(w.shares_rejected.toLocaleString(), null, rejectBreakdown(w)),
+            rejectCell(w, nowSec),
             cell(fmtDiff(w.best_share_difficulty)),
             cell(lastShareAgo),
             cell(uptime),
@@ -1751,6 +1848,21 @@ const REJECT_LABELS = {
 
 function rejectLabel(reason) {
   return REJECT_LABELS[reason] || reason;
+}
+
+// Reject count plus, when the worker needs a look or has just recovered, a
+// tag saying why (see rejectHealth).
+function rejectCell(w, nowSec) {
+  const td = cell(w.shares_rejected.toLocaleString(), null, rejectBreakdown(w));
+  const h = rejectHealth(w, nowSec);
+  if (h.level !== 'ok') {
+    const tag = document.createElement('span');
+    tag.className = 'rj-tag ' + (h.level === 'act' ? 'bad' : h.level === 'watch' ? 'warn' : 'recovered');
+    tag.textContent = h.text;
+    tag.title = h.title;
+    td.appendChild(tag);
+  }
+  return td;
 }
 
 function rejectBreakdown(w) {

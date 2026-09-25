@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -40,6 +40,110 @@ const HASHRATE_WINDOW_24H: u64 = 86_400;
 /// Reaches 0.0 once the whole window postdates the estimate.
 fn window_overlap(elapsed: u64, window_secs: u64) -> f64 {
     (1.0 - elapsed as f64 / window_secs as f64).max(0.0)
+}
+
+/// Minutes in the trailing window behind each worker's reject health: long
+/// enough to judge a stale rate (about 240 shares at the 15 s target), short
+/// enough that a miner that recovers clears the same afternoon.
+const REJECT_WINDOW_MINUTES: u64 = 60;
+
+/// Non-stale rejects remembered per worker inside the window. Honest hardware
+/// sends none, so this only bounds a device that is failing badly.
+const MAX_RECENT_OTHER_REJECTS: usize = 256;
+
+/// Reject reasons caused by timing rather than by the device: work that
+/// outlived its job, found after a new block or after the job aged out of the
+/// history. They cannot reach zero. Every other reason is a device fault
+/// (failing chip, firmware bug, config mismatch) and should never happen.
+pub fn is_stale_reason(reason: &str) -> bool {
+    matches!(reason, "stale" | "job_not_found")
+}
+
+/// Accepted and stale-class counts for one wall-clock minute.
+#[derive(Clone, Copy, Default)]
+struct MinuteCounts {
+    minute: u64,
+    accepted: u32,
+    stale: u32,
+}
+
+/// A worker's accepted shares and rejects over the last
+/// `REJECT_WINDOW_MINUTES` whole minutes (the current one included). Counts
+/// live in a ring of minute buckets, so
+/// memory is fixed and old minutes drop out on their own: a miner that stops
+/// misbehaving clears without anyone resetting it.
+#[derive(Clone)]
+struct RejectWindow {
+    minutes: [MinuteCounts; REJECT_WINDOW_MINUTES as usize],
+    /// (unix seconds, reason) of each non-stale reject, oldest first.
+    other: VecDeque<(u64, &'static str)>,
+}
+
+impl Default for RejectWindow {
+    fn default() -> Self {
+        Self {
+            minutes: [MinuteCounts::default(); REJECT_WINDOW_MINUTES as usize],
+            other: VecDeque::new(),
+        }
+    }
+}
+
+impl RejectWindow {
+    fn bucket(&mut self, now: u64) -> &mut MinuteCounts {
+        let minute = now / 60;
+        let b = &mut self.minutes[(minute % REJECT_WINDOW_MINUTES) as usize];
+        if b.minute != minute {
+            *b = MinuteCounts {
+                minute,
+                ..Default::default()
+            };
+        }
+        b
+    }
+
+    fn record_accepted(&mut self, now: u64) {
+        let b = self.bucket(now);
+        b.accepted = b.accepted.saturating_add(1);
+    }
+
+    fn record_stale(&mut self, now: u64) {
+        let b = self.bucket(now);
+        b.stale = b.stale.saturating_add(1);
+    }
+
+    fn record_other(&mut self, now: u64, reason: &'static str) {
+        self.prune(now);
+        if self.other.len() == MAX_RECENT_OTHER_REJECTS {
+            self.other.pop_front();
+        }
+        self.other.push_back((now, reason));
+    }
+
+    fn prune(&mut self, now: u64) {
+        let cutoff = now.saturating_sub(REJECT_WINDOW_MINUTES * 60);
+        while self.other.front().is_some_and(|(ts, _)| *ts <= cutoff) {
+            self.other.pop_front();
+        }
+    }
+
+    /// (accepted, stale-class rejects, other rejects by reason) in the window
+    /// ending at `now`.
+    fn summary(&self, now: u64) -> (u64, u64, BTreeMap<String, u64>) {
+        let now_minute = now / 60;
+        let (mut accepted, mut stale) = (0u64, 0u64);
+        for b in &self.minutes {
+            if b.minute + REJECT_WINDOW_MINUTES > now_minute && b.minute <= now_minute {
+                accepted += u64::from(b.accepted);
+                stale += u64::from(b.stale);
+            }
+        }
+        let cutoff = now.saturating_sub(REJECT_WINDOW_MINUTES * 60);
+        let mut other = BTreeMap::new();
+        for (_, reason) in self.other.iter().filter(|(ts, _)| *ts > cutoff) {
+            *other.entry((*reason).to_string()).or_insert(0) += 1;
+        }
+        (accepted, stale, other)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -556,6 +660,20 @@ pub struct WorkerState {
     pub hashrate_10m_hps: f64,
     pub hashrate_3h_hps: f64,
     pub hashrate_24h_hps: f64,
+    /// Accepted shares in the last hour.
+    pub last_hour_accepted: u64,
+    /// Stale-class rejects (stale, unknown job) in the last hour.
+    pub last_hour_stale: u64,
+    /// Every other reject in the last hour, by reason. Honest hardware sends
+    /// none of these, so any entry points at this worker.
+    pub last_hour_other_rejects: BTreeMap<String, u64>,
+    /// When this worker's most recent non-stale reject arrived (unix seconds,
+    /// 0 if none since the pool started) and its reason. Outlives the hour so
+    /// the dashboard can show that a miner recovered.
+    pub last_other_reject_ts: u64,
+    pub last_other_reject_reason: Option<String>,
+    #[serde(skip)]
+    reject_window: RejectWindow,
 }
 
 impl PoolStats {
@@ -975,6 +1093,12 @@ impl PoolStats {
                     hashrate_10m_hps: 0.0,
                     hashrate_3h_hps: 0.0,
                     hashrate_24h_hps: 0.0,
+                    last_hour_accepted: 0,
+                    last_hour_stale: 0,
+                    last_hour_other_rejects: BTreeMap::new(),
+                    last_other_reject_ts: 0,
+                    last_other_reject_reason: None,
+                    reject_window: RejectWindow::default(),
                 },
             );
         }
@@ -1072,6 +1196,7 @@ impl PoolStats {
     pub fn worker_share_accepted(&self, worker: &str, difficulty: u64) {
         if let Some(mut state) = self.worker_states.get_mut(worker) {
             state.shares_accepted += 1;
+            state.reject_window.record_accepted(Self::now_secs());
             if difficulty > state.best_share_difficulty {
                 state.best_share_difficulty = difficulty;
             }
@@ -1089,12 +1214,20 @@ impl PoolStats {
         }
     }
 
-    pub fn worker_share_rejected(&self, worker: &str, reason: &str) {
+    pub fn worker_share_rejected(&self, worker: &str, reason: &'static str) {
         if let Some(mut state) = self.worker_states.get_mut(worker) {
             state.shares_rejected += 1;
             *state.reject_reasons.entry(reason.to_string()).or_insert(0) += 1;
             if reason == "stale" {
                 state.shares_stale += 1;
+            }
+            let now = Self::now_secs();
+            if is_stale_reason(reason) {
+                state.reject_window.record_stale(now);
+            } else {
+                state.reject_window.record_other(now, reason);
+                state.last_other_reject_ts = now;
+                state.last_other_reject_reason = Some(reason.to_string());
             }
         }
     }
@@ -1269,6 +1402,10 @@ impl PoolStats {
                     .get(worker)
                     .map(|v| *v.value())
                     .unwrap_or(state.best_share_difficulty);
+                let (accepted, stale, other) = state.reject_window.summary(now);
+                state.last_hour_accepted = accepted;
+                state.last_hour_stale = stale;
+                state.last_hour_other_rejects = other;
                 state
             })
             .collect();
@@ -1299,6 +1436,12 @@ impl PoolStats {
                 hashrate_10m_hps: 0.0,
                 hashrate_3h_hps: 0.0,
                 hashrate_24h_hps: 0.0,
+                last_hour_accepted: 0,
+                last_hour_stale: 0,
+                last_hour_other_rejects: BTreeMap::new(),
+                last_other_reject_ts: 0,
+                last_other_reject_reason: None,
+                reject_window: RejectWindow::default(),
             });
         }
 
@@ -1822,6 +1965,68 @@ mod tests {
         assert_eq!(state.reject_reasons.get("low_difficulty"), Some(&1));
         assert_eq!(state.reject_reasons.get("duplicate"), Some(&1));
         assert_eq!(state.reject_reasons.get("invalid"), None);
+    }
+
+    #[test]
+    fn reject_window_counts_the_last_hour_and_forgets_older_minutes() {
+        let mut win = RejectWindow::default();
+        // Start on a minute boundary: the window is 60 whole minutes, so the
+        // oldest partial minute would otherwise be recycled for the newest.
+        let t0 = 60 * 16_667;
+        for i in 0..240 {
+            win.record_accepted(t0 + i * 15);
+        }
+        win.record_stale(t0 + 100);
+        win.record_other(t0 + 200, "invalid");
+        win.record_other(t0 + 300, "duplicate");
+        win.record_other(t0 + 400, "invalid");
+
+        let (accepted, stale, other) = win.summary(t0 + 3_599);
+        assert_eq!(accepted, 240);
+        assert_eq!(stale, 1);
+        assert_eq!(other.get("invalid"), Some(&2));
+        assert_eq!(other.get("duplicate"), Some(&1));
+
+        // An hour after the last fault the miner reads clean again: the
+        // faults and the minutes they landed in have left the window.
+        let (_, stale, other) = win.summary(t0 + 400 + 3_600);
+        assert_eq!(stale, 0);
+        assert!(other.is_empty(), "recovered miner still flagged: {other:?}");
+    }
+
+    #[test]
+    fn reject_window_bounds_a_flood_of_device_faults() {
+        let mut win = RejectWindow::default();
+        for i in 0..(MAX_RECENT_OTHER_REJECTS as u64 + 50) {
+            win.record_other(1_000_000 + i, "invalid");
+        }
+        assert_eq!(win.other.len(), MAX_RECENT_OTHER_REJECTS);
+    }
+
+    #[test]
+    fn stale_class_rejects_do_not_mark_a_device_fault() {
+        let stats = PoolStats::new_with_store(None);
+        stats.mark_worker_online("w", 1_000);
+        stats.worker_share_accepted("w", 2_000);
+        stats.worker_share_rejected("w", "stale");
+        stats.worker_share_rejected("w", "job_not_found");
+
+        let snap = stats.snapshot();
+        let w = snap.worker_states.iter().find(|w| w.worker == "w").unwrap();
+        assert_eq!(w.last_hour_accepted, 1);
+        assert_eq!(w.last_hour_stale, 2);
+        assert!(w.last_hour_other_rejects.is_empty());
+        assert_eq!(w.last_other_reject_ts, 0);
+
+        stats.worker_share_rejected("w", "low_difficulty");
+        let snap = stats.snapshot();
+        let w = snap.worker_states.iter().find(|w| w.worker == "w").unwrap();
+        assert_eq!(w.last_hour_other_rejects.get("low_difficulty"), Some(&1));
+        assert!(w.last_other_reject_ts > 0);
+        assert_eq!(
+            w.last_other_reject_reason.as_deref(),
+            Some("low_difficulty")
+        );
     }
 
     #[test]
