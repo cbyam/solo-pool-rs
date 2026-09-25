@@ -7,8 +7,8 @@ the source is laid out, and how releases are cut.
 ## Reporting issues
 
 - **Bugs and feature requests:** open a GitHub issue. Include your version
-  (the release tag, the dashboard footer, or the `starting version=` line in
-  the log), relevant config (redact your address/credentials), and log
+  (`solo-pool-rs --version`, the dashboard footer, or the `version=` field
+  of the `solo-pool-rs starting` log line), relevant config (redact your address/credentials), and log
   excerpts.
 - **Security vulnerabilities:** do **not** open a public issue. Follow the
   private reporting process in [SECURITY.md](SECURITY.md).
@@ -32,8 +32,9 @@ SOLO_POOL_LOGGING__LEVEL=debug cargo run -- config.toml
 The log filter comes from `[logging] level` in the config (`RUST_LOG` is not
 read), so the environment override above is the quick way to raise it.
 
-The minimum supported Rust version (MSRV) is **1.90** (edition 2021). CI builds
-on the latest stable only, so the MSRV is not tested.
+The minimum supported Rust version (MSRV) is **1.90** (edition 2021). A CI job
+checks the build on exactly that toolchain; keep it in step with
+`rust-version` in `Cargo.toml`.
 
 ## Before you open a PR
 
@@ -150,9 +151,9 @@ Pushing a `v*` tag triggers two workflows automatically:
   `ghcr.io/cbyam/solo-pool-rs:0.6.7`). Every push to `main` also publishes
   `:edge`.
 
-Both workflows treat a pre-release tag such as `v1.0.0-rc.1` like any other:
-`:latest` moves to it and the GitHub Release is not marked as a pre-release.
-Only the `X.Y` tag is skipped.
+A pre-release tag such as `v1.0.0-rc.1` publishes a GitHub pre-release and
+the image tag `1.0.0-rc.1` only; `X.Y` and `latest` stay on the newest
+release.
 
 So the only manual steps are the changelog promotion, the version bump, and the
 tag push. CI produces the artifacts and the GitHub Release. After the image is
