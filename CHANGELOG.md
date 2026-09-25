@@ -9,7 +9,39 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- `solo-pool-rs --version` (`-V`) prints the version and `--help` (`-h`)
+  prints usage; both exit without reading a config. Until now either flag
+  was taken as a config path and boot failed.
+- `pool_zmq_reconnects_total` counts ZMQ listener reconnects. It had been
+  declared since the metrics were introduced but was never written.
+- CI checks the build on the declared minimum Rust version (1.90), so a
+  dependency that raises it fails a PR instead of a user's build.
+
 ### Changed
+- The example config's vardiff range is now 512 to 4,194,304 (was 4096 to
+  65536), so the shipped defaults cover the whole solo range on one pool:
+  down to about 10 GH/s before a device's share interval exceeds the idle
+  timeout, and up to about 1.2 PH/s on one connection, where the old
+  ceiling stopped at about 19 TH/s and left any current Antminer submitting
+  shares far faster than the target. `initial_difficulty` stays 4096.
+  Vardiff is per connection, so a wide range costs a small miner nothing,
+  and shares are credited at the difficulty they cleared, so a lower floor
+  does not distort hashrate. Existing config files are unaffected; copy the
+  two values to adopt them.
+- `[sv2] enabled` defaults to true. A `[sv2]` section without it, or any
+  `SOLO_POOL_SV2__*` environment override against a file with no `[sv2]
+  enabled`, used to fail at boot with "missing field".
+- SV2 `SetupConnection` with a version range that does not include 2 gets
+  `protocol-version-mismatch`. A range entirely below 2 used to be accepted
+  and answered with a version the pool does not speak.
+- An SV2 submit for an unknown or superseded job no longer counts toward
+  `max_invalid_shares`, matching SV1. Stale work around a block change is
+  expected, and counting it could disconnect a healthy device.
+- A pre-release tag (e.g. `v1.0.0-rc.1`) publishes a GitHub pre-release and
+  only its own image tag; `latest` and `X.Y` stay on the newest release.
+- CI and release builds install the SQLite headers instead of libzmq, which
+  none of them linked.
 - Stratum V2 dependencies moved to the SRI v1.12.0 set: `binary_sv2` 7,
   `framing_sv2` 8, `codec_sv2` 7, `common_messages_sv2` 9, `mining_sv2` 12
   and `noise_sv2` 2. Upstream reworked the codec and the Noise transport,
@@ -51,6 +83,9 @@ everything else bumps the **patch** version.
   steps move to CONTRIBUTING.md.
 
 ### Fixed
+- Environment overrides now show in the log (`Config override from
+  environment: section.key`). The lines were emitted before logging was set
+  up, so they never appeared.
 - `packaging/install.sh --list` now marks the active version. A trailing slash
   in the path comparison had kept the marker from ever showing.
 

@@ -31,8 +31,9 @@ not yet backed by a test, it is called out.
 
 The pool reads one TOML file. Its path is the first positional argument, or the
 value of `--config <path>`, or `config.toml` in the working directory when no
-argument is given. There is no search path. There are no other command-line
-flags.
+argument is given. There is no search path. The only other flags are
+`--version` (`-V`), which prints `solo-pool-rs <version>`, and `--help`
+(`-h`); both exit 0 without reading a config.
 
 Promised for every key listed below: its section and name, its type, its
 meaning, and its validation rule. A key that is required stays required only
@@ -56,7 +57,7 @@ A leading `~/` in a path value expands to the home directory in
 | | `idle_timeout_secs` | integer, required | Disconnect an authorized session after this long with no inbound message. |
 | | `found_block_dir` | string, default `found-blocks` | Directory for the found-block archive. See §8. |
 | | `network` | string, optional | If set, one of `mainnet`, `testnet`, `testnet4`, `signet`, `regtest`. A mismatch with the node's chain is fatal at boot. |
-| `[sv2]` | `enabled` | bool | Accept Stratum V2 on the shared port. The whole section may be omitted (SV2 on). If the section header is present, or any `SOLO_POOL_SV2__*` override is set, the key is required. |
+| `[sv2]` | `enabled` | bool, default true | Accept Stratum V2 on the shared port. The whole section may be omitted. |
 | | `persist_authority_key` | bool, default true | Keep the Noise authority key across restarts. |
 | | `authority_key_file` | string, default `sv2-authority.key` | Where the key lives. Created on first start. Must be non-empty when persistence is on. |
 | | `cert_validity_secs` | integer, default 31536000 | Validity window of the per-connection Noise certificate. |
@@ -136,7 +137,8 @@ Plain JSON-RPC lines over TCP, `\n` or `\r\n` terminated.
   the reply leaves the `version-rolling` key out. The reply always carries
   `minimum-difficulty: true` with the session's current difficulty as the
   value; a value requested by the miner is not applied. `subscribe-extranonce`
-  is acknowledged; see "Before this is final" for what that currently means.
+  is acknowledged. A session's extranonce1 never changes, so
+  `mining.set_extranonce` is never sent.
 - **Suggest difficulty:** `[n]` or bare `n`, integer or float (a float is
   truncated), finite and at least 1. Each suggestion resets the difficulty,
   clamped to the vardiff floor and ceiling, and is pushed with
@@ -163,10 +165,9 @@ Plain JSON-RPC lines over TCP, `\n` or `\r\n` terminated.
   boot log, the dashboard Connect dialog, and `GET /api/info`. Miners may pin
   it; miners that do not connect exactly the same way. The certificate is
   valid from the handshake for `cert_validity_secs`.
-- **SetupConnection:** mining sub-protocol only, spoken at version 2. A
-  `min_version` above 2 gets `protocol-version-mismatch`; a `max_version`
-  below 2 is not refused (see "Before this is final"); another sub-protocol
-  gets `unsupported-protocol`; `REQUIRES_STANDARD_JOBS` or
+- **SetupConnection:** mining sub-protocol only, version 2 only. A version
+  range that does not include 2 gets `protocol-version-mismatch`; another
+  sub-protocol gets `unsupported-protocol`; `REQUIRES_STANDARD_JOBS` or
   `REQUIRES_WORK_SELECTION` gets `unsupported-feature-flags` with `flags` set
   to both, whichever one the miner sent. Version rolling is always available with mask
   `1fffe000`; the mask is not negotiated. `SetupConnectionSuccess.flags` is 0.
@@ -181,8 +182,8 @@ Plain JSON-RPC lines over TCP, `\n` or `\r\n` terminated.
   and every other message are ignored.
 - **Submit:** `SubmitSharesExtended`. Rejections use the string codes
   `bad-extranonce-size`, `stale-job`, `block-submit-failed`, `stale`,
-  `duplicate`, `low_difficulty`, `invalid`. An unmapped job id counts as
-  invalid on V2.
+  `duplicate`, `low_difficulty`, `invalid`. An unknown or superseded job id
+  gets `stale-job` and, as on V1, does not count as invalid.
 
 ### 4. One port, connection policy
 
@@ -314,6 +315,7 @@ covered.
 | `pool_job_broadcast_miners` | gauge | |
 | `pool_job_height` | gauge | |
 | `pool_rpc_fallback_used_total` | counter | |
+| `pool_zmq_reconnects_total` | counter | |
 | `pool_worker_difficulty` | gauge | `worker` |
 | `pool_vardiff_change_ratio` | summary | |
 | `pool_vardiff_retargets_total` | counter | `direction`, `worker` |
@@ -353,8 +355,9 @@ bounds the cardinality of the `worker` label and is part of the surface.
   that user, config at `/app/config.toml` by default (the single command
   argument), ports 3333 and 9090 exposed, SQLite present, libzmq compiled
   into the binary. Tags: `edge` for every push to main; for each release
-  `X.Y.Z`, `X.Y`, and `latest`. Platforms `linux/amd64` and `linux/arm64` in
-  one manifest.
+  `X.Y.Z`, `X.Y`, and `latest`; for a pre-release such as `1.0.0-rc.1`, only
+  its own version tag. Platforms `linux/amd64` and `linux/arm64` in one
+  manifest.
 - **Umbrel** relies on: the positional config path, the env-override scheme
   for `bitcoin_rpc.url`, `bitcoin_rpc.user`, `bitcoin_rpc.password`,
   `zmq.hashblock_endpoint` and `sv2.authority_key_file`, a writable
@@ -447,22 +450,5 @@ Each item is a place where the code or the shipped docs currently disagree
 with the text above, or a behaviour to settle before it is promised. Closing
 this list is a gate in `TODO.md` under "Before 1.0".
 
-1. `subscribe-extranonce` is acknowledged in the `mining.configure` reply but
-   the pool never sends `mining.set_extranonce`. Either send it on extranonce
-   changes or stop acknowledging the extension.
-2. `pool_zmq_reconnects_total` is declared and never written. Emit it or drop
-   it before the metric table is frozen.
-3. `[sv2] enabled` is required when the section header is present, and any
-   `SOLO_POOL_SV2__*` override creates the section, so an override against a
-   file without `[sv2] enabled` fails at boot. Give the key a default of true.
-4. The MSRV of 1.90 is declared in `Cargo.toml` and the README but CI builds
-   on stable only, so the claim is not verified.
-5. The stats-store open failure is a warning, not an error, so a locked file
+1. The stats-store open failure is a warning, not an error, so a locked file
    silently disables the persistence promised in §8.
-6. SetupConnection accepts a `max_version` below 2 and answers at that
-   version instead of refusing it.
-7. A submit for an unknown job counts as invalid on V2 but not on V1. Align
-   the two before the rule is promised.
-8. A pre-release tag such as `v1.0.0-rc.1` moves the `latest` image tag and
-   publishes a GitHub Release not marked as a pre-release. Gate both on the
-   tag having no pre-release suffix before the first rc.
