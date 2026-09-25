@@ -449,7 +449,10 @@ async fn handle_setup_connection(
         )
         .await;
     }
-    if setup.min_version > SV2_PROTOCOL_VERSION {
+    // Version 2 is the only one this pool speaks, so the device's range must
+    // include it. A range entirely below 2 used to be accepted and answered
+    // with a version the pool does not implement.
+    if setup.min_version > SV2_PROTOCOL_VERSION || setup.max_version < SV2_PROTOCOL_VERSION {
         return setup_error(
             writer,
             "protocol-version-mismatch",
@@ -473,7 +476,7 @@ async fn handle_setup_connection(
         )
         .await;
     }
-    let used_version = SV2_PROTOCOL_VERSION.min(setup.max_version);
+    let used_version = SV2_PROTOCOL_VERSION;
     session.setup_done = true;
     debug!(peer = %session.peer, used_version, "SV2 SetupConnection");
 
@@ -695,14 +698,15 @@ async fn handle_submit(
     let job_entry = match job_entry {
         Some(e) => e,
         None => {
+            // Not counted toward the invalid-share disconnect counter, as on
+            // SV1: work for a job that has aged out of the id map or the
+            // engine's history is stale, which is expected around block
+            // changes rather than malicious.
             metrics::share_rejected("job_not_found", &worker);
             session.stats.share_rejected();
             session
                 .stats
                 .worker_share_rejected(&worker, "job_not_found");
-            if session.guard.invalid_shares.record_invalid() {
-                return Flow::Disconnect("too many invalid shares".into());
-            }
             return reject(session, writer, submit.sequence_number, "stale-job").await;
         }
     };
@@ -948,6 +952,7 @@ async fn reject(session: &Sv2Session, writer: &mut NoiseWriter, seq: u32, code: 
 mod tests {
     use super::*;
     use binary_sv2::{Str0255Owned, U256Owned};
+    use common_messages_sv2::SetupConnectionOwned;
     use mining_sv2::OpenExtendedMiningChannelOwned;
 
     fn example_config() -> Config {
@@ -965,6 +970,42 @@ mod tests {
             min_extranonce_size,
         })
         .unwrap()
+    }
+
+    fn setup_payload(min_version: u16, max_version: u16) -> Vec<u8> {
+        binary_sv2::to_bytes(SetupConnectionOwned {
+            protocol: Protocol::MiningProtocol,
+            min_version,
+            max_version,
+            flags: 0,
+            endpoint_host: Str0255Owned::try_from("").unwrap(),
+            endpoint_port: 0,
+            vendor: Str0255Owned::try_from("bitaxe").unwrap(),
+            hardware_version: Str0255Owned::try_from("").unwrap(),
+            firmware: Str0255Owned::try_from("").unwrap(),
+            device_id: Str0255Owned::try_from("").unwrap(),
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn setup_requires_a_version_range_that_includes_2() {
+        let cfg = example_config();
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (mut writer, _reader) = noise::tests::transport_pair(65_536).await;
+
+        for (min, max, accepted) in [(2, 2, true), (1, 3, true), (1, 1, false), (3, 4, false)] {
+            let stats = PoolStats::new_with_store(None);
+            let mut session = Sv2Session::new(peer, &cfg, vec![0; 4], stats);
+            let mut payload = setup_payload(min, max);
+            let flow = handle_setup_connection(&mut session, &mut writer, &mut payload).await;
+            assert_eq!(
+                matches!(flow, Flow::Continue),
+                accepted,
+                "range {min}..={max}"
+            );
+            assert_eq!(session.setup_done, accepted, "range {min}..={max}");
+        }
     }
 
     #[tokio::test]
