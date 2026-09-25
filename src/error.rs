@@ -135,8 +135,31 @@ impl PoolError {
                 StratumErrCode::NotSubscribed,
                 StratumErrCode::NotSubscribed.message(),
             ),
+            // Stratum V1 has no code for this, so it keeps 20, but the text
+            // says what is wrong: mis-sized firmware otherwise logs only
+            // "Unknown problem" and the operator has nothing to go on.
+            PoolError::BadExtranonceSize { .. } => {
+                return serde_json::json!([StratumErrCode::Unknown as u32, self.to_string(), null]);
+            }
             _ => (StratumErrCode::Unknown, StratumErrCode::Unknown.message()),
         };
         serde_json::json!([code as u32, msg, null])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PoolError;
+
+    #[test]
+    fn a_wrong_extranonce_size_tells_the_miner_what_is_wrong() {
+        let e = PoolError::BadExtranonceSize {
+            got: 8,
+            expected: 4,
+        }
+        .to_stratum_error();
+        assert_eq!(e[0], 20, "Stratum V1 has no dedicated code; keep 20");
+        assert_eq!(e[1], "Wrong extranonce2 size: got 8 bytes, expected 4");
+        assert!(e[2].is_null());
     }
 }
