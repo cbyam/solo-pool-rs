@@ -60,8 +60,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install libzmq
-        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+      # rusqlite links the system SQLite. libzmq needs no package: zmq-sys
+      # compiles it from source and links it statically.
+      - name: Install SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
 
       - name: Install ${{ matrix.node.name }} (bitcoind + bitcoin-cli)
         run: |

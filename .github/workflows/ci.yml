@@ -20,9 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # tmq → zmq → libzmq: required to build and link.
-      - name: Install libzmq
-        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+      # rusqlite links the system SQLite. libzmq needs no package: zmq-sys
+      # compiles it from source and links it statically.
+      - name: Install SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -41,3 +42,22 @@ jobs:
 
       - name: Build (release)
         run: cargo build --release
+
+  msrv:
+    # rust-version in Cargo.toml is a promise; build on exactly that toolchain
+    # so a dependency bump that raises it fails here instead of on a user's
+    # machine. Keep the version below in step with Cargo.toml.
+    name: MSRV (1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@1.90
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --locked --all-targets
