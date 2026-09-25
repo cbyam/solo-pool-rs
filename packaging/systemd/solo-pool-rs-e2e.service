@@ -18,8 +18,7 @@ TimeoutStartSec=45min
 
 # Keep the build off the repo's target dir so a scheduled run never contends
 # with, or overwrites, a build in the working tree. The live pool runs a copy
-# installed by packaging/install.sh, so this is hygiene, not a live-binary
-# guard.
+# installed by packaging/install.sh, so a build here cannot change it.
 Environment=CARGO_TARGET_DIR=/var/tmp/solo-pool-rs-e2e-target
 
 # Never let the test disturb the running pool.

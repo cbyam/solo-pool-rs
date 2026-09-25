@@ -81,7 +81,7 @@ A leading `~/` in a path value expands to the home directory in
 | | `max_worker_name_len` | integer, default 128 | Longest accepted worker name. |
 | | `max_authorizations_per_session` | integer, default 8 | Times one connection may switch to a new worker identity. Re-authorizing the current name does not count. Zero disables. |
 | `[metrics]` | `prometheus_addr` | string, required | HTTP bind for the dashboard and `/metrics`. Empty disables both. |
-| | `stats_db_path` | string, optional | SQLite file for persistent state. Omitted or empty disables persistence; the pool still runs. |
+| | `stats_db_path` | string, optional | SQLite file for persistent state. Omitted or empty disables persistence; the pool still runs. A configured file that will not open or stops taking writes never stops mining; see §8. |
 | | `allow_runtime_settings` | bool, default true | Whether the two mutating HTTP routes are enabled. |
 | | `allowed_hosts` | list of strings, default empty | Extra `Host` names accepted on mutating routes. Bare hostnames only, optional port. |
 | `[logging]` | `level` | string, required | A `tracing` filter. An unparseable value falls back to `info`. |
@@ -268,7 +268,8 @@ Served on `prometheus_addr`. No authentication. Intended for a trusted LAN.
 `worker_states[]`, `uptime_secs`, `session_best_hashrate_hps`,
 `last_block_worker`, `last_block_hash`, `last_block_ts`, `round_work`,
 `round_start_ts`, `found_blocks[]`, `template_age_secs` (nullable),
-`template_error` (nullable). `est_difficulty_change_pct` is null until the
+`template_error` (nullable), `stats_store_error` (nullable: why a configured
+stats database is not saving). `est_difficulty_change_pct` is null until the
 node has been polled and briefly after each retarget. Before the first block,
 `last_block_worker` and `last_block_hash` hold the placeholder `"—"`; without
 a stats database `round_start_ts` is 0. Each `worker_hashrates[]` entry:
@@ -324,9 +325,17 @@ covered.
 | `pool_vardiff_change_ratio` | summary | |
 | `pool_vardiff_retargets_total` | counter | `direction`, `worker` |
 | `pool_hashrate_estimated_hps` | gauge | `worker` |
+| `pool_worker_online` | gauge | `worker` |
+| `pool_worker_last_share_timestamp_seconds` | gauge | `worker` |
+| `pool_stats_store_ok` | gauge | |
 
-Any series not written for 24 hours is dropped from the exposition. This
-bounds the cardinality of the `worker` label and is part of the surface.
+A series with a `worker` label is dropped once it has gone 24 hours without
+an update, which bounds the cardinality of that label. `pool_worker_online`
+and `pool_worker_last_share_timestamp_seconds` are refreshed for as long as
+the pool keeps the worker (24 hours after it goes offline), so they outlive
+the worker's other series. Series without a `worker` label never expire; the
+unlabelled and fixed-reason counters exist from boot at zero.
+`pool_stats_store_ok` is exported only when `stats_db_path` is set.
 
 ### 8. Files on disk
 
@@ -339,7 +348,11 @@ bounds the cardinality of the `worker` label and is part of the surface.
   six months of ten-minute hashrate samples, per-worker all-time best shares
   (top 512), the last 24 hours of accepted shares per worker (to restore the
   3h and 24h hashrate windows), and the dashboard-saved payout address.
-  Deleting it loses exactly that list.
+  Deleting it loses exactly that list. If the file cannot be opened at boot
+  the pool mines without persistence; if a write fails later, the pool keeps
+  mining and the next successful write clears the condition. Either way the
+  failure is logged at error level and reported in `/stats`
+  (`stats_store_error`), on the dashboard, and as `pool_stats_store_ok 0`.
 - **Found-block archive** at `found_block_dir`: `block_<height>_<hash>.hex`
   holding the raw block, moved to `submitted/` once the node has it and to
   `rejected/` if the node rejects it outright on replay. A file still at the
@@ -393,7 +406,8 @@ bounds the cardinality of the `worker` label and is part of the surface.
 - Exits 1 on any configuration or boot error, with two exceptions that only
   warn and keep running: an HTTP address that cannot be bound (the pool runs
   without dashboard and metrics) and a stats database that will not open (it
-  runs without persistence). No other exit codes are defined.
+  runs without persistence and reports that, see §8). No other exit codes are
+  defined.
 
 ## What is not covered
 
@@ -454,5 +468,5 @@ Each item is a place where the code or the shipped docs currently disagree
 with the text above, or a behaviour to settle before it is promised. Closing
 this list is a gate in `TODO.md` under "Before 1.0".
 
-1. The stats-store open failure is a warning, not an error, so a locked file
-   silently disables the persistence promised in §8.
+Nothing is open. An item goes here as soon as the code or the docs drift from
+the text above.

@@ -10,6 +10,17 @@ everything else bumps the **patch** version.
 ## [Unreleased]
 
 ### Added
+- A stats database that fails to open or stops taking writes now raises an
+  alarm. The pool still mines without it, but the failure is logged at
+  error level, shown as a red "Stats not saving" pill on the
+  dashboard, returned in `/stats` as `stats_store_error`, and exported as
+  `pool_stats_store_ok 0`. The next successful write clears it. Until now
+  a locked or unwritable file left one warning in the log while found
+  blocks, the round and best shares quietly stopped surviving restarts.
+- `pool_worker_online{worker}` and
+  `pool_worker_last_share_timestamp_seconds{worker}`, refreshed for as long
+  as the pool knows the worker, so an alert rule can catch a miner that is
+  down, including one that has been down for hours.
 - Reject health on the dashboard. Each worker's rejects are judged over the
   last hour: stale shares as a rate (amber at 1%, red at 2%, once there are
   about 200 shares to judge), every other reject as a device fault that
@@ -30,6 +41,11 @@ everything else bumps the **patch** version.
   dependency that raises it fails a PR instead of a user's build.
 
 ### Changed
+- Pool-wide Prometheus series no longer expire. The 24-hour idle timeout,
+  meant to bound the `worker` label, also dropped `pool_blocks_found_total`
+  a day after a block (a scraper then saw it restart at 0) and
+  `pool_connected_miners` after a day without churn. They are now refreshed
+  every 30 seconds, and the counters exist at 0 from boot.
 - The example config's vardiff range is now 512 to 4,194,304 (was 4096 to
   65536), so the shipped defaults cover the whole solo range on one pool:
   down to about 10 GH/s before a device's share interval exceeds the idle
@@ -82,7 +98,7 @@ everything else bumps the **patch** version.
   The declared minimum Rust version is now 1.90, which the locked
   dependencies already required. The README describes systemd's restart
   limit, `--rollback` and the cookie path under the service user as they
-  actually behave, and the Docker section notes that the container must be
+  behave, and the Docker section notes that the container must be
   restarted after the node renews its cookie. The config example's vardiff,
   invalid-share, authorization-cap, cookie and extranonce comments describe
   the current code. `docs/stable-surface.md` is corrected where it had
@@ -94,6 +110,10 @@ everything else bumps the **patch** version.
   steps move to CONTRIBUTING.md.
 
 ### Fixed
+- An SV1 share with the wrong extranonce2 length is answered with
+  "Wrong extranonce2 size: got N bytes, expected M" instead of "Unknown
+  problem", so mis-sized firmware says what is wrong in its own log. The
+  error code stays 20.
 - Environment overrides now show in the log (`Config override from
   environment: section.key`). The lines were emitted before logging was set
   up, so they never appeared.

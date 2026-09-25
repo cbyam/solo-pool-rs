@@ -14,7 +14,7 @@ use std::sync::{
     Arc,
 };
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Offline workers idle longer than this are evicted from the in-memory stats
 /// maps (their persisted best share survives, subject to the cap below). Keeps
@@ -184,9 +184,33 @@ fn get_u64(row: &rusqlite::Row<'_>, idx: usize) -> Result<u64, rusqlite::Error> 
 
 struct StatsStore {
     conn: Mutex<Connection>,
+    /// The most recent write failure, cleared by the next routine write that
+    /// succeeds. Surfaced on the dashboard: a store that stops accepting
+    /// writes silently loses found blocks, the round and the best shares.
+    write_error: Mutex<Option<String>>,
 }
 
 impl StatsStore {
+    /// Record a failed write. The first failure after a healthy stretch logs
+    /// at error level; repeats while it stays broken log as warnings.
+    fn failed(&self, msg: String) {
+        let mut err = self.write_error.lock();
+        if err.is_none() {
+            error!("Stats store write failed, persistence at risk: {msg}");
+        } else {
+            warn!("{msg}");
+        }
+        *err = Some(msg);
+    }
+
+    /// Clear a recorded failure after a routine write went through.
+    fn succeeded(&self) {
+        let mut err = self.write_error.lock();
+        if err.take().is_some() {
+            info!("Stats store writes recovered");
+        }
+    }
+
     fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         restrict_to_owner(path);
@@ -285,6 +309,7 @@ impl StatsStore {
 
         let store = Self {
             conn: Mutex::new(conn),
+            write_error: Mutex::new(None),
         };
         // Enforce the row cap at boot so an attacker-inflated table from a
         // previous run is trimmed before load_values pulls it into RAM.
@@ -311,7 +336,7 @@ impl StatsStore {
         ) {
             Ok(_) => true,
             Err(e) => {
-                warn!("Failed to persist setting {key}: {e}");
+                self.failed(format!("Failed to persist setting {key}: {e}"));
                 false
             }
         }
@@ -328,7 +353,7 @@ impl StatsStore {
         ) {
             Ok(0) => {}
             Ok(n) => info!("Pruned {n} stale worker_best_shares rows (cap {keep})"),
-            Err(e) => warn!("Failed to prune worker_best_shares: {e}"),
+            Err(e) => self.failed(format!("Failed to prune worker_best_shares: {e}")),
         }
     }
 
@@ -376,11 +401,12 @@ impl StatsStore {
     }
 
     fn set_round(&self, round_work: f64, round_start_ts: u64) {
-        if let Err(e) = self.conn.lock().execute(
+        match self.conn.lock().execute(
             "UPDATE pool_stats SET round_work = ?1, round_start_ts = ?2 WHERE id = 1",
             params![round_work, db_u64(round_start_ts)],
         ) {
-            warn!("Failed to persist round state: {e}");
+            Ok(_) => self.succeeded(),
+            Err(e) => self.failed(format!("Failed to persist round state: {e}")),
         }
     }
 
@@ -398,7 +424,7 @@ impl StatsStore {
                 block.network_difficulty
             ],
         ) {
-            warn!("Failed to persist found block {}: {e}", block.hash);
+            self.failed(format!("Failed to persist found block {}: {e}", block.hash));
         }
     }
 
@@ -412,7 +438,7 @@ impl StatsStore {
              WHERE id = 1 AND ?1 > best_share_difficulty",
             params![db_u64(difficulty)],
         ) {
-            warn!("Failed to persist best_share_difficulty: {e}");
+            self.failed(format!("Failed to persist best_share_difficulty: {e}"));
         }
     }
 
@@ -422,7 +448,7 @@ impl StatsStore {
              WHERE id = 1 AND ?1 > best_hashrate_hps",
             params![hps],
         ) {
-            warn!("Failed to persist best_hashrate_hps: {e}");
+            self.failed(format!("Failed to persist best_hashrate_hps: {e}"));
         }
     }
 
@@ -435,7 +461,7 @@ impl StatsStore {
             "UPDATE pool_stats SET best_hashrate_hps = ?1 WHERE id = 1",
             params![hps],
         ) {
-            warn!("Failed to reset best_hashrate_hps: {e}");
+            self.failed(format!("Failed to reset best_hashrate_hps: {e}"));
         }
     }
 
@@ -445,9 +471,10 @@ impl StatsStore {
             "INSERT OR REPLACE INTO hashrate_history (ts, hashrate_hps) VALUES (?1, ?2)",
             params![db_u64(ts), hps],
         ) {
-            warn!("Failed to record hashrate snapshot: {e}");
+            self.failed(format!("Failed to record hashrate snapshot: {e}"));
             return;
         }
+        self.succeeded();
         // Prune entries older than 6 months
         let cutoff = ts.saturating_sub(6 * 30 * 24 * 3600);
         let _ = conn.execute(
@@ -478,7 +505,7 @@ impl StatsStore {
         let tx = match conn.transaction() {
             Ok(tx) => tx,
             Err(e) => {
-                warn!("Failed to open share_log transaction: {e}");
+                self.failed(format!("Failed to open share_log transaction: {e}"));
                 return false;
             }
         };
@@ -497,9 +524,15 @@ impl StatsStore {
             Ok(())
         })();
         match written.and_then(|_| tx.commit()) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.succeeded();
+                true
+            }
             Err(e) => {
-                warn!("Failed to write {} shares to share_log: {e}", batch.len());
+                self.failed(format!(
+                    "Failed to write {} shares to share_log: {e}",
+                    batch.len()
+                ));
                 false
             }
         }
@@ -532,7 +565,7 @@ impl StatsStore {
              WHERE excluded.best_share_difficulty > worker_best_shares.best_share_difficulty",
             params![worker, db_u64(difficulty)],
         ) {
-            warn!("Failed to persist worker_best_share for {worker}: {e}");
+            self.failed(format!("Failed to persist worker_best_share for {worker}: {e}"));
         }
     }
 }
@@ -636,6 +669,10 @@ pub struct PoolStats {
     worker_states: DashMap<String, WorkerState>,
     start_time: Instant,
     store: Option<StatsStore>,
+    /// Why a configured store could not be opened or loaded at boot. The pool
+    /// runs without persistence rather than refusing to mine, and the
+    /// dashboard shows this until the next restart.
+    store_open_error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -678,21 +715,23 @@ pub struct WorkerState {
 
 impl PoolStats {
     pub fn new_with_store(stats_db_path: Option<String>) -> Arc<Self> {
-        let (store, loaded) = match stats_db_path.filter(|p| !p.is_empty()) {
+        let (store, loaded, store_open_error) = match stats_db_path.filter(|p| !p.is_empty()) {
             Some(path) => match StatsStore::open(&path) {
                 Ok(store) => match store.load_values() {
-                    Ok(loaded) => (Some(store), loaded),
+                    Ok(loaded) => (Some(store), loaded, None),
                     Err(e) => {
-                        warn!("Failed to load stats from DB {}: {e}", path);
-                        (None, LoadedStats::default())
+                        let msg = format!("could not load stats from {path}: {e}");
+                        error!("{msg}; running without persistence");
+                        (None, LoadedStats::default(), Some(msg))
                     }
                 },
                 Err(e) => {
-                    warn!("Failed to open stats DB {}: {e}", path);
-                    (None, LoadedStats::default())
+                    let msg = format!("could not open stats database {path}: {e}");
+                    error!("{msg}; running without persistence");
+                    (None, LoadedStats::default(), Some(msg))
                 }
             },
-            None => (None, LoadedStats::default()),
+            None => (None, LoadedStats::default(), None),
         };
 
         let worker_best_shares = DashMap::new();
@@ -745,7 +784,39 @@ impl PoolStats {
             found_blocks: Mutex::new(loaded.found_blocks),
             start_time: Instant::now(),
             store,
+            store_open_error,
         })
+    }
+
+    /// Why persistence is not working, if it was configured and is not: the
+    /// boot-time open failure, else the latest unrecovered write failure.
+    pub fn store_error(&self) -> Option<String> {
+        self.store_open_error.clone().or_else(|| {
+            self.store
+                .as_ref()
+                .and_then(|s| s.write_error.lock().clone())
+        })
+    }
+
+    /// (worker, online, last share unix seconds) for every worker still in
+    /// the stats maps, for the Prometheus liveness gauges.
+    pub fn worker_liveness(&self) -> Vec<(String, bool, u64)> {
+        self.worker_states
+            .iter()
+            .map(|e| {
+                let last = self
+                    .worker_last_submit_ts
+                    .get(e.key())
+                    .map(|v| *v.value())
+                    .unwrap_or(0);
+                (e.key().clone(), e.value().online, last)
+            })
+            .collect()
+    }
+
+    /// Whether a stats database is configured at all (open or not).
+    pub fn store_configured(&self) -> bool {
+        self.store.is_some() || self.store_open_error.is_some()
     }
 
     fn persist_best_share_difficulty(&self, difficulty: u64) {
@@ -1492,6 +1563,7 @@ impl PoolStats {
             found_blocks: self.found_blocks.lock().clone(),
             template_age_secs: None,
             template_error: None,
+            stats_store_error: self.store_error(),
         }
     }
 }
@@ -1547,6 +1619,10 @@ pub struct StatsSnapshot {
     /// Why the engine could not build its last job, when it could not.
     /// Filled by the dashboard from the TemplateEngine.
     pub template_error: Option<String>,
+    /// Why the stats database is not saving, when one is configured and is
+    /// not: it failed to open at boot, or its latest write failed. Null when
+    /// persistence is healthy or not configured.
+    pub stats_store_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1965,6 +2041,39 @@ mod tests {
         assert_eq!(state.reject_reasons.get("low_difficulty"), Some(&1));
         assert_eq!(state.reject_reasons.get("duplicate"), Some(&1));
         assert_eq!(state.reject_reasons.get("invalid"), None);
+    }
+
+    #[test]
+    fn a_store_that_will_not_open_raises_an_alarm() {
+        let stats = PoolStats::new_with_store(Some(
+            "/nonexistent-dir-for-solo-pool-test/pool_stats.sqlite".into(),
+        ));
+        assert!(stats.store_configured());
+        let err = stats.snapshot().stats_store_error;
+        assert!(
+            err.as_deref().is_some_and(|e| e.contains("could not open")),
+            "{err:?}"
+        );
+
+        let none = PoolStats::new_with_store(None);
+        assert!(!none.store_configured());
+        assert_eq!(none.snapshot().stats_store_error, None);
+    }
+
+    #[test]
+    fn a_write_failure_is_reported_until_a_later_write_succeeds() {
+        let db_path = make_temp_db();
+        let stats = PoolStats::new_with_store(Some(db_path.clone()));
+        assert_eq!(stats.store_error(), None);
+
+        let store = stats.store.as_ref().unwrap();
+        store.failed("Failed to persist round state: disk I/O error".into());
+        assert!(stats.snapshot().stats_store_error.is_some());
+
+        // The next routine write that goes through clears the alarm.
+        store.set_round(1.0, 1);
+        assert_eq!(stats.snapshot().stats_store_error, None);
+        std::fs::remove_file(db_path).ok();
     }
 
     #[test]

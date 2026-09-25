@@ -171,7 +171,7 @@ retarget_interval_secs = 60
 # assigned difficulty, because cgminer/Avalon firmware fixes its submission
 # threshold at connect (from the minimum-difficulty in the mining.configure
 # reply) and ignores later set_difficulty. Each share is credited at the
-# difficulty it actually cleared, so a low floor does not distort hashrate.
+# difficulty it cleared, so a low floor does not distort hashrate.
 min_difficulty = 512
 max_difficulty = 4194304
 
@@ -201,7 +201,7 @@ max_shares_per_sec = 500
 # saves the cost of repeated reconnects. 0 disables bans entirely.
 ban_duration_secs = 300
 
-# Maximum genuinely invalid shares before disconnect (0 = disabled). Counted:
+# Maximum invalid shares before disconnect (0 = disabled). Counted:
 # bad nonce, duplicate, out-of-range ntime, wrong extranonce length, and on SV2
 # a submit for an unknown job. Low-difficulty shares and SV1 stale-job submits
 # are not counted, since they are expected around block changes.

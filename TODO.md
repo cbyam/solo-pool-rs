@@ -20,21 +20,21 @@ Gates, in the order they can be closed:
   Umbrel depends on, and the deferred stances (TLS, fees/multi-coin/cloud
   non-goals, RPC failover). Ships as the headline of the rc once its open
   items close (next gate).
-- [ ] **Close the stable-surface "Before this is final" list.** Each item is
-  a place where the code and the draft disagree; settle every one in the code
-  or the doc before the rc.
+- [x] **Close the stable-surface "Before this is final" list.** Each item was
+  a place where the code and the draft disagreed; all were settled in the code
+  or the doc for 0.6.11. The list stays in the doc for anything that drifts
+  before the rc.
 - [x] **Submit the official Umbrel app-store PR.** Opened 2026-09-06 as
   getumbrel/umbrel-apps#6064 with 0.6.8 pinned, after a test install in an
   umbrelOS guest. Review is pending and outside our control.
 - [x] **Decide the RPC failover config shape, without building it.** Decided in
   the stable-surface Stances: a future list key sits beside `url`, and the
   single-URL form is never removed in 1.x.
-- [ ] **Fail loudly when the stats store will not open.** A locked file or
-  transient I/O error at boot leaves `store = None` behind a single `warn!`.
-  The database now holds the found-block list and the running round as well as
-  the all-time bests, so a silent open failure means the dashboard forgets a
-  found block on the next restart with no visible signal. Make it a boot error
-  or a red pill on the dashboard, not a log line.
+- [x] **Fail loudly when the stats store will not open.** Done for 0.6.11 as
+  an alarm rather than a boot error, so a stats problem never stops mining:
+  an open failure or a failed write logs at error level and shows as a red
+  "Stats not saving" pill, `/stats` `stats_store_error`, and
+  `pool_stats_store_ok 0`, until a later write succeeds.
 - [ ] **Prod soak.** Two months of continuous mainnet mining with no
   correctness bug on the share or block path, started 2026-09-05 on 0.6.6.
   Patch-day restarts do not reset it; a change to share validation or block
@@ -45,44 +45,68 @@ Gates, in the order they can be closed:
 Explicitly not a gate: feature completeness. Fees, multi-coin and cloud are out
 of scope by decision, and 1.0 puts that in writing.
 
+## Next: notifications (planned for 0.6.12, not a 1.0 gate)
+
+The operator is not always watching the dashboard. When a miner drops at 2 am,
+the pool should say so. This adds a config section that 1.0 will promise, so
+the shape gets its own review before it ships.
+
+- **Channels**, each off until its address is set, several at once allowed:
+  - **Webhook** (first): JSON POST with `title`, `message`, `body` (same
+    text, so Gotify and the Apprise API accept it as is), `priority`, `event`,
+    `worker`, `ts`. Covers Home Assistant (and its phone push or SMS),
+    Gotify, Node-RED, n8n, and Apprise (email, SMS gateways, and the rest).
+    Confirm the Gotify and Apprise shapes against both before relying on it.
+  - **Email** (second): native SMTP with `lettre` over the rustls stack the
+    binary already carries. High-priority events only by default.
+  - **ntfy** (third): plain-text POST with Title, Priority and Tags headers.
+    The quickest phone push; self-hosted or ntfy.sh.
+  - **Heartbeat** (fourth): GET a dead-man's-switch URL every few minutes
+    (healthchecks.io, Uptime Kuma push monitor), the only way to hear that
+    the pool host itself is down.
+  - SMS is reached through the webhook (Home Assistant, Apprise) or email.
+    A native Twilio adapter only if someone asks; carrier email-to-text
+    gateways are being retired, so do not document them as a path.
+  - Discord and Telegram: small adapters, not planned unless requested; the
+    webhook reaches both through Apprise.
+- **Config**, all flat scalars in `[notify]` so every key works through the
+  `SOLO_POOL_NOTIFY__*` environment overrides (Umbrel):
+  `webhook_url`, `ntfy_url`, `smtp_host`, `smtp_port`, `smtp_user`,
+  `smtp_password`, `email_from`, `email_to`, `email_min_priority` (default
+  high), `offline_after_secs` (default 600), `heartbeat_url`.
+- **Events and priority**: block found (urgent); miner offline past the grace
+  period, miner rejecting at red, node stale, stats not saving (high); miner
+  degraded, rejecting at amber (normal); a recovery for each (low).
+- **Behaviour**: one message per state change, never repeats while a state
+  holds; events that land together are bundled (a switch taking four miners
+  down sends one message); the grace period keeps pool restarts and miner
+  reboots quiet. Quiet hours are left to the phone app.
+- **Secrets**: URLs and passwords get the same treatment as the RPC password
+  (readable-config warning at boot, redaction in logs; a Telegram token, if
+  that adapter ever lands, sits in the URL).
+- **Send test** button on the Settings page, behind the same Host/Origin
+  guards as the other mutating routes.
+
 ## After 1.0 (no promised surface changes)
 
 ### Correctness and hardening
 
 - [ ] **SV2 spec conformance set.** Each is small on its own; group them and
   test against the NerdQAxe++ before merging, since they touch the handshake and
-  channel-open path that hardware actually uses.
+  channel-open path that hardware actually uses. Held until after the 0.6.11
+  soak, which already carries the SRI v1.12 port on the same path.
   - `OpenExtendedMiningChannel.max_target` is used once to clamp the initial
     target and then discarded, so later vardiff `SetTarget` messages can hand a
     device an easier target than it declared it would accept. Store it on the
     session and clamp every retarget. The open-time clamp also adjusts the wire
     target without adjusting `session.difficulty`, so the first retarget derives
     from a value the device was never assigned.
-  - `SetupConnection` rejects only `min_version > 2`; a client offering
-    `max_version = 1` gets `SetupConnectionSuccess { used_version: 1 }` and then
-    is spoken to in v2. Add the `max_version < 2` rejection.
   - A repeat `OpenExtendedMiningChannel` on an open channel re-allocates the
     channel id and extranonce prefix without closing the previous one, leaving
     in-flight shares validating against a prefix the device no longer has.
   - `SubmitSharesExtended.channel_id` is decoded and ignored. Harmless while a
     session serves one channel, but it stops being harmless combined with the
     item above.
-- [ ] **Absolute pre-auth deadline.** The 10 s handshake deadline re-anchors on
-  every inbound line, including the blank keepalives the loop tolerates, so a
-  client sending one newline every 9 s holds a bounded global connection slot
-  indefinitely without ever authorizing. Add a deadline that does not move.
-- [ ] Scope the Prometheus `idle_timeout(MetricKindMask::ALL, 24h)` to the
-  worker-labelled series. It currently expires rarely-written globals too:
-  `pool_connected_miners` disappears when one miner stays connected without
-  churn for 24 h, and `pool_blocks_found_total` vanishes (and restarts from 0)
-  24 h after a block, while the dashboard count, now persisted, does not.
-- [ ] The SV1 rejection for a wrong-length extranonce2 reaches the miner as
-  `[20, "Unknown problem", null]`, because `PoolError::BadExtranonceSize` is not
-  mapped in `to_stratum_error` and falls through to the generic arm. Operator
-  signal is fine (clear log line, `bad_extranonce` metric label), but the point
-  of that guard was diagnosability for mis-sized firmware, and the miner's own
-  log currently says nothing useful. Stratum V1 has no dedicated code, so keep
-  code 20 and send a descriptive message.
 
 ### Performance
 
@@ -114,11 +138,6 @@ of scope by decision, and 1.0 puts that in writing.
   without mandatory RDTS exists, so the matrix keeps answering "does this still
   work after the next upgrade" rather than only "did it work before the last
   one".
-- [ ] Dependency refresh when convenient: `rusqlite` 0.29 and
-  `metrics-exporter-prometheus` 0.15 are a few majors behind (no advisories,
-  just aging). The metrics trio (`metrics`, `metrics-exporter-prometheus`,
-  `metrics-util`) must move together, and the bump needs a Zlib licence allow
-  in `deny.toml` for `foldhash`.
 
 ### Features, deferred by decision
 
@@ -178,6 +197,16 @@ shard guard, confirmed a writer was blocked on it, then completed the read).
 
 Kept for the record; the changelog has the detail.
 
+- [x] **Pool-wide metrics no longer expire** (0.6.11): a 30 s tick touches
+  every series without a `worker` label, so the 24 h idle timeout only bounds
+  worker series; `pool_worker_online` and
+  `pool_worker_last_share_timestamp_seconds` added for offline alerting.
+- [x] **Descriptive wrong-extranonce2 reply on SV1** (0.6.11): code 20 with
+  "Wrong extranonce2 size: got N bytes, expected M".
+- [x] **Absolute pre-auth deadline** (v0.6.6): measured from connect, so blank
+  keepalive lines cannot hold a connection slot without authorizing.
+- [x] **Dependency refresh**: `rusqlite` 0.40 and the metrics trio (0.24 /
+  0.18 / 0.20, which must move together) are current.
 - [x] **Empty `log_dir` logs to stdout** (PR #90): an empty or whitespace-only
   value counts as unset, and `[logging] log_max_files` (default 14) bounds
   file retention. The systemd unit ships with `LogsDirectory=` enabled.
@@ -204,9 +233,11 @@ Kept for the record; the changelog has the detail.
 - [x] **Deliberate deploys**: `packaging/install.sh` copies the binary to
   `/usr/local/lib/solo-pool-rs/<version>/` with an atomic symlink swap,
   `--rollback` and `--list`. The live host is cut over (0.6.6 active, 0.6.4 as
-  rollback). Note the install directory is named from `Cargo.toml`, so installing
-  an unreleased main build overwrites the current version's directory; cut a
-  release first.
+  rollback). The install directory is named from `Cargo.toml`, so a test build
+  is installed under a temporary pre-release version (e.g. `0.6.11-dev.2`,
+  never committed) to keep it from overwriting a release's directory.
+  Pre-release directories sort above their release for `--rollback`, so delete
+  them after the soak.
 - [x] **v0.4.0: non-root Docker image**.
 - [x] **SV2 identity pinning** (v0.6.0): persistent Noise authority key
   (`[sv2] authority_key_file`), pubkey logged at boot and shown in the Connect
