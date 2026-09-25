@@ -1,6 +1,7 @@
 //! solo-pool-rs: solo BTC mining pool (Stratum V1 + V2, auto-detected on one port)
 //!
-//! Usage: `solo-pool-rs [--config] [path]`, default `config.toml`.
+//! Usage: `solo-pool-rs [--config] [path]`, default `config.toml`; also
+//! `--version` and `--help`.
 //!
 //! Startup sequence:
 //!   1. Load config.toml
@@ -23,14 +24,49 @@ use solo_pool_rs::{
 use std::sync::Arc;
 use tracing::info;
 
+const USAGE: &str = "\
+Solo Bitcoin mining pool: Stratum V1 and V2 on one port.
+
+Usage: solo-pool-rs [--config] [PATH]
+
+  PATH             config file (default: config.toml in the working directory)
+  -V, --version    print the version and exit
+  -h, --help       print this help and exit
+
+Any scalar config value can be set with SOLO_POOL_<SECTION>__<KEY>; see
+config.toml.example.
+";
+
+#[derive(Debug, PartialEq)]
+enum Cli {
+    Run(String),
+    Version,
+    Help,
+}
+
+fn parse_args(mut args: impl Iterator<Item = String>) -> Cli {
+    match args.next().as_deref() {
+        Some("-V" | "--version") => Cli::Version,
+        Some("-h" | "--help") => Cli::Help,
+        Some("--config") => Cli::Run(args.next().unwrap_or_else(|| "config.toml".to_string())),
+        Some(path) => Cli::Run(path.to_string()),
+        None => Cli::Run("config.toml".to_string()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // ── Config ────────────────────────────────────────────────────────────────
-    let mut args = std::env::args().skip(1);
-    let cfg_path = match args.next() {
-        Some(a) if a == "--config" => args.next().unwrap_or_else(|| "config.toml".to_string()),
-        Some(a) => a,
-        None => "config.toml".to_string(),
+    let cfg_path = match parse_args(std::env::args().skip(1)) {
+        Cli::Run(path) => path,
+        Cli::Version => {
+            println!("solo-pool-rs {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Cli::Help => {
+            print!("{USAGE}");
+            return Ok(());
+        }
     };
 
     let config = Arc::new(
@@ -39,6 +75,9 @@ async fn main() -> Result<()> {
 
     // ── Logging ───────────────────────────────────────────────────────────────
     init_tracing(&config.logging);
+    for name in &config.env_overrides {
+        info!("Config override from environment: {name}");
+    }
     if let Some(msg) = config::credential_exposure_warning(&cfg_path, &config) {
         tracing::warn!("{msg}");
     }
@@ -364,5 +403,28 @@ fn init_tracing(cfg: &config::LoggingConfig) {
             .with_target(true)
             .with_ansi(false)
             .init();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_args, Cli};
+
+    fn parse(args: &[&str]) -> Cli {
+        parse_args(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn arguments_select_the_config_or_an_info_flag() {
+        assert_eq!(parse(&[]), Cli::Run("config.toml".into()));
+        assert_eq!(parse(&["pool.toml"]), Cli::Run("pool.toml".into()));
+        assert_eq!(
+            parse(&["--config", "pool.toml"]),
+            Cli::Run("pool.toml".into())
+        );
+        assert_eq!(parse(&["--version"]), Cli::Version);
+        assert_eq!(parse(&["-V"]), Cli::Version);
+        assert_eq!(parse(&["--help"]), Cli::Help);
+        assert_eq!(parse(&["-h"]), Cli::Help);
     }
 }
