@@ -277,7 +277,11 @@ a stats database `round_start_ts` is 0. Each `worker_hashrates[]` entry:
 `protocol`, `online`, `current_vardiff`, `shares_accepted`,
 `shares_rejected`, `shares_stale`, `reject_reasons{}`,
 `best_share_difficulty`, `active_sessions`, `connected_ts`,
-`last_submit_ts`, and the four `hashrate_*_hps` values. Each `found_blocks[]`
+`last_submit_ts`, the four `hashrate_*_hps` values, `last_hour_accepted`,
+`last_hour_stale` (stale and unknown-job rejects), `last_hour_other_rejects{}`
+(every other reject, by reason), `last_other_reject_ts` (0 if none since
+start), and `last_other_reject_reason` (nullable). The last-hour fields cover
+the 60 most recent whole minutes. Each `found_blocks[]`
 entry: `height`, `hash`, `worker`, `ts`, `round_work`, `network_difficulty`.
 Timestamps are unix seconds; hashrates are H/s as floats.
 
