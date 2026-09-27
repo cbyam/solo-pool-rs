@@ -731,6 +731,9 @@ section { margin-bottom: 2.4rem; scroll-margin-top: 1.2rem; }
   font-size: 0.78rem; font-variant-numeric: tabular-nums;
 }
 .hero-side .label { margin-bottom: 0.2rem; }
+/* The Powerball line links to the odds explainer in the docs. */
+.hero-side a { color: var(--muted); text-decoration: none; }
+.hero-side a:hover { text-decoration: underline; }
 
 /* ── Round footnote: full-width line under the hero row ── */
 .round-note { flex-basis: 100%; padding-top: 1.1rem; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -1003,7 +1006,7 @@ tr:last-child td { border-bottom: none; }
       <span id="v-prob-daily">Daily: &mdash;</span>
       <span id="v-prob-monthly">Monthly: &mdash;</span>
       <span id="v-prob-yearly" title="Mean time between blocks at this hashrate; the real wait is anything from minutes to many times this">Expected wait: &mdash;</span>
-      <span id="v-prob-powerball" style="color:var(--muted);">vs Powerball: &mdash;</span>
+      <a id="v-prob-powerball" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/so-you-want-to-mine.md#what-you-can-expect" target="_blank" rel="noopener" title="Better than Powerball is still a long shot. What these odds mean for a home miner.">vs Powerball: &mdash;</a>
     </div>
 
     <div class="round-note">

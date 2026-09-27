@@ -10,6 +10,8 @@
 
 > **Lottery / solo mining**: every block your miners find pays out entirely to the coinbase address you configure. The pool only coordinates work; it never takes a cut.
 
+New to mining? [So you want to mine bitcoin](docs/so-you-want-to-mine.md) covers what it is, what a home miner can realistically expect, and why running your own template matters.
+
 ![solo-pool-rs dashboard](docs/dashboard.png)
 
 ---
