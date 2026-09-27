@@ -39,8 +39,10 @@ Gates, in the order they can be closed:
   correctness bug on the share or block path, started 2026-09-05 on 0.6.6.
   Patch-day restarts do not reset it; a change to share validation or block
   submission does. Earliest completion around 2026-11-05.
-- [ ] **Tag v1.0.0-rc.1** once the doc ships and the Umbrel PR is open;
-  **1.0.0** after store acceptance and a quiet end to the soak.
+- [ ] **Tag v1.0.0-rc.1** once the doc ships; **1.0.0** after a quiet end to
+  the soak. Official Umbrel store acceptance is wanted but is not a gate: the
+  review is outside our control, and Umbrel users already run the pool from
+  the community store.
 
 Explicitly not a gate: feature completeness. Fees, multi-coin and cloud are out
 of scope by decision, and 1.0 puts that in writing.
