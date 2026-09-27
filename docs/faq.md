@@ -126,6 +126,8 @@ wait. The expected wait is the network hashrate divided by yours, times ten
 minutes. At 30 TH/s against a 940 EH/s network that is about 600 years on
 average. Each block is an independent draw, so a find can come at any time,
 and time already spent mining does not bring the next one closer.
+[So you want to mine bitcoin](so-you-want-to-mine.md) puts these numbers in
+context.
 
 ## Which version am I running
 
