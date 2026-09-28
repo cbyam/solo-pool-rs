@@ -57,6 +57,14 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      # dtolnay/rust-toolchain's tag names the Rust toolchain it installs, so
+      # the MSRV job's `@1.90` pins the rust-version from Cargo.toml.
+      # Dependabot treated the tag as an action version and proposed `@1.120`
+      # (#138), a toolchain that does not exist. The other uses are `@stable`
+      # and `@nightly`, which it never bumps. Move the MSRV tag by hand
+      # together with rust-version.
+      - dependency-name: dtolnay/rust-toolchain
   # The Dockerfile pins its base images by digest. This moves the pins when
   # Debian or the Rust image publishes a new build, so OS security fixes in the
   # runtime image reach :edge on merge instead of waiting for the next release.
