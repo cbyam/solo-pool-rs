@@ -241,6 +241,10 @@ everything else bumps the **patch** version.
   transitive dependency of the Prometheus exporter and the pool never opens
   a TLS connection with it, so there was no exposure; the daily
   supply-chain check is green again (#117).
+- rustls 0.23.45 to 0.23.46 for RUSTSEC-2026-0346 (client session `Debug`
+  output exposes TLS secrets), RUSTSEC-2026-0347, RUSTSEC-2026-0348 and
+  RUSTSEC-2026-0349. Same path as above: the pool never opens a TLS
+  connection through it, so there was no exposure (#144).
 
 ## [0.6.9] - 2026-09-08
 
