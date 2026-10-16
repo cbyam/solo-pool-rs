@@ -43,34 +43,54 @@ vectors come from Bitcoin Roots (`src/policy/policy.cpp`, MIT licensed, on a
 Core v31.1 base), which reimplements the Knots behaviour with the same option
 names.
 
-| Key | Knots / Roots option | Core option | Rejects |
-|---|---|---|---|
-| `datacarrier_size` | `-datacarriersize` (83) | `-datacarriersize`, OP_RETURN only, looser default | data-carrier bytes above the limit, counting every OP_RETURN script in the transaction |
-| `datacarrier_full_count` | `-datacarrierfullcount` (1) | none | also counts data embedded in the script being executed toward the same limit: `OP_FALSE OP_IF ... OP_ENDIF` envelopes (inscriptions) and data pushes followed by `OP_DROP` |
-| `reject_tokens` | `-rejecttokens` (0) | none | Runes (`OP_RETURN OP_13`) and Olga (data in P2WSH outputs) |
-| `reject_parasites` | `-rejectparasites` (1) | none | parasitic overlay protocols; in Roots' implementation, CAT-21 (`nLockTime == 21`) |
-| `permit_bare_multisig` | `-permitbaremultisig` (0) | `-permitbaremultisig` (1) | bare multisig outputs when false (Stamps) |
+The pool implements only what Knots enforces and a Core v31.1 node does not.
+Everything Core already rejects (non-standard scripts, the 80-byte tapscript
+and P2WSH stack item limits, the 1,650-byte scriptSig limit, dust) never
+reaches a Core template, so the pool does not repeat it. The set below comes
+from comparing Roots' policy code with Core v31.1's.
 
-Defaults in parentheses are from `bitcoind -help` on Knots 29.3 and Core 31.1.
-Where Core has the same option, the rule follows Knots' meaning and default,
-not Core's.
+| Key | Knots / Roots option | Core 31.1 | Rejects (Knots reason) |
+|---|---|---|---|
+| `datacarrier_size` | `-datacarriersize` (83) | same option, default 100,000 | OP_RETURN scripts totalling more than the limit (`datacarrier`) |
+| `permit_multiple_op_return` | none: Knots always rejects | allows several | more than one OP_RETURN output (`multi-op-return`) |
+| `accept_non_std_datacarrier` | `-acceptnonstddatacarrier` (0) | none | any data embedded in an executed script: `OP_FALSE OP_IF ... OP_ENDIF` envelopes (inscriptions), data pushes followed by `OP_DROP`, Olga, OPNet (`txn-datacarrier-nonstandard`) |
+| `datacarrier_full_count` | `-datacarrierfullcount` (1) | none | OP_RETURN and embedded data together above `datacarrier_size` (`txn-datacarrier-exceeded`) |
+| `max_script_size` | `-maxscriptsize` (1650) | none for witnesses | a witness stack serialising to more than the limit (`witness-size`); also output scripts and scriptSigs above it |
+| `reject_tokens` | `-rejecttokens` (0) | none | Runes (`OP_RETURN OP_13` plus a push, `tokens-runes`) and Olga (data in P2WSH outputs, `tokens-olga`) |
+| `reject_parasites` | `-rejectparasites` (1) | none | parasitic overlay protocols; in Roots' implementation, CAT-21 (`nLockTime == 21`, `parasite-cat21`) |
+| `permit_bare_multisig` | `-permitbaremultisig` (0) | same option, default 1 | bare multisig outputs (Stamps, `bare-multisig`) |
+| `permit_bare_pubkey` | `-permitbarepubkey` (0) | allowed | bare pay-to-pubkey outputs (`bare-pubkey`) |
+| `permit_bare_datacarrier` | `-permitbaredatacarrier` (0) | allowed | transactions whose only outputs are data carriers or dust (`bare-datacarrier`) |
+
+Defaults in parentheses are from `bitcoind -help` on Knots 29.3. Where Core has
+the same option, the rule follows Knots' meaning and default, not Core's.
+`permit_multiple_op_return` has no Knots option; it exists so an operator can
+choose Core's behaviour, and its default is Knots' fixed one. Knots'
+`-datacarrier=0` is the same as `datacarrier_size = 0`.
+
+With the defaults, two rules carry most of the weight against inscriptions:
+`accept_non_std_datacarrier = false` declines any envelope at all, and
+`max_script_size` declines any witness above 1,650 bytes whatever it contains.
 
 A transaction whose parent in the template is rejected is rejected with it,
 whatever its own content.
 
 ### The executed-script problem
 
-Knots finds the script an input executes by looking up the coin it spends: the
-coin's scriptPubKey says whether the input is P2TR, P2WSH or P2SH, and so which
-witness item or scriptSig push is the script. The pool has the transaction but
-not the coin. Two ways to close that gap:
+The witness-size rule needs only the transaction. The embedded-data rules need
+the script an input executes, and Knots finds it by looking up the coin the
+input spends: the coin's scriptPubKey says whether the input is P2TR, P2WSH or
+P2SH, and so which witness item or scriptSig push is the script. The pool has
+the transaction but not the coin. Two ways to close that gap:
 
 - **Witness shape (start here).** After removing an annex (a last witness item
   starting `0x50`, when there are at least two items), a last item of 33+32m
   bytes (m ≤ 128) whose first byte is `0xc0` or `0xc1` is a taproot control
   block, and the item before it is the tapscript. Otherwise the last witness
   item is a P2WSH witness script, and the last scriptSig push is a P2SH redeem
-  script. No lookups, so it costs nothing. An unusual witness can be misread.
+  script. No lookups, so it costs nothing. The shape rule must recognise key
+  spends explicitly: an ordinary P2WPKH public key parsed as a script can look
+  like embedded data, and treating it as one would decline normal payments.
 - **Coin lookup.** Exact, but needs `getrawtransaction` for each spent coin
   (which needs `txindex=1`; a default Umbrel node does not have it) and a cache
   keyed by txid. Add it only if the phase 0 audit shows the shape rule
@@ -239,14 +259,19 @@ after 1.0 is a compatible change (a new section with defaults).
 
 ```toml
 [template_policy]
-mode = "off"                     # off | observe | enforce
-datacarrier_size = 83            # bytes; Knots -datacarriersize
-datacarrier_full_count = true    # Knots -datacarrierfullcount
-reject_tokens = false            # Knots -rejecttokens
-reject_parasites = true          # Knots -rejectparasites
-permit_bare_multisig = false     # Knots -permitbaremultisig
-verify_with_proposal = true      # only on templates the pool changed
-on_proposal_failure = "coinbase_only"   # coinbase_only | unfiltered
+mode = "off"                          # off | observe | enforce
+datacarrier_size = 83                 # bytes; Knots -datacarriersize
+permit_multiple_op_return = false     # Knots has no option and always rejects
+accept_non_std_datacarrier = false    # Knots -acceptnonstddatacarrier
+datacarrier_full_count = true         # Knots -datacarrierfullcount
+max_script_size = 1650                # bytes; Knots -maxscriptsize
+reject_tokens = false                 # Knots -rejecttokens
+reject_parasites = true               # Knots -rejectparasites
+permit_bare_multisig = false          # Knots -permitbaremultisig
+permit_bare_pubkey = false            # Knots -permitbarepubkey
+permit_bare_datacarrier = false       # Knots -permitbaredatacarrier
+verify_with_proposal = true           # only on templates the pool changed
+on_proposal_failure = "coinbase_only" # coinbase_only | unfiltered
 ```
 
 Defaults for the rule keys follow Knots, so that turning `mode` on without
@@ -258,11 +283,8 @@ records the results but mines the node's template unchanged.
 Knots 29.3 has more policy options. Whether one can move into the pool depends
 on what it needs to know:
 
-- **The transaction alone.** `-permitbarepubkey`, `-permitbaredatacarrier`,
-  `-acceptunknownwitness`, `-acceptnonstddatacarrier` and `-maxscriptsize` can
-  be judged from the transaction, the last two through the same
-  executed-script step as `datacarrier_full_count`. Good candidates, named the
-  same way (`permit_bare_pubkey` and so on).
+- **The transaction alone.** `-acceptunknownwitness` (default 1, so it
+  rejects nothing unless turned off). A candidate, named the same way.
 - **The coins being spent.** `-bytespersigopstrict` and `-maxtxlegacysigops`
   count sigops in P2SH and witness scripts, which needs the spent coins. They
   wait for the coin-lookup mode.
