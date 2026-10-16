@@ -155,6 +155,24 @@ the shape gets its own review before it ships.
   work after the next upgrade" rather than only "did it work before the last
   one".
 
+### Planned
+
+- [ ] **Template policy.** Let the operator keep large OP_RETURNs,
+  inscriptions, token protocols and bare multisig out of the pool's blocks
+  whatever node sits behind it, using Knots' rule names and defaults. Off by
+  default. The pool deprioritises declined transactions with
+  `prioritisetransaction` so the node refills the space itself, and a backstop
+  filter covers the GBT cache window. Proven on regtest against Core 31.1 and
+  Knots 29.3. Design, latency rules and rollout in
+  [docs/design/template-policy.md](docs/design/template-policy.md).
+  - [ ] Phase 0, during the freeze: classifier module with the Roots test
+    vectors, and an audit tool that replays mainnet blocks to report what each
+    rule would remove and cost. Kept on a branch until 1.0 ships, so the
+    released binary does not change.
+  - [ ] Phase 1, first release after 1.0: observe mode.
+  - [ ] Phase 2: enforce mode, with the E2E regtest test in the Core/Knots
+    matrix.
+
 ### Features, deferred by decision
 
 The stance on each is recorded here and, from 1.0, in the stable-surface doc.
