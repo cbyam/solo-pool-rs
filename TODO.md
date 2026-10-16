@@ -120,6 +120,20 @@ the shape gets its own review before it ships.
   funnel through a dedicated writer thread, enable WAL + `synchronous=NORMAL`),
   and the dashboard `/history` + `/chart` SQLite scans (contend with the share
   path on the same connection mutex; wrap in `spawn_blocking`).
+- [ ] **Take the hex work off the found-block path.** Measured 2026-10-16 on a
+  1.75 MB mainnet template with the release profile: about 9 ms passes between
+  a share meeting the network target and `submitblock` leaving the pool.
+  `assemble_block_hex` (`validator.rs:373`) hex-encodes the whole block (4.3
+  ms), and `submit_block` (`rpc.rs:256`) copies that string into a JSON value
+  and escape-scans it (4.8 ms). GBT already delivers every transaction as hex,
+  and `parse_gbt_transaction` (`rpc.rs:350`) decodes it only for it to be
+  encoded again here. Keep the GBT hex per job (it is in memory already, so the
+  new-job path pays nothing) and write the `submitblock` body directly, since
+  hex needs no JSON escaping. A prototype of the assembly took 67 µs. The gain
+  is about 0.0015% orphan risk per found block, so this is principle rather
+  than revenue: it is the largest delay the pool controls on the one path where
+  time decides the race. Share validation itself (1.9 µs a share, 80% of it the
+  merkle root, SHA-NI in use) needs nothing.
 - [ ] Hot-path cleanups: recompute hashrate windows only on accepted shares
   (today: 4 full deque scans per inbound message); move per-share hex/format
   allocations inside `debug!` so they're skipped when disabled; reuse a scratch
