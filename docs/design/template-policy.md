@@ -323,6 +323,23 @@ untouched).**
   with the exact coin lookup. This answers "how much does the policy cost" with
   data and tests the rules on real inscription traffic.
 
+**Phase 0 results (2026-10-16).** The classifier and audit tool are on
+branch `feat/template-policy-classifier` (#147). Over mainnet blocks 971,566 to
+971,710 (144 blocks, about 680,000 transactions):
+
+| Settings | Txs declined | Weight declined | Fees declined | Per-block weight (median, max) |
+|---|---|---|---|---|
+| Knots 29.3 defaults | 1.44% | 3.12% | 3.74% | 2.1%, 30.2% |
+| Deployed node (`datacarrier_size = 42`, `reject_tokens = true`) | 61.05% | 42.94% | 15.24% | 36.3%, 99.2% |
+
+Exact and shape mode disagreed on no transaction, so the coin-lookup mode is
+not needed for these rules. Under Knots' defaults most of the declined weight
+is embedded data; with `reject_tokens` most of it is Runes, which arrive in
+bursts (8% to 87% of a block's transactions in a seven-block sample). The fee
+figures are what the declined transactions paid, an upper bound on the cost:
+deprioritising lets the node refill their space. Anyone can rerun the audit
+with `cargo run --release --example template_audit`.
+
 **Phase 1, the first release after 1.0: observe mode.** The pool classifies
 and records; templates are unchanged. Run it behind the deployed Knots node
 first: Knots has already filtered, so anything the pool would still decline
@@ -345,7 +362,9 @@ block-submit rehearsal.
 
 ## Open questions
 
-- **The coin-lookup mode,** if phase 0 shows the shape rule is not good enough.
+- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks, so
+  it is not planned; it stays an option if a later rule (the sigop limits)
+  needs the spent coins.
 - **Detecting the priority area.** The pool may not be able to read
   `blockprioritysize` over RPC. If it cannot, documentation carries the
   recommendation and the pool always sends the priority delta to Knots.

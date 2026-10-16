@@ -165,10 +165,11 @@ the shape gets its own review before it ships.
   filter covers the GBT cache window. Proven on regtest against Core 31.1 and
   Knots 29.3. Design, latency rules and rollout in
   [docs/design/template-policy.md](docs/design/template-policy.md).
-  - [ ] Phase 0, during the freeze: classifier module with the Roots test
+  - [x] Phase 0, during the freeze: classifier module with the Roots test
     vectors, and an audit tool that replays mainnet blocks to report what each
-    rule would remove and cost. Kept on a branch until 1.0 ships, so the
-    released binary does not change.
+    rule would remove and cost. On branch `feat/template-policy-classifier`
+    (draft #147) until 1.0 ships, so the released binary does not change.
+    Results are in the design doc.
   - [ ] Phase 1, first release after 1.0: observe mode.
   - [ ] Phase 2: enforce mode, with the E2E regtest test in the Core/Knots
     matrix.
