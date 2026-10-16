@@ -10,6 +10,7 @@ pub mod error;
 pub mod metrics;
 pub mod mining;
 pub mod network;
+pub mod policy;
 pub mod protocol;
 pub mod security;
 pub mod settings;
