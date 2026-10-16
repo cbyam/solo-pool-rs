@@ -120,6 +120,20 @@ the shape gets its own review before it ships.
   funnel through a dedicated writer thread, enable WAL + `synchronous=NORMAL`),
   and the dashboard `/history` + `/chart` SQLite scans (contend with the share
   path on the same connection mutex; wrap in `spawn_blocking`).
+- [ ] **Take the hex work off the found-block path.** Measured 2026-10-16 on a
+  1.75 MB mainnet template with the release profile: about 9 ms passes between
+  a share meeting the network target and `submitblock` leaving the pool.
+  `assemble_block_hex` (`validator.rs:373`) hex-encodes the whole block (4.3
+  ms), and `submit_block` (`rpc.rs:256`) copies that string into a JSON value
+  and escape-scans it (4.8 ms). GBT already delivers every transaction as hex,
+  and `parse_gbt_transaction` (`rpc.rs:350`) decodes it only for it to be
+  encoded again here. Keep the GBT hex per job (it is in memory already, so the
+  new-job path pays nothing) and write the `submitblock` body directly, since
+  hex needs no JSON escaping. A prototype of the assembly took 67 µs. The gain
+  is about 0.0015% orphan risk per found block, so this is principle rather
+  than revenue: it is the largest delay the pool controls on the one path where
+  time decides the race. Share validation itself (1.9 µs a share, 80% of it the
+  merkle root, SHA-NI in use) needs nothing.
 - [ ] Hot-path cleanups: recompute hashrate windows only on accepted shares
   (today: 4 full deque scans per inbound message); move per-share hex/format
   allocations inside `debug!` so they're skipped when disabled; reuse a scratch
@@ -140,6 +154,25 @@ the shape gets its own review before it ships.
   without mandatory RDTS exists, so the matrix keeps answering "does this still
   work after the next upgrade" rather than only "did it work before the last
   one".
+
+### Planned
+
+- [ ] **Template policy.** Let the operator keep large OP_RETURNs,
+  inscriptions, token protocols and bare multisig out of the pool's blocks
+  whatever node sits behind it, with Knots' rule meanings and defaults. Off by
+  default. The pool deprioritises declined transactions with
+  `prioritisetransaction` so the node refills the space itself, and a backstop
+  filter covers the GBT cache window. Proven on regtest against Core 31.1 and
+  Knots 29.3. Design, latency rules and rollout in
+  [docs/design/template-policy.md](docs/design/template-policy.md).
+  - [x] Phase 0, during the freeze: classifier module with the Roots test
+    vectors, and an audit tool that replays mainnet blocks to report what each
+    rule would remove and cost. On branch `feat/template-policy-classifier`
+    (draft #147) until 1.0 ships, so the released binary does not change.
+    Results are in the design doc.
+  - [ ] Phase 1, first release after 1.0: observe mode.
+  - [ ] Phase 2: enforce mode, with the E2E regtest test in the Core/Knots
+    matrix.
 
 ### Features, deferred by decision
 
