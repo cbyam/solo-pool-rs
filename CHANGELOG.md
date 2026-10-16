@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-10-16
+
 ### Added
 - `docs/faq.md`: what each dashboard warning means and what to check
   (degraded, rejecting, stats not saving, node stale, mining paused), plus
@@ -117,6 +119,10 @@ everything else bumps the **patch** version.
   24-hour share log, extra `/stats` fields) and its open-items list now
   holds only what is still open. The README's architecture map and release
   steps move to CONTRIBUTING.md.
+- Dependency updates: tokio 1.53.1 to 1.53.2, tokio-util 0.7.19 to 0.7.20,
+  toml 1.1.6 to 1.1.8, uuid 1.26.1 to 1.28.0 and thiserror 2.0.20 to 2.0.21
+  (#142), and the Docker image's Debian trixie base moves to its current
+  digest (#143).
 
 ### Fixed
 - An SV1 share with the wrong extranonce2 length is answered with
@@ -128,6 +134,13 @@ everything else bumps the **patch** version.
   up, so they never appeared.
 - `packaging/install.sh --list` now marks the active version. A trailing slash
   in the path comparison had kept the marker from ever showing.
+
+### Security
+- rustls 0.23.45 to 0.23.46 for RUSTSEC-2026-0346 (client session `Debug`
+  output exposes TLS secrets), RUSTSEC-2026-0347, RUSTSEC-2026-0348 and
+  RUSTSEC-2026-0349. rustls is only a transitive dependency of the
+  Prometheus exporter and the pool never opens a TLS connection through it,
+  so there was no exposure (#144).
 
 ## [0.6.10] - 2026-09-24
 
@@ -241,10 +254,6 @@ everything else bumps the **patch** version.
   transitive dependency of the Prometheus exporter and the pool never opens
   a TLS connection with it, so there was no exposure; the daily
   supply-chain check is green again (#117).
-- rustls 0.23.45 to 0.23.46 for RUSTSEC-2026-0346 (client session `Debug`
-  output exposes TLS secrets), RUSTSEC-2026-0347, RUSTSEC-2026-0348 and
-  RUSTSEC-2026-0349. Same path as above: the pool never opens a TLS
-  connection through it, so there was no exposure (#144).
 
 ## [0.6.9] - 2026-09-08
 
@@ -1101,7 +1110,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.10...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.11...HEAD
+[0.6.11]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.10...v0.6.11
 [0.6.10]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.9...v0.6.10
 [0.6.9]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.8...v0.6.9
 [0.6.8]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.7...v0.6.8
