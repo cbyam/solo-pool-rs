@@ -35,18 +35,25 @@ relaying them needs a filtering node.
 
 ## Rules
 
-Each rule mirrors a Knots option, so a Knots user moving to Core can carry
-their policy across and get the same blocks. The definitions and their test
+Each rule has the meaning and the default of a Knots option, so a Knots user
+moving to Core can carry their policy across and get the same blocks. The keys
+follow this config's own structure (snake_case, in one section) rather than
+Knots' spelling; the table maps each one. The definitions and their test
 vectors come from Bitcoin Roots (`src/policy/policy.cpp`, MIT licensed, on a
-Core v31.1 base), which reimplements the Knots behaviour.
+Core v31.1 base), which reimplements the Knots behaviour with the same option
+names.
 
-| Key | Knots option | Rejects |
-|---|---|---|
-| `datacarriersize` | `-datacarriersize` | data-carrier bytes above the limit, counting every OP_RETURN script in the transaction |
-| `datacarrierfullcount` | `-datacarrierfullcount` | also counts data embedded in the script being executed toward the same limit: `OP_FALSE OP_IF ... OP_ENDIF` envelopes (inscriptions) and data pushes followed by `OP_DROP` |
-| `rejecttokens` | `-rejecttokens` | Runes (`OP_RETURN OP_13`) and Olga (data in P2WSH outputs) |
-| `rejectparasites` | `-rejectparasites` | parasitic overlay protocols; in Roots' implementation, CAT-21 (`nLockTime == 21`) |
-| `permitbaremultisig` | `-permitbaremultisig` | bare multisig outputs when false (Stamps) |
+| Key | Knots / Roots option | Core option | Rejects |
+|---|---|---|---|
+| `datacarrier_size` | `-datacarriersize` (83) | `-datacarriersize`, OP_RETURN only, looser default | data-carrier bytes above the limit, counting every OP_RETURN script in the transaction |
+| `datacarrier_full_count` | `-datacarrierfullcount` (1) | none | also counts data embedded in the script being executed toward the same limit: `OP_FALSE OP_IF ... OP_ENDIF` envelopes (inscriptions) and data pushes followed by `OP_DROP` |
+| `reject_tokens` | `-rejecttokens` (0) | none | Runes (`OP_RETURN OP_13`) and Olga (data in P2WSH outputs) |
+| `reject_parasites` | `-rejectparasites` (1) | none | parasitic overlay protocols; in Roots' implementation, CAT-21 (`nLockTime == 21`) |
+| `permit_bare_multisig` | `-permitbaremultisig` (0) | `-permitbaremultisig` (1) | bare multisig outputs when false (Stamps) |
+
+Defaults in parentheses are from `bitcoind -help` on Knots 29.3 and Core 31.1.
+Where Core has the same option, the rule follows Knots' meaning and default,
+not Core's.
 
 A transaction whose parent in the template is rejected is rejected with it,
 whatever its own content.
@@ -233,11 +240,11 @@ after 1.0 is a compatible change (a new section with defaults).
 ```toml
 [template_policy]
 mode = "off"                     # off | observe | enforce
-datacarriersize = 83             # bytes; Knots' default
-datacarrierfullcount = true
-rejecttokens = false
-rejectparasites = true
-permitbaremultisig = false
+datacarrier_size = 83            # bytes; Knots -datacarriersize
+datacarrier_full_count = true    # Knots -datacarrierfullcount
+reject_tokens = false            # Knots -rejecttokens
+reject_parasites = true          # Knots -rejectparasites
+permit_bare_multisig = false     # Knots -permitbaremultisig
 verify_with_proposal = true      # only on templates the pool changed
 on_proposal_failure = "coinbase_only"   # coinbase_only | unfiltered
 ```
@@ -245,6 +252,28 @@ on_proposal_failure = "coinbase_only"   # coinbase_only | unfiltered
 Defaults for the rule keys follow Knots, so that turning `mode` on without
 other changes gives Knots-like blocks. `mode = "observe"` runs every rule and
 records the results but mines the node's template unchanged.
+
+### Later rules
+
+Knots 29.3 has more policy options. Whether one can move into the pool depends
+on what it needs to know:
+
+- **The transaction alone.** `-permitbarepubkey`, `-permitbaredatacarrier`,
+  `-acceptunknownwitness`, `-acceptnonstddatacarrier` and `-maxscriptsize` can
+  be judged from the transaction, the last two through the same
+  executed-script step as `datacarrier_full_count`. Good candidates, named the
+  same way (`permit_bare_pubkey` and so on).
+- **The coins being spent.** `-bytespersigopstrict` and `-maxtxlegacysigops`
+  count sigops in P2SH and witness scripts, which needs the spent coins. They
+  wait for the coin-lookup mode.
+- **Mempool or chain state.** `-spkreuse`, `-minrelaycoinblocks`,
+  `-minrelaymaturity` and `-permitephemeral` judge a transaction against other
+  transactions or coin ages. The pool sees one template, not the mempool, so
+  these stay with the node.
+- **Re-ranking rather than rejecting.** `-datacarriercost` makes data bytes
+  count as more than one vbyte when ranking. The deprioritise mechanism can
+  express this with a fee delta proportional to a transaction's data bytes
+  instead of a fixed large one.
 
 ## Visibility
 
@@ -285,13 +314,15 @@ parent, then checks that the template holds none of them, that the proposal
 passes, and that a block mined from it is accepted. It extends the existing
 block-submit rehearsal.
 
+## Decided
+
+- **Keys** (2026-10-16): Knots' meaning and defaults, this config's structure.
+  snake_case names in `[template_policy]`, mapped to the Knots, Roots and Core
+  options in the rules table. An operator who wants their node's own settings
+  (for example `reject_tokens = true`, as on the deployed node) sets them here.
+
 ## Open questions
 
-- **Key spelling.** Knots' names verbatim (`datacarriersize`) are the
-  vocabulary Knots users know; snake_case (`datacarrier_size`) matches the
-  rest of the config. This draft uses the Knots spelling.
-- **Default for `rejecttokens`.** Knots defaults it off; the deployed node runs
-  it on. The draft follows Knots.
 - **The coin-lookup mode,** if phase 0 shows the shape rule is not good enough.
 - **Detecting the priority area.** The pool may not be able to read
   `blockprioritysize` over RPC. If it cannot, documentation carries the

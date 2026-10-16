@@ -159,7 +159,7 @@ the shape gets its own review before it ships.
 
 - [ ] **Template policy.** Let the operator keep large OP_RETURNs,
   inscriptions, token protocols and bare multisig out of the pool's blocks
-  whatever node sits behind it, using Knots' rule names and defaults. Off by
+  whatever node sits behind it, with Knots' rule meanings and defaults. Off by
   default. The pool deprioritises declined transactions with
   `prioritisetransaction` so the node refills the space itself, and a backstop
   filter covers the GBT cache window. Proven on regtest against Core 31.1 and
