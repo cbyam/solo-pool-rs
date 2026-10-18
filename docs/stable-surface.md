@@ -447,6 +447,30 @@ unlabelled and fixed-reason counters exist from boot at zero.
   are minor releases.
 - The Umbrel gallery, icon, and manifest metadata.
 
+## Experimental features
+
+A feature can ship before it is promised. While it is experimental:
+
+- It is listed in the table below. Nothing else is experimental: a key,
+  metric, `/stats` field or route not listed here is covered as soon as it
+  ships.
+- It is off by default, and turning it on takes an explicit config change.
+  While it is on, the pool logs a warning at boot naming it.
+- Its config keys, metrics, `/stats` fields and routes may change
+  incompatibly or be removed in a minor release, with a changelog entry.
+- It does not change covered behaviour while it is off. A stats database
+  written while it was on still opens in a version without it.
+- Names carry no experimental marker, so promotion does not rename anything.
+  Promoting a feature removes it from this table in a minor release; from
+  then on the rules above apply to it in full.
+
+| Feature | Since | Surface |
+|---|---|---|
+| none yet | | |
+
+`[template_policy]` (see `docs/design/template-policy.md`) is planned to
+ship here, observe mode first.
+
 ## Stances
 
 These are decisions, recorded so no pending choice can force a breaking change
@@ -480,6 +504,7 @@ later.
 | Change the archive file naming or the image uid, workdir, or default config path | major |
 | Add a config key with a default, a `/stats` field, a metric, a route, a Stratum extension | minor |
 | Change an internal constant, a log line, dashboard layout, MSRV | minor |
+| Change or remove an experimental feature; promote one to covered | minor |
 | Fix a bug that made behaviour differ from this document | patch |
 
 A key or field slated for removal is first deprecated in a minor release with
