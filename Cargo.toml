@@ -63,7 +63,10 @@ tracing-appender = "0.2"
 
 # ── Metrics (Prometheus-compatible) ───────────────────────────────────────────
 metrics = "0.24"
-metrics-exporter-prometheus = "0.18"
+# Default features off: they add a push-gateway client (with rustls and
+# aws-lc-rs) and an HTTP listener. The pool uses neither; it renders through
+# PrometheusHandle and serves /metrics from axum.
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = "0.20" # MetricKindMask for the exporter idle-timeout (same minor as the exporter's own dep)
 
 # ── Dashboard HTTP server ──────────────────────────────────────────────────────

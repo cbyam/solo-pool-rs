@@ -29,6 +29,16 @@ everything else bumps the **patch** version.
   cgminer and Avalon firmware open no longer pull those durations toward
   zero.
 
+### Changed
+- The Prometheus exporter is built without its default features, which
+  brought in a push-gateway client and an HTTP listener the pool never used
+  (it serves `/metrics` from its own dashboard server). This removes 32
+  crates from the build, among them rustls, aws-lc-rs and ring, so the binary
+  carries no TLS code. Nothing it does changes.
+- Release, Docker and CI builds run with `--locked`, so a build uses exactly
+  the committed `Cargo.lock` and fails if it is out of date instead of
+  resolving new versions.
+
 ### Deprecated
 - `pool_share_difficulty`, `pool_share_validation_duration_ms`,
   `pool_connection_duration_secs` and `pool_vardiff_change_ratio`. They keep
