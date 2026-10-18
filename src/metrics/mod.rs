@@ -6,7 +6,7 @@
 /// dashboard uses to render the /metrics endpoint.  The HTTP listener is
 /// managed by network::dashboard, not here.
 use metrics::{counter, gauge, histogram};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder, PrometheusHandle};
 use metrics_util::MetricKindMask;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -16,18 +16,50 @@ use tracing::{info, warn};
 /// permanent label set in the exporter. 24 h matches the stats-map eviction.
 const METRIC_IDLE_TIMEOUT_SECS: u64 = 86_400;
 
+/// Bucket upper bounds for the histogram metrics. Any metric not listed here
+/// is exported as a summary.
+///
+/// Validation is a double SHA-256 plus bookkeeping, so tens of microseconds;
+/// the top buckets are there to catch a stall.
+const VALIDATION_SECONDS_BUCKETS: &[f64] = &[
+    0.000_01, 0.000_025, 0.000_05, 0.000_1, 0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01,
+];
+/// Mining sessions run from a reconnect loop's seconds to a week or more.
+const CONNECTION_SECONDS_BUCKETS: &[f64] = &[
+    1.0, 10.0, 60.0, 300.0, 1_800.0, 3_600.0, 21_600.0, 86_400.0, 604_800.0,
+];
+/// new / old difficulty, symmetric in log terms around 1 so `le="1"` splits
+/// moves down from moves up. 4 is the default `max_retarget_factor`.
+const RETARGET_RATIO_BUCKETS: &[f64] = &[0.25, 0.33, 0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
+
+/// The exporter configuration `init` installs, shared with the tests so they
+/// render what production renders.
+fn builder() -> Result<PrometheusBuilder, BuildError> {
+    PrometheusBuilder::new()
+        .idle_timeout(
+            MetricKindMask::ALL,
+            Some(Duration::from_secs(METRIC_IDLE_TIMEOUT_SECS)),
+        )
+        .set_buckets_for_metric(
+            Matcher::Full("pool_share_validation_duration_seconds".into()),
+            VALIDATION_SECONDS_BUCKETS,
+        )?
+        .set_buckets_for_metric(
+            Matcher::Full("pool_connection_duration_seconds".into()),
+            CONNECTION_SECONDS_BUCKETS,
+        )?
+        .set_buckets_for_metric(
+            Matcher::Full("pool_vardiff_retarget_ratio".into()),
+            RETARGET_RATIO_BUCKETS,
+        )
+}
+
 pub fn init(addr: &str) -> Option<PrometheusHandle> {
     if addr.is_empty() {
         info!("Prometheus metrics disabled (empty prometheus_addr)");
         return None;
     }
-    match PrometheusBuilder::new()
-        .idle_timeout(
-            MetricKindMask::ALL,
-            Some(Duration::from_secs(METRIC_IDLE_TIMEOUT_SECS)),
-        )
-        .install_recorder()
-    {
+    match builder().and_then(PrometheusBuilder::install_recorder) {
         Ok(handle) => Some(handle),
         Err(e) => {
             warn!("Failed to install Prometheus recorder: {e}");
@@ -80,14 +112,37 @@ pub fn share_rejected(reason: &str, worker: &str) {
 
 /// Recorded as fractional milliseconds. Validation runs well under a
 /// millisecond, so whole milliseconds recorded almost every share as 0.
+///
+/// `pool_share_validation_duration_ms` is the deprecated summary, kept until
+/// 1.0; the histogram in seconds replaces it.
 pub fn share_validation_time(elapsed: Duration) {
     histogram!("pool_share_validation_duration_ms").record(elapsed.as_secs_f64() * 1000.0);
+    histogram!("pool_share_validation_duration_seconds").record(elapsed.as_secs_f64());
 }
 
-/// Recorded as fractional seconds, so the short side connections some
-/// firmware opens do not all land on 0.
-pub fn connection_duration(worker: &str, elapsed: Duration) {
+/// A session ended. Counted once in `pool_connections_closed_total` by how far
+/// it got: `no_auth` never named a worker, `no_shares` authorized but never
+/// submitted, `shares` submitted at least one share, accepted or not.
+///
+/// Only `shares` sessions go into `pool_connection_duration_seconds`. cgminer
+/// and Avalon firmware open side connections that authorize and close within
+/// a second, and counting them pulled every Avalon's duration toward zero.
+///
+/// `pool_connection_duration_secs` is the deprecated summary, kept until 1.0.
+/// It still records every authorized session, as it always has.
+pub fn session_closed(worker: Option<&str>, shares_submitted: u64, elapsed: Duration) {
+    let Some(worker) = worker else {
+        counter!("pool_connections_closed_total", "reason" => "no_auth").increment(1);
+        return;
+    };
     histogram!("pool_connection_duration_secs", "worker" => worker.to_string())
+        .record(elapsed.as_secs_f64());
+    if shares_submitted == 0 {
+        counter!("pool_connections_closed_total", "reason" => "no_shares").increment(1);
+        return;
+    }
+    counter!("pool_connections_closed_total", "reason" => "shares").increment(1);
+    histogram!("pool_connection_duration_seconds", "worker" => worker.to_string())
         .record(elapsed.as_secs_f64());
 }
 
@@ -127,7 +182,10 @@ pub fn rpc_fallback_used() {
 
 pub fn vardiff_retarget(worker: &str, old_diff: u64, new_diff: u64) {
     gauge!("pool_worker_difficulty", "worker" => worker.to_string()).set(new_diff as f64);
-    histogram!("pool_vardiff_change_ratio").record(new_diff as f64 / old_diff as f64);
+    let ratio = new_diff as f64 / old_diff as f64;
+    // pool_vardiff_change_ratio is the deprecated summary, kept until 1.0.
+    histogram!("pool_vardiff_change_ratio").record(ratio);
+    histogram!("pool_vardiff_retarget_ratio").record(ratio);
     // The ratio is exported as a summary over a short rolling window, and
     // retargets are sparse enough that its quantiles mostly read 0. A counter
     // makes the retarget rate itself something a dashboard can plot.
@@ -174,6 +232,9 @@ pub fn keep_pool_series_alive() {
         counter!("pool_connections_refused_total", "reason" => reason).increment(0);
     }
     counter!("pool_bans_total", "reason" => "message too large").increment(0);
+    for reason in ["no_auth", "no_shares", "shares"] {
+        counter!("pool_connections_closed_total", "reason" => reason).increment(0);
+    }
     for reason in [
         "rpc_error",
         "rejected",
@@ -296,7 +357,7 @@ mod tests {
         metrics::with_local_recorder(&recorder, || {
             super::share_validation_time(Duration::from_micros(250));
             super::share_validation_time(Duration::from_micros(250));
-            super::connection_duration("rig1", Duration::from_millis(1_500));
+            super::session_closed(Some("rig1"), 1, Duration::from_millis(1_500));
         });
 
         let rendered = handle.render();
@@ -308,5 +369,71 @@ mod tests {
             rendered.contains("pool_connection_duration_secs_sum{worker=\"rig1\"} 1.5\n"),
             "{rendered}"
         );
+    }
+
+    /// The replacement metrics render as Prometheus histograms with the
+    /// buckets `init` configures, while the deprecated names stay summaries.
+    #[test]
+    fn replacement_metrics_are_histograms_and_old_names_stay_summaries() {
+        let recorder = super::builder().unwrap().build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            super::share_validation_time(Duration::from_micros(40));
+            super::session_closed(Some("rig1"), 3, Duration::from_secs(7_200));
+            super::vardiff_retarget("rig1", 4096, 2048);
+        });
+
+        let rendered = handle.render();
+        for expected in [
+            "# TYPE pool_share_validation_duration_seconds histogram",
+            "pool_share_validation_duration_seconds_bucket{le=\"0.000025\"} 0\n",
+            "pool_share_validation_duration_seconds_bucket{le=\"0.00005\"} 1\n",
+            "# TYPE pool_connection_duration_seconds histogram",
+            "pool_connection_duration_seconds_bucket{worker=\"rig1\",le=\"3600\"} 0\n",
+            "pool_connection_duration_seconds_bucket{worker=\"rig1\",le=\"21600\"} 1\n",
+            "# TYPE pool_vardiff_retarget_ratio histogram",
+            "pool_vardiff_retarget_ratio_bucket{le=\"0.33\"} 0\n",
+            "pool_vardiff_retarget_ratio_bucket{le=\"0.5\"} 1\n",
+            "# TYPE pool_share_validation_duration_ms summary",
+            "# TYPE pool_connection_duration_secs summary",
+            "# TYPE pool_vardiff_change_ratio summary",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} in:\n{rendered}"
+            );
+        }
+    }
+
+    /// Sessions that never submitted a share are counted, not timed, so the
+    /// side connections Avalon firmware opens do not drag its durations
+    /// toward zero. The deprecated summary keeps its old behaviour.
+    #[test]
+    fn sessions_without_shares_are_counted_but_not_timed() {
+        let recorder = super::builder().unwrap().build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            super::session_closed(None, 0, Duration::from_millis(50));
+            super::session_closed(Some("avalon"), 0, Duration::from_millis(120));
+            super::session_closed(Some("avalon"), 0, Duration::from_millis(80));
+            super::session_closed(Some("avalon"), 40, Duration::from_secs(600));
+        });
+
+        let rendered = handle.render();
+        for expected in [
+            "pool_connections_closed_total{reason=\"no_auth\"} 1\n",
+            "pool_connections_closed_total{reason=\"no_shares\"} 2\n",
+            "pool_connections_closed_total{reason=\"shares\"} 1\n",
+            "pool_connection_duration_seconds_count{worker=\"avalon\"} 1\n",
+            "pool_connection_duration_seconds_sum{worker=\"avalon\"} 600\n",
+            "pool_connection_duration_secs_count{worker=\"avalon\"} 3\n",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} in:\n{rendered}"
+            );
+        }
     }
 }

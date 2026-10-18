@@ -297,9 +297,26 @@ port, and a trailing dot; the Origin-to-Host comparison ignores case only, so
 the ports must match.
 
 **Metrics.** These names and label sets are promised; adding a metric is
-compatible, removing or relabelling one is not. The four distribution metrics
-are exported as Prometheus summaries; their quantiles and window are not
-covered.
+compatible, removing or relabelling one is not. Histogram bucket bounds are
+not covered. `pool_share_difficulty` is exported as a Prometheus summary; its
+quantiles and window are not covered.
+
+Three summaries are deprecated and are removed at 1.0. Each has a histogram
+replacement, and the replacements are the promised names:
+
+| Deprecated summary | Replacement histogram |
+|---|---|
+| `pool_share_validation_duration_ms` | `pool_share_validation_duration_seconds` |
+| `pool_connection_duration_secs` | `pool_connection_duration_seconds` |
+| `pool_vardiff_change_ratio` | `pool_vardiff_retarget_ratio` |
+
+A summary's quantiles cover only the last 60 seconds and read 0 when nothing
+was recorded in that window, which for retargets and disconnects is most of
+the time. Its `_sum` and `_count` are cumulative and stay correct. A
+histogram's buckets are cumulative too, so `histogram_quantile()` works over
+any range a query picks. `pool_connection_duration_seconds` records only
+sessions that submitted at least one share; the deprecated summary records
+every authorized session.
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -310,8 +327,9 @@ covered.
 | `pool_shares_rejected_total` | counter | `reason`, `worker` |
 | `pool_worker_shares_rejected_total` | counter | `worker` |
 | `pool_share_difficulty` | summary | `worker` |
-| `pool_share_validation_duration_ms` | summary | |
-| `pool_connection_duration_secs` | summary | `worker` |
+| `pool_share_validation_duration_seconds` | histogram | |
+| `pool_connection_duration_seconds` | histogram | `worker` |
+| `pool_connections_closed_total` | counter | `reason` |
 | `pool_miner_disconnects_total` | counter | `reason`, `worker` |
 | `pool_block_submissions_success_total` | counter | |
 | `pool_block_submissions_failed_total` | counter | `reason` |
@@ -322,7 +340,7 @@ covered.
 | `pool_rpc_fallback_used_total` | counter | |
 | `pool_zmq_reconnects_total` | counter | |
 | `pool_worker_difficulty` | gauge | `worker` |
-| `pool_vardiff_change_ratio` | summary | |
+| `pool_vardiff_retarget_ratio` | histogram | |
 | `pool_vardiff_retargets_total` | counter | `direction`, `worker` |
 | `pool_hashrate_estimated_hps` | gauge | `worker` |
 | `pool_worker_online` | gauge | `worker` |
