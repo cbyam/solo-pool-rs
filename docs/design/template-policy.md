@@ -91,6 +91,8 @@ the transaction but not the coin. Two ways to close that gap:
   script. No lookups, so it costs nothing. The shape rule must recognise key
   spends explicitly: an ordinary P2WPKH public key parsed as a script can look
   like embedded data, and treating it as one would decline normal payments.
+  The classifier's tests carry explicit vectors for this: P2WPKH spends and
+  taproot key-path spends (with and without an annex) must pass every rule.
 - **Coin lookup.** Exact, but needs `getrawtransaction` for each spent coin
   (which needs `txindex=1`; a default Umbrel node does not have it) and a cache
   keyed by txid. Add it only if the phase 0 audit shows the shape rule
@@ -199,6 +201,22 @@ that expires or is evicted stays on record, and deltas survive restarts in
 
 The regtest run confirmed both behaviours on Core 31.1 and Knots 29.3.
 
+### Checking that the node honours the deltas
+
+The pool does not trust its node to apply the deltas; it checks. A
+transaction the pool deprioritised that is still in a template fetched more
+than GBT's cache window (5 seconds, gotcha 2) after the delta was set means
+the node is ignoring it. The backstop filter still removes the transaction,
+so the block stays within policy, but its space goes unfilled and the block
+earns less than it should.
+
+Each such catch is counted (`pool_template_delta_ignored_total`). When they
+persist across refreshes, the pool logs a warning and the dashboard shows
+it: the node is not honouring deprioritisation, and on Knots or Roots the
+usual cause is `blockprioritysize` above 0. The same signal catches a future
+node release that changes how deltas, GBT caching or the block builder's
+feerate cutoff work.
+
 ## Gotchas found on regtest
 
 1. **The coin-age priority area ignores fee deltas.** With Knots
@@ -211,6 +229,14 @@ The regtest run confirmed both behaviours on Core 31.1 and Knots 29.3.
    `blockprioritysize=0`. Roots has no priority delta at all (the argument is a
    dummy that must be zero). Rule: on Knots the pool sends both deltas; for any
    node the documentation recommends `blockprioritysize=0`.
+
+   A stock Roots node is the case the deltas cannot close: its priority area
+   is on and there is no priority delta to send. The policy still holds,
+   because the backstop removes what the priority area picks, but that space
+   is left empty. Documentation alone cannot fix this. The pool's app on
+   Umbrel cannot change the node's config, and a missed line in the docs
+   fails silently, so the pool detects the problem at runtime (see "Checking
+   that the node honours the deltas").
 2. **GBT caches its template.** After a mempool change, Core reuses the cached
    template for up to 5 seconds unless the tip moves (`rpc/mining.cpp:863` in
    v31.1). A just-deprioritised transaction can appear during that window, which
@@ -256,6 +282,13 @@ low-fee ones that nearly every mempool holds.
 A new `[template_policy]` section, every key a flat scalar so the
 `SOLO_POOL_TEMPLATE_POLICY__*` environment overrides work on Umbrel. Adding it
 after 1.0 is a compatible change (a new section with defaults).
+
+The section ships **experimental**: its keys, metrics and `/stats` fields may
+change or go away in a minor release, the pool logs a warning at boot while
+`mode` is not `off`, and it becomes stable only after enforce mode has run on
+prod. This needs an experimental clause in `docs/stable-surface.md`, which has
+to land before 1.0; without it, the section would fall under the 1.x promise
+the day it ships.
 
 ```toml
 [template_policy]
@@ -305,8 +338,20 @@ An operator choosing a policy should see what it costs.
   Proposed names: `pool_template_declined_txs_total{rule}`,
   `pool_template_declined_weight_total{rule}`,
   `pool_template_declined_fees_sats_total{rule}`, plus
-  `pool_template_proposal_failures_total`. They join the stable surface when
-  they ship.
+  `pool_template_proposal_failures_total` and
+  `pool_template_delta_ignored_total`. They stay experimental with the rest
+  of the section.
+- Each declined transaction is counted once. One transaction can match
+  several rules (a Runes transaction with a large OP_RETURN trips both
+  `reject_tokens` and `datacarrier_size`), so it is credited to the first
+  rule it matches, in the order of the rules table. A transaction removed
+  only because its parent was declined is labelled `rule="descendant"`. An
+  unlabelled total sits beside the per-rule series, so a sum over `rule`
+  never has to be trusted for the total.
+- Fees declined are an upper bound. The true cost is the difference from the
+  template the node would have built without the deltas, and in enforce mode
+  the pool never sees that template. Observe mode on the operator's own node
+  is the measurement.
 - A dashboard tile with the active rules and "fees declined" for the current
   template and since start.
 - `/stats` fields carrying the same.
@@ -353,18 +398,41 @@ parent, then checks that the template holds none of them, that the proposal
 passes, and that a block mined from it is accepted. It extends the existing
 block-submit rehearsal.
 
+Also before enforce ships:
+
+- **Rerun the audit over a full difficulty period** (2,016 blocks, about two
+  weeks). The phase 0 window was 144 blocks, about one day, and inscription
+  and Runes traffic arrives in bursts. The coin-lookup mode stays unplanned
+  only if exact and shape mode still agree over the longer window.
+- **Node versions in the E2E matrix.** The mechanism depends on how Core and
+  Knots implement `prioritisetransaction`, GBT caching and the block
+  builder's feerate cutoff. A new Core or Knots major joins the matrix, and
+  passes, before the documentation claims support for it. Between releases,
+  the runtime check above catches a node that stops honouring the deltas.
+
+A change in those internals is a fee risk, not a correctness risk: the
+backstop keeps declined transactions out and the proposal check rejects an
+invalid block, so what breaks is the refill.
+
 ## Decided
 
 - **Keys** (2026-10-16): Knots' meaning and defaults, this config's structure.
   snake_case names in `[template_policy]`, mapped to the Knots, Roots and Core
   options in the rules table. An operator who wants their node's own settings
   (for example `reject_tokens = true`, as on the deployed node) sets them here.
+- **Experimental status** (2026-10-18): `[template_policy]` ships
+  experimental, observe mode first, in a release after 1.0.
+- **Detecting an ignored delta** (2026-10-18): the pool checks behaviour
+  instead of reading node config. A deprioritised transaction still in a
+  template after the cache window is counted and warned about. This replaces
+  the open question on reading `blockprioritysize`.
+- **Attribution** (2026-10-18): each declined transaction counts once, under
+  the first matching rule; descendants under `descendant`; plus a total.
+- **Before enforce** (2026-10-18): a 2,016-block audit, and every supported
+  node major in the E2E matrix.
 
 ## Open questions
 
 - **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks, so
   it is not planned; it stays an option if a later rule (the sigop limits)
   needs the spent coins.
-- **Detecting the priority area.** The pool may not be able to read
-  `blockprioritysize` over RPC. If it cannot, documentation carries the
-  recommendation and the pool always sends the priority delta to Knots.
