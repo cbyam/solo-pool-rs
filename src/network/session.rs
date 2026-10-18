@@ -327,7 +327,7 @@ pub async fn run(
 
     metrics::miner_disconnected();
     session.stats.miner_disconnected();
-    let uptime = session.connect_time.elapsed().as_secs() as f64;
+    let uptime = session.connect_time.elapsed();
     if let Some(worker) = &session.worker {
         session.stats.mark_worker_offline(worker);
         session
@@ -340,7 +340,7 @@ pub async fn run(
         worker = ?session.worker,
         accepted = session.shares_accepted,
         rejected = session.shares_rejected,
-        uptime_secs = uptime,
+        uptime_secs = uptime.as_secs_f64(),
         "Miner session ended"
     );
 }
@@ -839,8 +839,7 @@ async fn handle_submit(
             hash_difficulty,
             hash,
         }) => {
-            let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
-            metrics::share_validation_time(validation_duration_ms);
+            metrics::share_validation_time(validation_start.elapsed());
 
             let latency_ms = submit_start.elapsed().as_millis();
             debug!(
@@ -871,8 +870,7 @@ async fn handle_submit(
             block_hex,
             hash,
         }) => {
-            let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
-            metrics::share_validation_time(validation_duration_ms);
+            metrics::share_validation_time(validation_start.elapsed());
 
             let block_hash_hex = validator::hash_display_hex(&hash);
             let submit_result = engine
@@ -919,8 +917,7 @@ async fn handle_submit(
         }
 
         Err(e) => {
-            let validation_duration_ms = validation_start.elapsed().as_millis() as f64;
-            metrics::share_validation_time(validation_duration_ms);
+            metrics::share_validation_time(validation_start.elapsed());
 
             let reason = match &e {
                 PoolError::StaleJob(_) => "stale",

@@ -370,7 +370,7 @@ pub async fn run(
     reader_task.abort();
     metrics::miner_disconnected();
     session.stats.miner_disconnected();
-    let uptime = session.connect_time.elapsed().as_secs() as f64;
+    let uptime = session.connect_time.elapsed();
     if let Some(worker) = &session.worker {
         session.stats.mark_worker_offline(worker);
         session
@@ -383,7 +383,7 @@ pub async fn run(
         worker = ?session.worker,
         accepted = session.shares_accepted,
         rejected = session.shares_rejected,
-        uptime_secs = uptime,
+        uptime_secs = uptime.as_secs_f64(),
         "SV2 miner session ended"
     );
 }
@@ -758,7 +758,7 @@ async fn handle_submit(
             hash_difficulty,
             hash,
         }) => {
-            metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
+            metrics::share_validation_time(validation_start.elapsed());
             debug!(
                 worker = %worker, hash = %crate::mining::validator::hash_display_hex(&hash), diff = assigned_difficulty,
                 hash_diff = hash_difficulty, latency_ms = submit_start.elapsed().as_millis(),
@@ -782,7 +782,7 @@ async fn handle_submit(
             block_hex,
             hash,
         }) => {
-            metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
+            metrics::share_validation_time(validation_start.elapsed());
             let block_hash_hex = crate::mining::validator::hash_display_hex(&hash);
             match engine
                 .submit_found_block(
@@ -830,7 +830,7 @@ async fn handle_submit(
         }
 
         Err(e) => {
-            metrics::share_validation_time(validation_start.elapsed().as_millis() as f64);
+            metrics::share_validation_time(validation_start.elapsed());
             let reason = match &e {
                 crate::error::PoolError::StaleJob(_) => "stale",
                 crate::error::PoolError::DuplicateShare => "duplicate",

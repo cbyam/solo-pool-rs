@@ -8,6 +8,7 @@
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_util::MetricKindMask;
+use std::time::Duration;
 use tracing::{info, warn};
 
 /// Drop metric series untouched for this long. Worker-labeled series are minted
@@ -23,7 +24,7 @@ pub fn init(addr: &str) -> Option<PrometheusHandle> {
     match PrometheusBuilder::new()
         .idle_timeout(
             MetricKindMask::ALL,
-            Some(std::time::Duration::from_secs(METRIC_IDLE_TIMEOUT_SECS)),
+            Some(Duration::from_secs(METRIC_IDLE_TIMEOUT_SECS)),
         )
         .install_recorder()
     {
@@ -77,13 +78,17 @@ pub fn share_rejected(reason: &str, worker: &str) {
     .increment(1);
 }
 
-pub fn share_validation_time(duration_ms: f64) {
-    histogram!("pool_share_validation_duration_ms").record(duration_ms);
+/// Recorded as fractional milliseconds. Validation runs well under a
+/// millisecond, so whole milliseconds recorded almost every share as 0.
+pub fn share_validation_time(elapsed: Duration) {
+    histogram!("pool_share_validation_duration_ms").record(elapsed.as_secs_f64() * 1000.0);
 }
 
-pub fn connection_duration(worker: &str, duration_secs: f64) {
+/// Recorded as fractional seconds, so the short side connections some
+/// firmware opens do not all land on 0.
+pub fn connection_duration(worker: &str, elapsed: Duration) {
     histogram!("pool_connection_duration_secs", "worker" => worker.to_string())
-        .record(duration_secs);
+        .record(elapsed.as_secs_f64());
 }
 
 pub fn miner_disconnect(reason: &str, worker: &str) {
@@ -278,5 +283,30 @@ mod tests {
                  versions of `metrics`. Rendered:\n{rendered}"
             );
         }
+    }
+
+    /// Durations keep their fractional part. Both used to be truncated to
+    /// whole units before recording, so a 74,605-share run summed to 2 ms and
+    /// every short session summed to 0 s.
+    #[test]
+    fn durations_are_recorded_with_their_fraction() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            super::share_validation_time(Duration::from_micros(250));
+            super::share_validation_time(Duration::from_micros(250));
+            super::connection_duration("rig1", Duration::from_millis(1_500));
+        });
+
+        let rendered = handle.render();
+        assert!(
+            rendered.contains("pool_share_validation_duration_ms_sum 0.5\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("pool_connection_duration_secs_sum{worker=\"rig1\"} 1.5\n"),
+            "{rendered}"
+        );
     }
 }
