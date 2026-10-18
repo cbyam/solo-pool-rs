@@ -90,8 +90,16 @@ pub fn miner_disconnected() {
     gauge!("pool_connected_miners").decrement(1.0);
 }
 
+/// `difficulty` is the credited difficulty (`Vardiff::credit_for`), so
+/// `rate(pool_share_work_total[5m]) * 2^32` is the worker's hashrate on the
+/// same basis as `pool_hashrate_estimated_hps`.
+///
+/// `pool_share_difficulty` is the deprecated summary, kept until 1.0. Its
+/// quantiles only repeated the assigned difficulty; the counter keeps its
+/// `_sum`, the one part a sampled gauge cannot rebuild.
 pub fn share_accepted(difficulty: u64, worker: &str) {
     counter!("pool_shares_accepted_total", "worker" => worker.to_string()).increment(1);
+    counter!("pool_share_work_total", "worker" => worker.to_string()).increment(difficulty);
     histogram!("pool_share_difficulty", "worker" => worker.to_string()).record(difficulty as f64);
 }
 
@@ -398,6 +406,32 @@ mod tests {
             "# TYPE pool_share_validation_duration_ms summary",
             "# TYPE pool_connection_duration_secs summary",
             "# TYPE pool_vardiff_change_ratio summary",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} in:\n{rendered}"
+            );
+        }
+    }
+
+    /// Accepted work sums credited difficulty and matches the deprecated
+    /// summary's `_sum`, the basis for hashrate in PromQL.
+    #[test]
+    fn accepted_work_counts_credited_difficulty() {
+        let recorder = super::builder().unwrap().build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            super::share_accepted(4096, "rig1");
+            super::share_accepted(1024, "rig1");
+        });
+
+        let rendered = handle.render();
+        for expected in [
+            "# TYPE pool_share_work_total counter",
+            "pool_share_work_total{worker=\"rig1\"} 5120\n",
+            "pool_share_difficulty_sum{worker=\"rig1\"} 5120\n",
+            "pool_shares_accepted_total{worker=\"rig1\"} 2\n",
         ] {
             assert!(
                 rendered.contains(expected),

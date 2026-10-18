@@ -39,6 +39,11 @@ Gates, in the order they can be closed:
   correctness bug on the share or block path, started 2026-09-05 on 0.6.6.
   Patch-day restarts do not reset it; a change to share validation or block
   submission does. Earliest completion around 2026-11-05.
+- [ ] **Remove the four deprecated summary metrics in the rc.**
+  `pool_share_difficulty`, `pool_share_validation_duration_ms`,
+  `pool_connection_duration_secs` and `pool_vardiff_change_ratio`, together,
+  with the deprecation table in `docs/stable-surface.md`. Their replacements
+  (`pool_share_work_total` and three histograms) shipped alongside them first.
 - [ ] **Tag v1.0.0-rc.1** once the doc ships; **1.0.0** after a quiet end to
   the soak. Official Umbrel store acceptance is wanted but is not a gate: the
   review is outside our control, and Umbrel users already run the pool from

@@ -18,6 +18,10 @@ everything else bumps the **patch** version.
   disconnects is most scrapes. Histogram buckets are cumulative, so
   `histogram_quantile()` works over any range. The new names use base units
   (seconds) per Prometheus convention.
+- `pool_share_work_total{worker}`: the credited difficulty of accepted
+  shares, summed. `rate(pool_share_work_total[5m]) * 2^32` gives hashrate
+  in H/s on the same basis as `pool_hashrate_estimated_hps`, and `sum()`
+  totals it across workers.
 - `pool_connections_closed_total{reason}` counts every ended session once:
   `no_auth` (never named a worker), `no_shares` (authorized, never
   submitted) or `shares`. Only `shares` sessions are timed in
@@ -26,9 +30,10 @@ everything else bumps the **patch** version.
   zero.
 
 ### Deprecated
-- `pool_share_validation_duration_ms`, `pool_connection_duration_secs` and
-  `pool_vardiff_change_ratio`. They keep recording as before and are removed
-  at 1.0. Move dashboards and alerts to the histogram replacements above.
+- `pool_share_difficulty`, `pool_share_validation_duration_ms`,
+  `pool_connection_duration_secs` and `pool_vardiff_change_ratio`. They keep
+  recording as before and are removed at 1.0. Move dashboards and alerts to
+  the replacements above (`pool_share_work_total` for share difficulty).
 
 ### Fixed
 - `pool_share_validation_duration_ms` and `pool_connection_duration_secs`
