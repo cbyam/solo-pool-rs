@@ -333,8 +333,12 @@ pub async fn run(
         session
             .stats
             .stash_share_history(worker, session.vardiff.take_share_history());
-        metrics::connection_duration(worker, uptime);
     }
+    metrics::session_closed(
+        session.worker.as_deref(),
+        session.shares_accepted + session.shares_rejected,
+        uptime,
+    );
     info!(
         peer = %peer,
         worker = ?session.worker,

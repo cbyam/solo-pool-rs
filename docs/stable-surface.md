@@ -222,7 +222,7 @@ Plain JSON-RPC lines over TCP, `\n` or `\r\n` terminated.
   difficulty changes keeps mining.
 - Each accepted share is credited at the threshold it actually cleared: the
   current assignment, else the previous assignment, else the floor. Hashrate,
-  the round work (`round_work`), and the `pool_share_difficulty` metric all use
+  the round work (`round_work`), and the `pool_share_work_total` metric all use
   this credited value, never the hash's own difficulty. Share counts are plain
   counts. Best-share figures are the exception: they record the hash's own
   difficulty.
@@ -297,9 +297,31 @@ port, and a trailing dot; the Origin-to-Host comparison ignores case only, so
 the ports must match.
 
 **Metrics.** These names and label sets are promised; adding a metric is
-compatible, removing or relabelling one is not. The four distribution metrics
-are exported as Prometheus summaries; their quantiles and window are not
-covered.
+compatible, removing or relabelling one is not. Histogram bucket bounds are
+not covered.
+
+All four summaries are deprecated and are removed at 1.0. Each has a
+replacement, and the replacements are the promised names:
+
+| Deprecated summary | Replacement |
+|---|---|
+| `pool_share_difficulty` | `pool_share_work_total` (counter) |
+| `pool_share_validation_duration_ms` | `pool_share_validation_duration_seconds` (histogram) |
+| `pool_connection_duration_secs` | `pool_connection_duration_seconds` (histogram) |
+| `pool_vardiff_change_ratio` | `pool_vardiff_retarget_ratio` (histogram) |
+
+`pool_share_work_total` sums the credited difficulty of accepted shares, the
+same total as the old summary's `_sum`, so `rate(pool_share_work_total[5m])
+* 2^32` is hashrate in H/s. The old summary's quantiles only repeated the
+assigned difficulty, which `pool_worker_difficulty` already reports.
+
+A summary's quantiles cover only the last 60 seconds and read 0 when nothing
+was recorded in that window, which for retargets and disconnects is most of
+the time. Its `_sum` and `_count` are cumulative and stay correct. A
+histogram's buckets are cumulative too, so `histogram_quantile()` works over
+any range a query picks. `pool_connection_duration_seconds` records only
+sessions that submitted at least one share; the deprecated summary records
+every authorized session.
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -309,9 +331,10 @@ covered.
 | `pool_shares_accepted_total` | counter | `worker` |
 | `pool_shares_rejected_total` | counter | `reason`, `worker` |
 | `pool_worker_shares_rejected_total` | counter | `worker` |
-| `pool_share_difficulty` | summary | `worker` |
-| `pool_share_validation_duration_ms` | summary | |
-| `pool_connection_duration_secs` | summary | `worker` |
+| `pool_share_work_total` | counter | `worker` |
+| `pool_share_validation_duration_seconds` | histogram | |
+| `pool_connection_duration_seconds` | histogram | `worker` |
+| `pool_connections_closed_total` | counter | `reason` |
 | `pool_miner_disconnects_total` | counter | `reason`, `worker` |
 | `pool_block_submissions_success_total` | counter | |
 | `pool_block_submissions_failed_total` | counter | `reason` |
@@ -322,7 +345,7 @@ covered.
 | `pool_rpc_fallback_used_total` | counter | |
 | `pool_zmq_reconnects_total` | counter | |
 | `pool_worker_difficulty` | gauge | `worker` |
-| `pool_vardiff_change_ratio` | summary | |
+| `pool_vardiff_retarget_ratio` | histogram | |
 | `pool_vardiff_retargets_total` | counter | `direction`, `worker` |
 | `pool_hashrate_estimated_hps` | gauge | `worker` |
 | `pool_worker_online` | gauge | `worker` |

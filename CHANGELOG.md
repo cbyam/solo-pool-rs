@@ -9,6 +9,32 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- Histogram metrics, recorded alongside the summaries they replace:
+  `pool_share_validation_duration_seconds`,
+  `pool_connection_duration_seconds` (per `worker`) and
+  `pool_vardiff_retarget_ratio`. A summary's quantiles cover only the last
+  60 seconds and read 0 when that window is empty, which for retargets and
+  disconnects is most scrapes. Histogram buckets are cumulative, so
+  `histogram_quantile()` works over any range. The new names use base units
+  (seconds) per Prometheus convention.
+- `pool_share_work_total{worker}`: the credited difficulty of accepted
+  shares, summed. `rate(pool_share_work_total[5m]) * 2^32` gives hashrate
+  in H/s on the same basis as `pool_hashrate_estimated_hps`, and `sum()`
+  totals it across workers.
+- `pool_connections_closed_total{reason}` counts every ended session once:
+  `no_auth` (never named a worker), `no_shares` (authorized, never
+  submitted) or `shares`. Only `shares` sessions are timed in
+  `pool_connection_duration_seconds`, so the sub-second side connections
+  cgminer and Avalon firmware open no longer pull those durations toward
+  zero.
+
+### Deprecated
+- `pool_share_difficulty`, `pool_share_validation_duration_ms`,
+  `pool_connection_duration_secs` and `pool_vardiff_change_ratio`. They keep
+  recording as before and are removed at 1.0. Move dashboards and alerts to
+  the replacements above (`pool_share_work_total` for share difficulty).
+
 ### Fixed
 - `pool_share_validation_duration_ms` and `pool_connection_duration_secs`
   now record fractional values. Both were truncated to whole units before
