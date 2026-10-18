@@ -9,6 +9,16 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- `pool_share_validation_duration_ms` and `pool_connection_duration_secs`
+  now record fractional values. Both were truncated to whole units before
+  recording. Share validation takes well under a millisecond, so nearly
+  every sample was 0 (2 ms summed over about 75,000 shares on one pool),
+  and sessions shorter than a second, such as the side connections Avalon
+  firmware opens, all recorded 0 s. The "Miner session ended" log line's
+  `uptime_secs` gains the same precision. Names, types and labels are
+  unchanged.
+
 ## [0.6.11] - 2026-10-16
 
 ### Added
