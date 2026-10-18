@@ -52,7 +52,47 @@ Gates, in the order they can be closed:
 Explicitly not a gate: feature completeness. Fees, multi-coin and cloud are out
 of scope by decision, and 1.0 puts that in writing.
 
-## Next: notifications (planned for 0.6.12, not a 1.0 gate)
+## 1.1: notifications and template policy
+
+Held until after 1.0 (decided 2026-10-18): both are features, so neither fits
+the code freeze, and after 1.0 a new config section is a compatible minor
+change. They can ship together in 1.1, but notifications do not wait on
+template policy; if the template work needs longer, it moves to 1.2.
+
+### Template policy
+
+Design in `docs/design/template-policy.md`; phase 0 classifier and audit on
+draft PR #147. Ships experimental under the stable-surface clause, observe
+mode first, then enforce in a later release once its pre-enforce checks pass
+(2,016-block audit, every supported node major in the E2E matrix).
+
+### Notifications
+
+Work order, from the 2026-10-18 review of the plan below:
+
+1. **Move health state into Rust.** Degraded, reject health and node stale
+   are computed in the dashboard's JavaScript today (`isDegraded`,
+   `rejectHealth`, `NODE_WARN_SECS` in `src/network/dashboard.rs`), so the
+   server cannot alert on them. Port the rules, expose per-worker state in
+   `/stats`, and have the dashboard read it, so alerts and dashboard cannot
+   drift.
+2. **Notifier core and webhook**, the test route and the Settings button.
+   The first evaluation after boot only records a baseline. The block-found
+   event is queued after `submitblock` returns, never before it.
+3. **ntfy and heartbeat.**
+4. **Email** (`lettre`).
+
+Two events missing from the list below: **found block rejected by the node**
+(urgent) and **mining paused** (high).
+
+TLS arrives with this work; 1.0 ships without any (#152). Pick one rustls
+crypto provider and install it at boot, use the OS root store
+(`rustls-native-certs`), offer no switch to skip verification (a `ca_file`
+key if asked), keep plain `http://` for LAN targets, take rustls through
+`reqwest` with default features off, ban `openssl-sys` and `native-tls` in
+`deny.toml`, and give the TLS crates their own Dependabot group.
+
+The original plan:
 
 The operator is not always watching the dashboard. When a miner drops at 2 am,
 the pool should say so. This adds a config section that 1.0 will promise, so

@@ -22,6 +22,10 @@ everything else bumps the **patch** version.
   shares, summed. `rate(pool_share_work_total[5m]) * 2^32` gives hashrate
   in H/s on the same basis as `pool_hashrate_estimated_hps`, and `sum()`
   totals it across workers.
+- `docs/stable-surface.md` gains an "Experimental features" section: a
+  listed feature is off by default, warns at boot while on, and may change or
+  go away in a minor release until it is promoted. Nothing is listed yet;
+  template policy is planned to ship there after 1.0.
 - `pool_connections_closed_total{reason}` counts every ended session once:
   `no_auth` (never named a worker), `no_shares` (authorized, never
   submitted) or `shares`. Only `shares` sessions are timed in
