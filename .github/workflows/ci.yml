@@ -38,10 +38,10 @@ jobs:
         run: cargo clippy --all-targets --all-features
 
       - name: Test
-        run: cargo test --all
+        run: cargo test --all --locked
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --locked
 
   msrv:
     # rust-version in Cargo.toml is a promise; build on exactly that toolchain

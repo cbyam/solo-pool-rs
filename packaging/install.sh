@@ -15,7 +15,7 @@
 # symlink at it. Building never touches what is installed, upgrades are one
 # command, and rollback is the same command against an older version.
 #
-#   sudo packaging/install.sh              # install the built current version (cargo build --release first)
+#   sudo packaging/install.sh              # install the built current version (cargo build --release --locked first)
 #   sudo packaging/install.sh --rollback   # relink the newest installed version other than the active one
 #   packaging/install.sh --list            # show what is installed (no root)
 #
@@ -77,7 +77,7 @@ case "${1:-install}" in
     need_root
     v="$(version)"
     src="$REPO/target/release/solo-pool-rs"
-    [ -x "$src" ] || { echo "error: $src not found; run 'cargo build --release' first" >&2; exit 1; }
+    [ -x "$src" ] || { echo "error: $src not found; run 'cargo build --release --locked' first" >&2; exit 1; }
 
     dest="$LIBDIR/$v"
     install -d "$dest"

@@ -20,13 +20,13 @@ WORKDIR /build
 # the binary, so both files must exist or Cargo stops at target resolution.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && : > src/lib.rs \
-    && cargo build --release \
+    && cargo build --release --locked \
     && rm -rf src
 
 # Build the real binary.
 COPY src ./src
 RUN touch src/main.rs src/lib.rs \
-    && cargo build --release \
+    && cargo build --release --locked \
     && strip target/release/solo-pool-rs
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
