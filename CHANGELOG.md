@@ -9,6 +9,8 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-10-23
+
 ### Changed
 - Dependency updates: tokio 1.53.2 to 1.53.3 and serde_json 1.0.151 to
   1.0.154 (#156).
@@ -1176,7 +1178,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.12...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.13...HEAD
+[0.6.13]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.12...v0.6.13
 [0.6.12]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.11...v0.6.12
 [0.6.11]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.10...v0.6.11
 [0.6.10]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.9...v0.6.10
