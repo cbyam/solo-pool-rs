@@ -21,7 +21,7 @@
 use bitcoin::{address::NetworkUnchecked, Address, Network};
 use parking_lot::RwLock;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{info, warn};
 
 struct AddressState {
     address: String,
@@ -66,16 +66,9 @@ impl RuntimeSettings {
             }
         }
 
-        let valid = match validate(&pool_cfg.coinbase_address, network) {
-            Ok(()) => true,
-            Err(e) => {
-                warn!(
-                    "coinbase_address is not usable on {network}: {e} — MINING IS PAUSED \
-                     until a valid address is set (dashboard → Settings)"
-                );
-                false
-            }
-        };
+        // No warning here: a dashboard save may still replace this address
+        // (`apply_persisted`). The caller logs `paused_reason` once it has.
+        let valid = validate(&pool_cfg.coinbase_address, network).is_ok();
 
         Ok(Arc::new(Self {
             network: network.to_string(),
@@ -93,6 +86,7 @@ impl RuntimeSettings {
         let Some(addr) = address else { return };
         match validate(&addr, &self.network) {
             Ok(()) => {
+                info!(address = %addr, "Using the payout address saved from the dashboard");
                 *self.state.write() = AddressState {
                     address: addr,
                     valid: true,
@@ -103,6 +97,24 @@ impl RuntimeSettings {
                 self.network
             ),
         }
+    }
+
+    /// Why mining is paused, or `None` when the payout address is usable.
+    ///
+    /// Checked once at boot, after `apply_persisted`, so a placeholder in
+    /// config.toml that a dashboard save already replaced (every Umbrel
+    /// install) does not log that mining is paused.
+    pub fn paused_reason(&self) -> Option<String> {
+        let s = self.state.read();
+        if s.valid {
+            return None;
+        }
+        let e = validate(&s.address, &self.network).err()?;
+        Some(format!(
+            "coinbase_address is not usable on {}: {e} — MINING IS PAUSED until a valid \
+             address is set (dashboard → Settings)",
+            self.network
+        ))
     }
 
     /// Strictly validate and apply a dashboard-driven address change.
@@ -258,6 +270,21 @@ mod tests {
         s.apply_persisted(Some(testnet));
         assert_eq!(s.valid_coinbase_address(), Some(mainnet.clone()));
         s.apply_persisted(None);
+        assert_eq!(s.valid_coinbase_address(), Some(mainnet));
+    }
+
+    /// The Umbrel case: config.toml ships a placeholder and the real address
+    /// was saved from the dashboard. Boot must not report mining as paused.
+    #[test]
+    fn a_saved_address_clears_the_paused_reason() {
+        let mainnet = addr_for(Network::Bitcoin);
+        let s = RuntimeSettings::new(&pool_cfg("REPLACE-WITH-YOUR-BITCOIN-ADDRESS", None), "main")
+            .unwrap();
+        let reason = s.paused_reason().expect("placeholder alone pauses mining");
+        assert!(reason.contains("MINING IS PAUSED"), "{reason}");
+
+        s.apply_persisted(Some(mainnet.clone()));
+        assert_eq!(s.paused_reason(), None);
         assert_eq!(s.valid_coinbase_address(), Some(mainnet));
     }
 }
