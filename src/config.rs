@@ -450,12 +450,17 @@ impl Config {
 #[cfg(unix)]
 pub fn credential_exposure_warning(path: &str, cfg: &Config) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
-    let has_password = cfg
-        .bitcoin_rpc
-        .password
-        .as_deref()
-        .is_some_and(|p| !p.is_empty());
-    let in_url = cfg.bitcoin_rpc.url.contains('@');
+    // A value set by a SOLO_POOL_* override is not in the file, so the file's
+    // mode says nothing about it. Umbrel injects the RPC password this way
+    // into a config whose own password is empty.
+    let from_env = |key: &str| cfg.env_overrides.iter().any(|k| k == key);
+    let has_password = !from_env("bitcoin_rpc.password")
+        && cfg
+            .bitcoin_rpc
+            .password
+            .as_deref()
+            .is_some_and(|p| !p.is_empty());
+    let in_url = !from_env("bitcoin_rpc.url") && cfg.bitcoin_rpc.url.contains('@');
     if !has_password && !in_url {
         return None;
     }
@@ -692,6 +697,18 @@ mod tests {
 
         // Credentials in the URL count too.
         cfg.bitcoin_rpc.url = "http://u:p@127.0.0.1:8332".into();
+        assert!(credential_exposure_warning(path_str, &cfg).is_some());
+
+        // Values from environment overrides are not in the file (Umbrel).
+        cfg.bitcoin_rpc.url = "http://127.0.0.1:8332".into();
+        cfg.bitcoin_rpc.password = Some("hunter2".into());
+        cfg.env_overrides = vec!["bitcoin_rpc.password".into()];
+        assert!(credential_exposure_warning(path_str, &cfg).is_none());
+        cfg.bitcoin_rpc.url = "http://u:p@127.0.0.1:8332".into();
+        cfg.env_overrides.push("bitcoin_rpc.url".into());
+        assert!(credential_exposure_warning(path_str, &cfg).is_none());
+        // An override of something else does not excuse a password in the file.
+        cfg.env_overrides = vec!["zmq.hashblock_endpoint".into()];
         assert!(credential_exposure_warning(path_str, &cfg).is_some());
 
         std::fs::remove_dir_all(&dir).ok();

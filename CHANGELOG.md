@@ -9,6 +9,20 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- Dependency updates: tokio 1.53.2 to 1.53.3 and serde_json 1.0.151 to
+  1.0.154 (#156).
+
+### Fixed
+- Two boot warnings no longer fire on a correctly set up Umbrel install. The
+  pool warned "MINING IS PAUSED" about the placeholder address in
+  `config.toml` before applying the address saved from the dashboard, and
+  then mined normally. It now checks after that address is applied, and logs
+  which saved address it uses. The warning that `config.toml` holds RPC
+  credentials while readable by other users also counted the password Umbrel
+  injects through `SOLO_POOL_BITCOIN_RPC__PASSWORD`, although the file's own
+  password is empty; values set by environment overrides no longer count.
+
 ## [0.6.12] - 2026-10-18
 
 ### Added

@@ -110,6 +110,9 @@ async fn main() -> Result<()> {
     info!(chain = %node_chain, "Connected node chain detected");
     let runtime_settings = settings::RuntimeSettings::new(&config.pool, &node_chain)?;
     runtime_settings.apply_persisted(stats.load_setting("coinbase_address"));
+    if let Some(reason) = runtime_settings.paused_reason() {
+        tracing::warn!("{reason}");
+    }
 
     // ── Hashrate history recorder (every 10 minutes) ─────────────────────────
     // Sleep first: a sample taken at boot is a zero (no miner has reconnected
