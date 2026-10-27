@@ -52,6 +52,12 @@ updates:
       # #125). It moves when secp256k1 does; drop both entries together.
       - dependency-name: rand
         update-types: ["version-update:semver-minor"]
+      # parking_lot 0.13 (with parking_lot_core 0.10 and lock_api 0.5)
+      # requires rustc 1.95, above the 1.90 MSRV, so the MSRV job fails (#159).
+      # tokio also still takes 0.12, so bumping ours alone builds two copies.
+      # Drop this when rust-version moves to 1.95 or later.
+      - dependency-name: parking_lot
+        update-types: ["version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
