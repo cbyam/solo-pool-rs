@@ -200,6 +200,34 @@ the shape gets its own review before it ships.
   work after the next upgrade" rather than only "did it work before the last
   one".
 
+### Dashboard
+
+Both ideas come from the AxeForge firmware (1.1.0) on one of my miners,
+seen 2026-10-24. Neither needs a new config key.
+
+- [ ] **Live share hash card.** AxeForge shows the most recent hash it checked
+  (`lastHash`, `lastHashDiff`, `hashesChecked` in its `/api/status`), with the
+  leading zeros set apart so you can watch how close each share came. The pool
+  sees every submitted share, so it can show the latest accepted share hash
+  pool-wide (and per worker in the worker detail), with its difficulty against
+  the network target. Store the hash the validator already computed; add no
+  hashing, formatting or locking to the share path, and format it only when
+  `/stats` is read.
+- [ ] **Mempool-style block strip.** AxeForge shows recently mined blocks
+  (height, tx count, size, median fee rate, total fees, mining pool) beside
+  projected pending blocks (tx count, vsize, fee-rate range). It appears to
+  pull these from the mempool.space API. Ours comes from the operator's own
+  node and what the pool already holds, never a third-party API. The next
+  block is the current template: GBT already gives every transaction's fee and
+  weight, so tx count, vsize and fee range cost nothing new. Mined blocks come
+  from `getblockstats` on each new tip (the ZMQ/tip poll already says when).
+  Blocks after the next one need a bucketed `getrawmempool true`; that is the
+  only optional part. That call returns several MB on
+  mainnet, so poll it slowly and off the async runtime (see the blocking I/O
+  item under Performance). Mark the pool's own found blocks. Naming other
+  pools needs a coinbase-tag list such as mempool's `pools-v2.json`; leave that
+  out unless it can be bundled without a network fetch.
+
 ### Planned
 
 - [ ] **Template policy.** Let the operator keep large OP_RETURNs,
