@@ -186,6 +186,26 @@ reason.
   the recommended default) or `unfiltered` (the node's own template: keeps the
   fees, includes the declined transactions).
 
+### Version bits
+
+The pool mines the `version` GBT returns, unchanged (`src/bitcoin/template.rs`,
+`version: gbt.version`). Deprioritising changes which transactions the node
+picks, not the header, so the version and any deployment signalling stay the
+node's under this design. The deployed node's templates carry `0x20000000`
+(`template_version` in `/stats`).
+
+If a later design has the pool set the version itself, two rules apply:
+
+- Keep bits 13 to 28 clear. BIP 320 reserves them for miners to roll. The
+  validator substitutes the rolled bits into the base version
+  (`resolve_version` in `src/mining/validator.rs`), so a set bit there does not
+  confuse it. Firmware that ORs its rolled bits into the version and reports
+  them with XOR (AxeForge before its PR #20) does break: against a base with a
+  bit set in that range, its shares fail validation.
+- Signalling becomes a pool setting. Any signal bit is an explicit config
+  value, outside the rolling range, shown on the dashboard beside
+  `template_version`. Take the bit from the deployment's BIP, never from memory.
+
 ### Delta bookkeeping
 
 The node clears a delta when its transaction confirms or is replaced by a
@@ -436,3 +456,16 @@ invalid block, so what breaks is the refill.
 - **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks, so
   it is not planned; it stays an option if a later rule (the sigop limits)
   needs the spent coins.
+- **SV2 Template Distribution as a feed.** Bitcoin Core's IPC mining interface
+  and the `sv2-tp` Template Provider deliver templates over SV2 instead of GBT.
+  The pool already speaks SV2 to miners. Open: whether Knots ships the IPC
+  interface, how `RequestTransactionData` fits the backstop filter, and whether
+  the proposal check and `prioritisetransaction` still need an RPC connection
+  beside it.
+- **A pool-built block.** This design never assembles a block from the mempool;
+  the node's builder does, under the node's consensus checks. A builder of the
+  pool's own would take on what the node handles now: ancestor packages, weight
+  and sigop limits counting the coinbase, the witness commitment, the BIP 34
+  height, and lock-time finality against median time past. It would need the
+  proposal check on every template, with the node's GBT as the fallback. Not
+  planned.
