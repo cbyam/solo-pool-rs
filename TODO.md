@@ -209,24 +209,36 @@ seen 2026-10-24. Neither needs a new config key.
   (`lastHash`, `lastHashDiff`, `hashesChecked` in its `/api/status`), with the
   leading zeros set apart so you can watch how close each share came. The pool
   sees every submitted share, so it can show the latest accepted share hash
-  pool-wide (and per worker in the worker detail), with its difficulty against
-  the network target. Store the hash the validator already computed; add no
-  hashing, formatting or locking to the share path, and format it only when
-  `/stats` is read.
+  pool-wide, with its difficulty against the network target. Store the hash the
+  validator already computed and format it only when `/stats` is read. Add no
+  hashing or formatting to the share path, and no lock beyond the ones it
+  already takes: keep the hash in the per-worker entry the share path already
+  updates, or in one lock-free slot (a few `AtomicU64` words are enough, since
+  a torn read only shows a mixed hash for one poll). The stored `[u8; 32]` is
+  in internal byte order, so the zeros are at the end: format it with
+  `hash_display_hex` (`validator.rs:297`), never a plain hex encode. A
+  per-worker view needs a worker detail page, which the dashboard does not
+  have yet, and a new `/stats` field, which adds to the stable surface
+  (`docs/stable-surface.md` section 7).
 - [ ] **Mempool-style block strip.** AxeForge shows recently mined blocks
   (height, tx count, size, median fee rate, total fees, mining pool) beside
-  projected pending blocks (tx count, vsize, fee-rate range). It appears to
-  pull these from the mempool.space API. Ours comes from the operator's own
-  node and what the pool already holds, never a third-party API. The next
-  block is the current template: GBT already gives every transaction's fee and
-  weight, so tx count, vsize and fee range cost nothing new. Mined blocks come
-  from `getblockstats` on each new tip (the ZMQ/tip poll already says when).
-  Blocks after the next one need a bucketed `getrawmempool true`; that is the
-  only optional part. That call returns several MB on
-  mainnet, so poll it slowly and off the async runtime (see the blocking I/O
-  item under Performance). Mark the pool's own found blocks. Naming other
-  pools needs a coinbase-tag list such as mempool's `pools-v2.json`; leave that
-  out unless it can be bundled without a network fetch.
+  projected pending blocks (tx count, vsize, fee-rate range). It pulls these
+  from a mempool.space-compatible API (its `main/net/mempool.h`). Ours comes
+  from the operator's own node and what the pool already holds, never a
+  third-party API. The next block is the current template: GBT already gives
+  every transaction's fee and weight, so tx count, vsize and fee range cost
+  nothing new. Mined blocks come from `getblockstats` on each new tip (the
+  ZMQ/tip poll already says when). Run it off the async runtime and after the
+  new template and clean job go out: it reads block and undo data, and a slow
+  call must not delay the job. Blocks after the next one need a bucketed
+  `getrawmempool true`; that is the only optional part. With a full mainnet
+  mempool (up to the 300 MB `maxmempool` default, 100k+ transactions) the
+  verbose call returns tens to hundreds of MB of JSON, too much to parse on
+  every poll on small hardware. Poll it slowly and off the async runtime (see
+  the blocking I/O item under Performance). Mark the pool's own found blocks.
+  Naming other pools needs a coinbase-tag list such as mempool's
+  `pools-v2.json`; leave that out unless it can be bundled without a network
+  fetch.
 
 ### Planned
 
