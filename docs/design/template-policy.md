@@ -198,13 +198,18 @@ If a later design has the pool set the version itself, two rules apply:
 
 - Keep bits 13 to 28 clear. BIP 320 reserves them for miners to roll. The
   validator substitutes the rolled bits into the base version
-  (`resolve_version` in `src/mining/validator.rs`), so a set bit there does not
-  confuse it. Firmware that ORs its rolled bits into the version and reports
-  them with XOR (AxeForge before its PR #20) does break: against a base with a
-  bit set in that range, its shares fail validation.
+  (`resolve_version` in `src/mining/validator.rs`, `(base & !mask) | (bits &
+  mask)`), so a set bit there does not break validation. It does not survive
+  either: inside the negotiated mask the miner's bit replaces it, so a signal
+  placed there can be missing from a found block. Firmware that ORs its rolled
+  bits into the version and reports them with XOR (AxeForge before v1.3.2;
+  ESP-Miner until bitaxeorg/ESP-Miner#2041 ships) breaks outright: against a
+  base with a bit set in that range, its shares fail validation.
 - Signalling becomes a pool setting. Any signal bit is an explicit config
-  value, outside the rolling range, shown on the dashboard beside
-  `template_version`. Take the bit from the deployment's BIP, never from memory.
+  value, outside the rolling range. The dashboard does not show the version
+  today (`template_version` is in `/stats` only), so this needs a new
+  dashboard element for the version and the signal. Take the bit from the
+  deployment's BIP, never from memory.
 
 ### Delta bookkeeping
 
