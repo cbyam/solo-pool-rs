@@ -160,7 +160,7 @@ impl Pool {
         // says why instead of only "port never opened".
         let log_path = cfg_path.with_extension("log");
         let log = std::fs::File::create(&log_path).expect("create pool log");
-        let pool = Pool {
+        let mut pool = Pool {
             child: Command::new(env!("CARGO_BIN_EXE_solo-pool-rs"))
                 .arg(cfg_path)
                 .stdout(log.try_clone().expect("clone pool log"))
@@ -168,11 +168,19 @@ impl Pool {
                 .spawn()
                 .expect("spawn pool"),
         };
-        assert!(
-            wait_for_port(stratum_port, Duration::from_secs(20)),
-            "pool stratum port never opened; pool output:\n{}",
-            std::fs::read_to_string(&log_path).unwrap_or_default()
-        );
+        if !wait_for_port(stratum_port, Duration::from_secs(20)) {
+            // A signal death (SIGSEGV, SIGILL) prints nothing, so say whether
+            // the process is still running or how it ended.
+            let status = match pool.child.try_wait() {
+                Ok(Some(s)) => format!("exited: {s}"),
+                Ok(None) => "still running".to_string(),
+                Err(e) => format!("unknown: {e}"),
+            };
+            panic!(
+                "pool stratum port never opened ({status}); pool output:\n{}",
+                std::fs::read_to_string(&log_path).unwrap_or_default()
+            );
+        }
         pool
     }
 
