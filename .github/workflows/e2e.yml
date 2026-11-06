@@ -79,5 +79,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: "DEBUG: CPU and core dump setup"
+        run: |
+          lscpu | grep -E 'Model name|Flags' | cut -c1-400
+          cat /proc/sys/kernel/core_pattern
+          sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
+          sudo apt-get install -y -qq gdb >/dev/null
+
       - name: Run block-acceptance test (release)
-        run: cargo test --release --test block_acceptance -- --ignored --nocapture
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: "false"
+          CARGO_PROFILE_RELEASE_DEBUG: "line-tables-only"
+        run: |
+          ulimit -c unlimited
+          cargo test --release --test block_acceptance -- --ignored --nocapture
+
+      - name: "DEBUG: backtrace from pool core dumps"
+        if: failure()
+        run: |
+          ls -la /tmp/core.* || true
+          for c in /tmp/core.*; do
+            [ -e "$c" ] || continue
+            echo "=== $c"
+            gdb -q -batch -ex "info signals SIGSEGV" -ex "bt 40" -ex "info registers rip" -ex "x/6i \$pc" \
+              -ex "thread apply all bt 12" target/release/solo-pool-rs "$c" 2>&1 | head -200
+            break
+          done
