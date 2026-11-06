@@ -628,7 +628,7 @@ prometheus_addr = "127.0.0.1:{dash_port}"
 stats_db_path = ""
 
 [logging]
-level = "warn"
+level = "info"
 json = false
 {extra_config}
 "#,
