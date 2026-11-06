@@ -9,6 +9,15 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- A pool built with AVX code generation could crash with a segfault at
+  startup, on its first ZMQ connect. The bundled libzmq declares its internal
+  queues 64-byte aligned but allocated them with plain `malloc`; the build now
+  makes it use `posix_memalign`. GitHub's current ubuntu-26.04 x64 runners hit
+  this, so release tarballs built there would not have started. The v0.6.13
+  release binary and Docker image are not affected. The block-acceptance test
+  now builds with AVX2 so the case stays covered.
+
 ## [0.6.13] - 2026-10-23
 
 ### Changed

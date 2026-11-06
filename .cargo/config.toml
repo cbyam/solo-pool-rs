@@ -1,0 +1,14 @@
+# Build settings every build of this repo needs: local, CI, release, Docker.
+
+[env]
+# libzmq (compiled from source by zeromq-src) declares its internal command
+# type 64-byte aligned, but zeromq-src never defines HAVE_POSIX_MEMALIGN, so
+# libzmq allocates those queues with plain malloc (16-byte aligned). A
+# compiler that trusts the declared alignment can emit aligned AVX stores
+# (vmovdqa ymm), which segfault on the first ZMQ connect. That happened on
+# GitHub's ubuntu-26.04 x64 runners in November 2026: the pool died at boot.
+# These defines make libzmq use posix_memalign, matching what its own CMake
+# build does. cc appends HOST_/TARGET_CXXFLAGS to any CXXFLAGS already set,
+# so this does not replace a user's flags.
+HOST_CXXFLAGS = "-DHAVE_POSIX_MEMALIGN=1 -DZMQ_CACHELINE_SIZE=64"
+TARGET_CXXFLAGS = "-DHAVE_POSIX_MEMALIGN=1 -DZMQ_CACHELINE_SIZE=64"
