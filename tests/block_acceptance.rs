@@ -156,18 +156,31 @@ struct Pool {
 }
 impl Pool {
     fn start(cfg_path: &Path, stratum_port: u16) -> Self {
-        let pool = Pool {
+        // Keep the pool's output beside its config, so a boot failure in CI
+        // says why instead of only "port never opened".
+        let log_path = cfg_path.with_extension("log");
+        let log = std::fs::File::create(&log_path).expect("create pool log");
+        let mut pool = Pool {
             child: Command::new(env!("CARGO_BIN_EXE_solo-pool-rs"))
                 .arg(cfg_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdout(log.try_clone().expect("clone pool log"))
+                .stderr(log)
                 .spawn()
                 .expect("spawn pool"),
         };
-        assert!(
-            wait_for_port(stratum_port, Duration::from_secs(20)),
-            "pool stratum port never opened"
-        );
+        if !wait_for_port(stratum_port, Duration::from_secs(20)) {
+            // A signal death (SIGSEGV, SIGILL) prints nothing, so say whether
+            // the process is still running or how it ended.
+            let status = match pool.child.try_wait() {
+                Ok(Some(s)) => format!("exited: {s}"),
+                Ok(None) => "still running".to_string(),
+                Err(e) => format!("unknown: {e}"),
+            };
+            panic!(
+                "pool stratum port never opened ({status}); pool output:\n{}",
+                std::fs::read_to_string(&log_path).unwrap_or_default()
+            );
+        }
         pool
     }
 
@@ -623,7 +636,7 @@ prometheus_addr = "127.0.0.1:{dash_port}"
 stats_db_path = ""
 
 [logging]
-level = "warn"
+level = "info"
 json = false
 {extra_config}
 "#,
