@@ -9,6 +9,11 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- Dependency update: hyper 1.8.1 to 1.12.0, which drops `pin-utils`
+  (RUSTSEC-2026-0441, unmaintained). hyper only serves the dashboard and
+  `/metrics`; Stratum and the node RPC client do not use it (#169).
+
 ### Fixed
 - A pool built with AVX code generation could crash with a segfault at
   startup, on its first ZMQ connect. The bundled libzmq declares its internal
