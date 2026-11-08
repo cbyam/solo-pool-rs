@@ -455,6 +455,35 @@ fn inscriptions_are_declined_with_and_without_the_coin() {
     }
 }
 
+/// A taproot key spend with an annex: `[signature, annex]`. Mainnet
+/// 57da10d1... carries `50 00 "Compact BitVMX"`; 52bc40e5... a 43 kB annex.
+fn key_spend_with_annex(annex: Vec<u8>) -> Transaction {
+    tx(
+        vec![input(vec![], vec![vec![0x99; 64], annex])],
+        vec![out(24_000, p2tr())],
+    )
+}
+
+#[test]
+fn key_spend_with_annex_is_not_read_as_a_script() {
+    let spent = [out(30_000, p2tr())];
+    let mut small = vec![0x50, 0x00];
+    small.extend(b"Compact BitVMX");
+    let t = key_spend_with_annex(small);
+    assert_eq!(check(&t, &Rules::default(), Some(&spent)), Ok(()));
+    assert_eq!(check(&t, &Rules::default(), None), Ok(()));
+
+    // A large annex trips the witness-size rule in both modes.
+    let mut large = vec![0x50];
+    large.extend(vec![0x00; 2_000]);
+    let t = key_spend_with_annex(large);
+    assert_eq!(
+        check(&t, &Rules::default(), Some(&spent)),
+        Err(Rule::WitnessSize)
+    );
+    assert_eq!(check(&t, &Rules::default(), None), Err(Rule::WitnessSize));
+}
+
 #[test]
 fn large_witness_is_declined_whatever_it_holds() {
     let t = inscription(2_000, false);
