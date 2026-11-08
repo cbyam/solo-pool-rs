@@ -89,8 +89,11 @@ pub(crate) fn executed_script_by_shape(txin: &TxIn) -> Cow<'_, [u8]> {
         if witness.len() == 2 && is_compressed_pubkey(witness[1]) {
             return Cow::Borrowed(&[]);
         }
-        // Taproot key path: a single Schnorr signature.
-        if witness.len() == 1 && matches!(witness[0].len(), 64 | 65) {
+        // Taproot key path: a single Schnorr signature, after the annex is
+        // set aside. A witness script can never start with 0x50 either
+        // (OP_RESERVED fails when executed), so the annex shape is
+        // unambiguous too.
+        if stack.len() == 1 && matches!(stack[0].len(), 64 | 65) {
             return Cow::Borrowed(&[]);
         }
         // Otherwise P2WSH (bare or P2SH-wrapped): the last item is the
