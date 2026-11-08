@@ -410,6 +410,36 @@ figures are what the declined transactions paid, an upper bound on the cost:
 deprioritising lets the node refill their space. Anyone can rerun the audit
 with `cargo run --release --example template_audit`.
 
+**Full difficulty period (2026-11-08).** Over mainnet blocks 973,069 to
+975,084 (2,016 blocks, about 8.5 million transactions; the deployed-settings
+run ended one block later):
+
+| Settings | Txs declined | Weight declined | Fees declined | Per-block weight (median, max) |
+|---|---|---|---|---|
+| Knots 29.3 defaults | 2.36% | 6.39% | 1.98% | 1.3%, 99.2% |
+| Deployed node (`datacarrier_size = 42`, `reject_tokens = true`) | 59.43% | 39.69% | 7.90% | 33.1%, 99.7% |
+
+With the deployed settings, the transaction and weight shares stay close to
+the 144-block window and the fee share halved (15.24% to 7.90%). Under Knots'
+defaults the weight share doubled and a block appeared that is 99.2%
+declinable, so even default settings can leave a template nearly empty
+before the refill; enforce mode's regtest test should include that case.
+Most of the default-settings weight is `txn-datacarrier-nonstandard` (5.19%);
+with `reject_tokens`, Runes alone are 56.47% of transactions and 31.89% of
+weight.
+
+The longer window found a shape-mode bug: a taproot key spend with an annex
+(`[signature, annex]`) was read as a witness script, so the annex counted as
+embedded data. Two mainnet transactions showed it (57da10d1..., carrying a
+16-byte BitVMX annex, and 52bc40e5..., a 43 kB annex). Both are nonstandard
+at the node anyway, since Core and Knots refuse any annex, so neither reaches
+a mempool template. With the fix, exact and shape mode disagree on one
+transaction in each run, 496b7fdb..., which spends a coin with a 4,908-byte
+bare scriptPubKey. Exact mode declines it under `script-size`; shape mode
+cannot see the size of a coin it does not have. A coin like that is declined
+when it is created (`scriptpubkey-size`, 132 outputs in the window), so the
+gap is one transaction in 8.5 million.
+
 **Phase 1, the first release after 1.0: observe mode.** The pool classifies
 and records; templates are unchanged. Run it behind the deployed Knots node
 first: Knots has already filtered, so anything the pool would still decline
@@ -426,9 +456,9 @@ block-submit rehearsal.
 Also before enforce ships:
 
 - **Rerun the audit over a full difficulty period** (2,016 blocks, about two
-  weeks). The phase 0 window was 144 blocks, about one day, and inscription
-  and Runes traffic arrives in bursts. The coin-lookup mode stays unplanned
-  only if exact and shape mode still agree over the longer window.
+  weeks). Done 2026-11-08; see the results above. Exact and shape mode
+  disagree on one transaction, which only a coin lookup can catch; whether
+  that keeps the coin-lookup mode unplanned is an open question below.
 - **Node versions in the E2E matrix.** The mechanism depends on how Core and
   Knots implement `prioritisetransaction`, GBT caching and the block
   builder's feerate cutoff. A new Core or Knots major joins the matrix, and
@@ -458,9 +488,12 @@ invalid block, so what breaks is the refill.
 
 ## Open questions
 
-- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks, so
-  it is not planned; it stays an option if a later rule (the sigop limits)
-  needs the spent coins.
+- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks.
+  Over 2,016 blocks, after the annex fix, shape mode misses one transaction
+  in 8.5 million: a spend of a coin whose scriptPubKey exceeds
+  `max_script_size`. Leaning: not planned, since that coin is declined when
+  created and the miss is that rare; it stays an option if a later rule (the
+  sigop limits) needs the spent coins.
 - **SV2 Template Distribution as a feed.** Bitcoin Core's IPC mining interface
   and the `sv2-tp` Template Provider deliver templates over SV2 instead of GBT.
   The pool already speaks SV2 to miners. Open: whether Knots ships the IPC
