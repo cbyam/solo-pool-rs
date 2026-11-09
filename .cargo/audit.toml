@@ -5,4 +5,17 @@
 # If you drop an entry here, drop it there too.
 
 [advisories]
-ignore = []
+ignore = [
+  # C SQLite CVE-2026-119375 via libsqlite3-sys.
+  #
+  # The advisory covers the SQLite source that libsqlite3-sys bundles under its
+  # `bundled` feature. This build does not enable it: rusqlite links the system
+  # SQLite through pkg-config (CI, release, Docker), so the vulnerable copy is
+  # never compiled in. Exposure is that of the distro's libsqlite3, which the
+  # OS patches. The bug also needs a crafted -wal file beside the database, and
+  # only the pool writes the stats database.
+  #
+  # Drop this entry when rusqlite moves to 0.41 (libsqlite3-sys 0.39), planned
+  # post-1.0.
+  "RUSTSEC-2026-0459",
+]

@@ -16,7 +16,14 @@ all-features = false
 [advisories]
 # Fail on any advisory in the dependency tree.
 yanked = "deny"
-ignore = []
+ignore = [
+  # C SQLite CVE-2026-119375 (stale page-cache bytes from a crafted -wal file).
+  # Only the bundled SQLite copy in libsqlite3-sys is affected. This build
+  # links the system SQLite (no `bundled` feature), so the exposure is the
+  # distro library's, patched by the OS. Drop once rusqlite moves to 0.41
+  # (libsqlite3-sys 0.39) after 1.0.
+  { id = "RUSTSEC-2026-0459", reason = "system SQLite is linked; the bundled copy is not built" },
+]
 
 [licenses]
 # Permissive licences only. Anything outside this list needs a deliberate
