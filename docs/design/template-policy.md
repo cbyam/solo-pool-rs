@@ -242,6 +242,40 @@ usual cause is `blockprioritysize` above 0. The same signal catches a future
 node release that changes how deltas, GBT caching or the block builder's
 feerate cutoff work.
 
+### What the delta changes besides block building
+
+A delta changes the fee the node's mempool uses everywhere, not only in the
+block builder. Peers never see it and the transaction is unchanged, so RBF
+and relay work as before for everyone else. On the operator's node, a delta
+this large has three side effects. They follow from how Core uses the
+modified fee and are not yet confirmed on regtest:
+
+- **Replacement gets easier.** Core compares a replacement against the
+  modified fees of the transactions it replaces, so the node accepts a
+  replacement of a deprioritised transaction that pays less than its real
+  fee. Peers refuse that replacement, so the node's mempool can differ from
+  theirs by a few transactions. Mining is unaffected: the replacement has a
+  new txid, which clears the delta, and the pool classifies it like any
+  other transaction. A bumped unwanted transaction is deprioritised again.
+- **Deprioritised transactions are evicted first.** Mempool trimming ranks
+  by modified feerate, so a full mempool drops them and their descendants
+  before anything else. If another pool then mines one, the node lacks it
+  and fetches it while validating that block: one more round trip in
+  compact-block reconstruction, which delays the new tip and the clean job
+  sent to miners. Measure it on regtest; if it shows up, the delta can be
+  sized to keep the feerate just below `blockmintxfee` instead of far below
+  it.
+- **A returning transaction is refused.** A delta outlives eviction (see
+  "Delta bookkeeping"). Until the cleanup cancels it, a rebroadcast of that
+  transaction fails the node's minimum fee check and is not relayed. For
+  that window the node filters at relay, against "relay stays the node's
+  business" in the narrow-only rule. The cleanup interval bounds the window;
+  the regtest test measures it, and if it matters the cleanup runs on each
+  eviction rather than on a timer.
+
+Before enforce ships, a regtest test confirms each of these on Core, Knots
+and Roots, and this section is updated with what it finds.
+
 ## Gotchas found on regtest
 
 1. **The coin-age priority area ignores fee deltas.** With Knots
@@ -377,8 +411,22 @@ An operator choosing a policy should see what it costs.
   template the node would have built without the deltas, and in enforce mode
   the pool never sees that template. Observe mode on the operator's own node
   is the measurement.
-- A dashboard tile with the active rules and "fees declined" for the current
-  template and since start.
+- A dashboard tile with the template being mined: transaction count, total
+  fees, and what the policy declined from it (count, weight, fees), plus the
+  active rules and the totals since start. In enforce mode this is the only
+  view of the operator's real template, so it must not rely on any other
+  tool.
+- **Mempool explorers diverge in enforce mode.** A self-hosted mempool
+  explorer builds its projected blocks from the node's mempool itself and
+  does not call GBT. `getrawmempool true` reports `fees.base` and
+  `fees.modified` for each transaction. If the explorer's projection uses
+  the modified fee, it shows the pool's policy, because the deltas sit on
+  the same node. If it uses the base fee, it shows what the rest of the
+  network is likely to mine, which is still the right view for fee
+  estimates, and its audit of a found block marks the declined transactions
+  as missing. Which one it does is unchecked: deprioritise one transaction
+  on regtest and see whether it leaves the projected block. Observe mode
+  sets no deltas, so the explorer and the pool agree until enforce.
 - `/stats` fields carrying the same.
 
 ## Rollout
@@ -410,8 +458,40 @@ figures are what the declined transactions paid, an upper bound on the cost:
 deprioritising lets the node refill their space. Anyone can rerun the audit
 with `cargo run --release --example template_audit`.
 
-**Phase 1, the first release after 1.0: observe mode.** The pool classifies
-and records; templates are unchanged. Run it behind the deployed Knots node
+**Full difficulty period (2026-11-08).** Over mainnet blocks 973,069 to
+975,084 (2,016 blocks, about 8.5 million transactions; the deployed-settings
+run ended one block later):
+
+| Settings | Txs declined | Weight declined | Fees declined | Per-block weight (median, max) |
+|---|---|---|---|---|
+| Knots 29.3 defaults | 2.36% | 6.39% | 1.98% | 1.3%, 99.2% |
+| Deployed node (`datacarrier_size = 42`, `reject_tokens = true`) | 59.43% | 39.69% | 7.90% | 33.1%, 99.7% |
+
+With the deployed settings, the transaction and weight shares stay close to
+the 144-block window and the fee share halved (15.24% to 7.90%). Under Knots'
+defaults the weight share doubled and a block appeared that is 99.2%
+declinable, so even default settings can leave a template nearly empty
+before the refill; enforce mode's regtest test should include that case.
+Most of the default-settings weight is `txn-datacarrier-nonstandard` (5.19%);
+with `reject_tokens`, Runes alone are 56.47% of transactions and 31.89% of
+weight.
+
+The longer window found a shape-mode bug: a taproot key spend with an annex
+(`[signature, annex]`) was read as a witness script, so the annex counted as
+embedded data. Two mainnet transactions showed it (57da10d1..., carrying a
+16-byte BitVMX annex, and 52bc40e5..., a 43 kB annex). Both are nonstandard
+at the node anyway, since Core and Knots refuse any annex, so neither reaches
+a mempool template. With the fix, exact and shape mode disagree on one
+transaction in each run, 496b7fdb..., which spends a coin with a 4,908-byte
+bare scriptPubKey. Exact mode declines it under `script-size`; shape mode
+cannot see the size of a coin it does not have. A coin like that is declined
+when it is created (`scriptpubkey-size`, 132 outputs in the window), so the
+gap is one transaction in 8.5 million.
+
+**Phase 1, the first release after 1.0: observe mode.** The classifier
+moves into its own crate first (see Library crate below), so the pool uses it
+as a dependency from the start. Then the pool classifies and records;
+templates are unchanged. Run it behind the deployed Knots node
 first: Knots has already filtered, so anything the pool would still decline
 points to a rule that is stricter than Knots or wrong.
 
@@ -426,18 +506,55 @@ block-submit rehearsal.
 Also before enforce ships:
 
 - **Rerun the audit over a full difficulty period** (2,016 blocks, about two
-  weeks). The phase 0 window was 144 blocks, about one day, and inscription
-  and Runes traffic arrives in bursts. The coin-lookup mode stays unplanned
-  only if exact and shape mode still agree over the longer window.
+  weeks). Done 2026-11-08; see the results above. Exact and shape mode
+  disagree on one transaction, which only a coin lookup can catch; whether
+  that keeps the coin-lookup mode unplanned is an open question below.
 - **Node versions in the E2E matrix.** The mechanism depends on how Core and
   Knots implement `prioritisetransaction`, GBT caching and the block
   builder's feerate cutoff. A new Core or Knots major joins the matrix, and
   passes, before the documentation claims support for it. Between releases,
   the runtime check above catches a node that stops honouring the deltas.
 
+- **The delta side effects** (replacement, eviction, refusal on return) are
+  confirmed on regtest, and the explorer check under Visibility is done.
+
 A change in those internals is a fee risk, not a correctness risk: the
 backstop keeps declined transactions out and the proposal check rejects an
 invalid block, so what breaks is the refill.
+
+## Library crate
+
+The classifier is useful outside the pool: to another pool, a Template
+Provider, a mempool explorer, or a sidecar that applies the same rules to a
+plain Core or Roots node. It already depends only on the `bitcoin` crate and
+nothing else in the pool (the audit tool uses it through
+`solo_pool_rs::policy`), so extracting it is mostly mechanical. It happens at
+the start of phase 1, before observe mode is wired in, so no live code moves
+later.
+
+- **Layout.** The repository becomes a Cargo workspace with the crate under
+  `crates/`, and the pool depends on it by path. A separate repository waits
+  until someone outside the pool uses it.
+- **API.** What exists today: `Rules` for the settings, and `check` taking a
+  transaction and, when available, its spent coins (exact mode with them,
+  shape mode without). The `Rule` enum and the settings struct become
+  `#[non_exhaustive]`, so a new rule is not a breaking change.
+- **rust-bitcoin.** The API takes `bitcoin` types, so a rust-bitcoin major
+  bump is a breaking release of the crate. The README says so and the crate
+  follows rust-bitcoin majors.
+- **Name.** Descriptive and neutral (for example `tx-datacarrier-policy`),
+  without "knots" or "roots", which would suggest an affiliation. The README
+  maps each rule to the Knots, Roots and Core options and versions it follows,
+  as the rules table here does.
+- **Differential test.** The mainnet audit shows what the rules do on real
+  traffic; it does not show they still match the node after a Knots or Roots
+  release changes a default. A regtest test sends crafted transactions (one
+  per rule, at and just past each limit) through the node's
+  `testmempoolaccept` and through the crate, and fails on any disagreement.
+  It runs in the E2E matrix against Knots and Roots. This test is the reason
+  to trust the crate; it lands with the extraction.
+- **Publishing.** crates.io at 0.x, versioned apart from the pool. Its own 1.0
+  waits for outside use, and does not follow the pool's.
 
 ## Decided
 
@@ -458,9 +575,12 @@ invalid block, so what breaks is the refill.
 
 ## Open questions
 
-- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks, so
-  it is not planned; it stays an option if a later rule (the sigop limits)
-  needs the spent coins.
+- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks.
+  Over 2,016 blocks, after the annex fix, shape mode misses one transaction
+  in 8.5 million: a spend of a coin whose scriptPubKey exceeds
+  `max_script_size`. Leaning: not planned, since that coin is declined when
+  created and the miss is that rare; it stays an option if a later rule (the
+  sigop limits) needs the spent coins.
 - **SV2 Template Distribution as a feed.** Bitcoin Core's IPC mining interface
   and the `sv2-tp` Template Provider deliver templates over SV2 instead of GBT.
   The pool already speaks SV2 to miners. Open: whether Knots ships the IPC
