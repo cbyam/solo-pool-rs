@@ -18,11 +18,13 @@ all-features = false
 yanked = "deny"
 ignore = [
   # C SQLite CVE-2026-119375 (stale page-cache bytes from a crafted -wal file).
-  # Only the bundled SQLite copy in libsqlite3-sys is affected. This build
-  # links the system SQLite (no `bundled` feature), so the exposure is the
-  # distro library's, patched by the OS. Drop once rusqlite moves to 0.41
-  # (libsqlite3-sys 0.39) after 1.0.
-  { id = "RUSTSEC-2026-0459", reason = "system SQLite is linked; the bundled copy is not built" },
+  # The flagged copy is the one libsqlite3-sys bundles, which this build does
+  # not compile (no `bundled` feature). The system SQLite we link is affected
+  # too and is unpatched in Debian trixie and Ubuntu noble as of 2026-11-09.
+  # Not reachable: the pool opens only its own stats database, so exploiting
+  # it needs write access to the pool's data directory, which already means
+  # full control of the pool. See .cargo/audit.toml for the full note.
+  { id = "RUSTSEC-2026-0459", reason = "bundled copy not built; system copy needs a planted -wal in the pool data dir" },
 ]
 
 [licenses]

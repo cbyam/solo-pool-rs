@@ -8,14 +8,20 @@
 ignore = [
   # C SQLite CVE-2026-119375 via libsqlite3-sys.
   #
-  # The advisory covers the SQLite source that libsqlite3-sys bundles under its
+  # The advisory flags the SQLite source that libsqlite3-sys bundles under its
   # `bundled` feature. This build does not enable it: rusqlite links the system
-  # SQLite through pkg-config (CI, release, Docker), so the vulnerable copy is
-  # never compiled in. Exposure is that of the distro's libsqlite3, which the
-  # OS patches. The bug also needs a crafted -wal file beside the database, and
-  # only the pool writes the stats database.
+  # SQLite through pkg-config (CI, release, Docker), so that copy is never
+  # compiled in.
   #
-  # Drop this entry when rusqlite moves to 0.41 (libsqlite3-sys 0.39), planned
-  # post-1.0.
+  # The system SQLite has the same bug. As of 2026-11-09 Debian trixie (the
+  # Docker base) is marked vulnerable with no DSA planned, and Ubuntu noble has
+  # no fix. It is still not reachable here: the bug needs a crafted database
+  # and -wal pair, and the pool opens only its own stats database. Planting
+  # one takes write access to the pool's data directory, which already gives
+  # an attacker the config, the RPC cookie, and the payout address.
+  #
+  # Drop this entry once the linked SQLite is 3.54.0 or later, either through
+  # distro updates or by building with rusqlite's `bundled` feature on 0.41+
+  # (libsqlite3-sys 0.39, SQLite 3.54). Planned post-1.0.
   "RUSTSEC-2026-0459",
 ]
