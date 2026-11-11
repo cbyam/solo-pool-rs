@@ -79,5 +79,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # Build C and C++ with AVX2 code generation. It turned an alignment bug
+      # in libzmq into a segfault at boot (see .cargo/config.toml), so this
+      # keeps the regression covered whatever the runner's default is.
       - name: Run block-acceptance test (release)
+        env:
+          CFLAGS: "-march=x86-64-v3"
+          CXXFLAGS: "-march=x86-64-v3"
         run: cargo test --release --test block_acceptance -- --ignored --nocapture

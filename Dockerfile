@@ -5,7 +5,7 @@
 # against the builder's glibc, libstdc++ and libsqlite3.
 
 # ── Builder ──────────────────────────────────────────────────────────────────
-FROM rust:1-trixie@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137 AS builder
+FROM rust:1-trixie@sha256:8a4e90c7946b74626488b1446f712c0fe0ed1a596cbd3d871684bc9c5433ae07 AS builder
 
 # rusqlite links the system SQLite, found through pkg-config. No system libzmq
 # is needed: zmq-sys compiles libzmq from source and links it statically.
@@ -19,6 +19,8 @@ WORKDIR /build
 # across source-only changes. The package has a library target as well as
 # the binary, so both files must exist or Cargo stops at target resolution.
 COPY Cargo.toml Cargo.lock ./
+# .cargo/config.toml carries the libzmq alignment defines (see the file).
+COPY .cargo ./.cargo
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && : > src/lib.rs \
     && cargo build --release --locked \
     && rm -rf src
@@ -30,7 +32,7 @@ RUN touch src/main.rs src/lib.rs \
     && strip target/release/solo-pool-rs
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # Runtime shared libs the binary links: libsqlite3 (rusqlite stats DB) and
 # libstdc++ (the libzmq that zmq-sys builds into the binary is C++). Without

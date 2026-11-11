@@ -9,7 +9,19 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Changed
+- Dependency update: hyper 1.8.1 to 1.12.0, which drops `pin-utils`
+  (RUSTSEC-2026-0441, unmaintained). hyper only serves the dashboard and
+  `/metrics`; Stratum and the node RPC client do not use it (#169).
+
 ### Fixed
+- A pool built with AVX code generation could crash with a segfault at
+  startup, on its first ZMQ connect. The bundled libzmq declares its internal
+  queues 64-byte aligned but allocated them with plain `malloc`; the build now
+  makes it use `posix_memalign`. GitHub's current ubuntu-26.04 x64 runners hit
+  this, so release tarballs built there would not have started. The v0.6.13
+  release binary and Docker image are not affected. The block-acceptance test
+  now builds with AVX2 so the case stays covered.
 - The Best share card read "no vs net", which looked like a placeholder. It
   now shows the all-time best share as a percentage of network difficulty
   (for example "0.54% of network difficulty").
