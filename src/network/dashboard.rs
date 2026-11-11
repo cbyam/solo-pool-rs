@@ -1031,7 +1031,8 @@ tr:last-child td { border-bottom: none; }
     <div class="kpi">
       <div class="label">Best share</div>
       <div class="val accent" id="v-best-share">&mdash;</div>
-      <div class="sub">session: <span id="v-session-best-share">&mdash;</span> &middot; <span id="v-best-over-network" title="Has the all-time best share met current network difficulty?">&mdash;</span> vs net</div>
+      <div class="sub">session: <span id="v-session-best-share">&mdash;</span></div>
+      <div class="sub" title="All-time best share as a percentage of current network difficulty. 100% would have been a block."><span id="v-best-over-network">&mdash;</span> of network difficulty</div>
     </div>
     <div class="kpi">
       <div class="label">Best hashrate</div>
@@ -1566,8 +1567,10 @@ function fmtPct(pct) {
   if (!isFinite(pct)) return '—';
   if (pct === 0) return '0%';
   // A lucky solo round can close in the thousandths of a percent; two
-  // decimals would render every one of them as a flat 0.00%.
-  if (pct < 0.01) return Number(pct.toPrecision(2)) + '%';
+  // decimals would render every one of them as a flat 0.00%. Format with
+  // toLocaleString: plain number-to-string goes exponent below 1e-6, which a
+  // fresh install's best share against mainnet reaches ("6.7e-8%").
+  if (pct < 0.01) return pct.toLocaleString('en-US', { maximumSignificantDigits: 2 }) + '%';
   return (pct < 1 ? pct.toFixed(2) : pct < 100 ? pct.toFixed(1) : Math.round(pct).toLocaleString()) + '%';
 }
 
@@ -1743,7 +1746,7 @@ async function refresh() {
     renderStore(d);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
-    document.getElementById('v-best-over-network').textContent = d.best_share_difficulty >= Math.ceil(d.network_difficulty) ? 'YES' : 'no';
+    document.getElementById('v-best-over-network').textContent = d.network_difficulty > 0 ? fmtPct(d.best_share_difficulty / d.network_difficulty * 100) : '—';
 
     // Network section (human-readable hashrate + difficulty + next-adjustment ETA)
     document.getElementById('v-net-hashrate').textContent = fmtHr(d.network_hashrate_hps || 0, false);
@@ -1950,8 +1953,8 @@ function updateProbability(ourHps, netHps) {
   const pPowerball = 1 / 292201338;
   const ratio = pDaily / pPowerball;
   const vsText = ratio >= 1
-    ? (ratio.toFixed(1) + '× better than Powerball')
-    : ((1 / ratio).toFixed(1) + '× worse than Powerball');
+    ? (ratio.toFixed(1) + '× better than Powerball (per day vs per draw)')
+    : ((1 / ratio).toFixed(1) + '× worse than Powerball (per day vs per draw)');
 
   // Mean blocks until ours is 1/pBlock, at ~10 minutes each.
   lastExpectedWait = fmtWait(600 / pBlock);
@@ -2339,6 +2342,23 @@ mod tests {
             !DASHBOARD_HTML.contains("escHtml"),
             "escHtml was removed on purpose"
         );
+    }
+
+    /// A fresh install's best share against mainnet difficulty is a tiny
+    /// percentage. `Number(x.toPrecision(n))` stringifies anything below
+    /// 1e-6 in exponent form ("6.7e-8%"), so fmtPct must not go through it.
+    #[test]
+    fn fmt_pct_avoids_exponent_form() {
+        let start = DASHBOARD_HTML
+            .find("function fmtPct(")
+            .expect("fmtPct present");
+        let len = DASHBOARD_HTML[start..].find("\n}").expect("fmtPct ends");
+        let body = &DASHBOARD_HTML[start..start + len];
+        assert!(
+            !body.contains("Number("),
+            "Number() stringifies values below 1e-6 in exponent form"
+        );
+        assert!(body.contains("maximumSignificantDigits"));
     }
 
     /// Every external script must pin its bytes. A CDN that serves something

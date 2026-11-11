@@ -22,6 +22,14 @@ everything else bumps the **patch** version.
   this, so release tarballs built there would not have started. The v0.6.13
   release binary and Docker image are not affected. The block-acceptance test
   now builds with AVX2 so the case stays covered.
+- The Best share card read "no vs net", which looked like a placeholder. It
+  now shows the all-time best share as a percentage of network difficulty
+  (for example "0.54% of network difficulty").
+- Very small percentages on the dashboard (a new install's best share
+  against mainnet difficulty) no longer show in exponent form such as
+  "6.7e-8%".
+- The Powerball comparison on the Block odds card now says it compares
+  odds per day against odds per draw.
 
 ## [0.6.13] - 2026-10-23
 
