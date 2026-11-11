@@ -9,6 +9,16 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Fixed
+- The Best share card read "no vs net", which looked like a placeholder. It
+  now shows the all-time best share as a percentage of network difficulty
+  (for example "0.54% of network difficulty").
+- Very small percentages on the dashboard (a new install's best share
+  against mainnet difficulty) no longer show in exponent form such as
+  "6.7e-8%".
+- The Powerball comparison on the Block odds card now says it compares
+  odds per day against odds per draw.
+
 ## [0.6.13] - 2026-10-23
 
 ### Changed
