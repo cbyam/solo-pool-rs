@@ -313,12 +313,16 @@ A replacement sent by RPC is a special case: its replaced transaction
 reaches the extra pool only if a peer relays the original again and the
 node rejects it, which happened in some runs and not others.
 
-The probe is `docs/design/template-policy-delta-probe.py` (Python, stdlib
-only). Run it as `python3 docs/design/template-policy-delta-probe.py
-<path-to-bitcoind> <empty-workdir> big|zero`; it starts its own regtest nodes
-on ports 18700 to 18721 and writes `results.json` to the workdir. Roots has
-not been run yet. Before enforce ships, the enforce-mode E2E test covers
-these on every node in the matrix, Roots included.
+The probe is `examples/delta_probe.rs`. It starts its own regtest nodes on
+ports 18700 to 18721 and writes `results.json` to the workdir:
+
+```
+cargo run --release --example delta_probe -- \
+    --bitcoind <path> --workdir <empty dir> --mode big|zero
+```
+
+Roots has not been run yet. Before enforce ships, the enforce-mode E2E test
+covers these on every node in the matrix, Roots included.
 
 ## Gotchas found on regtest
 
