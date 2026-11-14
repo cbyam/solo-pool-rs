@@ -1,0 +1,21 @@
+[package]
+name = "tx-datacarrier-policy"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Bitcoin Knots' data-carrier and token transaction policy, as a library: check a transaction against Knots-style rules without running Knots"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cbyam/solo-pool-rs"
+keywords = ["bitcoin", "mempool", "policy", "datacarrier"]
+categories = ["cryptography::cryptocurrencies"]
+
+[dependencies]
+# The public API takes rust-bitcoin types, so a rust-bitcoin major bump is a
+# breaking release of this crate.
+bitcoin = "0.32"
+
+[dev-dependencies]
+# For the mainnet audit example and the regtest differential test.
+bitcoincore-rpc = "0.19"
+serde_json = "1"
+hex = "0.4"

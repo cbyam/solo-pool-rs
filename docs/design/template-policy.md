@@ -510,7 +510,7 @@ is embedded data; with `reject_tokens` most of it is Runes, which arrive in
 bursts (8% to 87% of a block's transactions in a seven-block sample). The fee
 figures are what the declined transactions paid, an upper bound on the cost:
 deprioritising lets the node refill their space. Anyone can rerun the audit
-with `cargo run --release --example template_audit`.
+with `cargo run --release -p tx-datacarrier-policy --example template_audit`.
 
 **Full difficulty period (2026-11-08).** Over mainnet blocks 973,069 to
 975,084 (2,016 blocks, about 8.5 million transactions; the deployed-settings
@@ -542,9 +542,9 @@ cannot see the size of a coin it does not have. A coin like that is declined
 when it is created (`scriptpubkey-size`, 132 outputs in the window), so the
 gap is one transaction in 8.5 million.
 
-**Phase 1, the first release after 1.0: observe mode.** The classifier
-moves into its own crate first (see Library crate below), so the pool uses it
-as a dependency from the start. Then the pool classifies and records;
+**Phase 1, the first release after 1.0: observe mode.** The classifier is
+already in its own crate (see Library crate below), so the pool uses it as a
+dependency from the start. The pool classifies and records;
 templates are unchanged. Run it behind the deployed Knots node
 first: Knots has already filtered, so anything the pool would still decline
 points to a rule that is stricter than Knots or wrong.
@@ -582,37 +582,40 @@ invalid block, so what breaks is the refill.
 
 The classifier is useful outside the pool: to another pool, a Template
 Provider, a mempool explorer, or a sidecar that applies the same rules to a
-plain Core or Roots node. It already depends only on the `bitcoin` crate and
-nothing else in the pool (the audit tool uses it through
-`solo_pool_rs::policy`), so extracting it is mostly mechanical. It happens at
-the start of phase 1, before observe mode is wired in, so no live code moves
-later.
+plain Core or Roots node. It depends only on the `bitcoin` crate. It was
+extracted on 2026-11-14, on this branch and ahead of phase 1, so no live code
+moves later.
 
-- **Layout.** The repository becomes a Cargo workspace with the crate under
-  `crates/`, and the pool depends on it by path. A separate repository waits
-  until someone outside the pool uses it.
-- **API.** What exists today: `Rules` for the settings, and `check` taking a
-  transaction and, when available, its spent coins (exact mode with them,
-  shape mode without). The `Rule` enum and the settings struct become
-  `#[non_exhaustive]`, so a new rule is not a breaking change.
+- **Layout.** The repository is a Cargo workspace with the crate at
+  `crates/tx-datacarrier-policy/`; the mainnet audit and the differential test
+  moved with it. The pool depends on it by path once observe mode is wired
+  in; until then it does not, so the release binary is unchanged. The
+  regtest delta probe (`examples/delta_probe.rs`) tests node behaviour for
+  enforce mode and stays with the pool. A separate repository waits until
+  someone outside the pool uses the crate.
+- **API.** `Rules` for the settings, `check` taking a transaction and, when
+  available, its spent coins (exact mode with them, shape mode without), and
+  `Rule` with `Rule::ALL`. `Rule` and `Rules` are `#[non_exhaustive]`, so a
+  new rule or setting is not a breaking change; outside the crate, `Rules` is
+  built by changing fields of `Rules::default()`.
 - **rust-bitcoin.** The API takes `bitcoin` types, so a rust-bitcoin major
   bump is a breaking release of the crate. The README says so and the crate
   follows rust-bitcoin majors.
-- **Name.** Descriptive and neutral (for example `tx-datacarrier-policy`),
-  without "knots" or "roots", which would suggest an affiliation. The README
-  maps each rule to the Knots, Roots and Core options and versions it follows,
-  as the rules table here does.
+- **Name.** `tx-datacarrier-policy`: descriptive and neutral, without
+  "knots" or "roots", which would suggest an affiliation. The README maps each
+  rule to the Knots, Roots and Core options and versions it follows, as the
+  rules table here does.
 - **Differential test.** The mainnet audit shows what the rules do on real
   traffic; it does not show they still match the node after a Knots or Roots
   release changes a default. A regtest test sends crafted transactions (one
   per rule, at and just past each limit) through the node's
   `testmempoolaccept` and through the crate, and fails on any disagreement.
   It runs in the E2E matrix against Knots and Roots. This test is the reason
-  to trust the crate. It exists ahead of the extraction as
-  `tests/policy_differential.rs` (2026-11-14), and moves into the crate with
-  it.
+  to trust the crate. It is `tests/policy_differential.rs` in the crate, and
+  runs in the E2E workflow on the Knots entry.
 - **Publishing.** crates.io at 0.x, versioned apart from the pool. Its own 1.0
-  waits for outside use, and does not follow the pool's.
+  waits for outside use, and does not follow the pool's. Not published yet;
+  the crate is 0.1.0 in the workspace.
 
 ### Differential test results
 
@@ -649,6 +652,7 @@ bytes means spending a non-standard output). Roots has not been run.
   the first matching rule; descendants under `descendant`; plus a total.
 - **Before enforce** (2026-10-18): a 2,016-block audit, and every supported
   node major in the E2E matrix.
+- **Crate name** (2026-11-14): `tx-datacarrier-policy`, under `crates/`.
 - **Delta size** (2026-11-14): the delta stays far below zero. Sizing it to
   leave the modified fee near zero, to soften eviction, lets a paying child
   pull its parent back into the template on Core and Knots.

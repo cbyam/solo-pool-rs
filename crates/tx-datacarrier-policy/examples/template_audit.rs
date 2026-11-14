@@ -1,7 +1,7 @@
 //! Template policy audit: replay recent blocks through the policy rules and
 //! report what each rule would have declined and what it would have cost.
 //!
-//!   cargo run --release --example template_audit -- \
+//!   cargo run --release -p tx-datacarrier-policy --example template_audit -- \
 //!       --url http://127.0.0.1:8332 --cookie ~/.bitcoin/.cookie --blocks 144
 //!
 //! Each block is read with `getblock <hash> 3`, which includes the coins every
@@ -14,7 +14,6 @@
 //! Rule settings default to Knots 29.3's. `--datacarrier-size <n>` and
 //! `--reject-tokens` override the two settings operators most often change.
 //! Read-only: the tool sends no transaction and changes nothing on the node.
-//! Not part of the shipping pool.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -22,7 +21,7 @@ use std::path::PathBuf;
 use bitcoin::{consensus::deserialize, Amount, ScriptBuf, Transaction, TxOut, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde_json::{json, Value};
-use solo_pool_rs::policy::{check, Rule, Rules};
+use tx_datacarrier_policy::{check, Rule, Rules};
 
 /// Transactions where exact and shape mode disagree, by (exact, shape)
 /// verdict: a count and a few sample txids.

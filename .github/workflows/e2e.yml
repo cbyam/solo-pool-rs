@@ -96,4 +96,4 @@ jobs:
         env:
           CFLAGS: "-march=x86-64-v3"
           CXXFLAGS: "-march=x86-64-v3"
-        run: cargo test --release --test policy_differential -- --ignored --nocapture
+        run: cargo test --release -p tx-datacarrier-policy --test policy_differential -- --ignored --nocapture

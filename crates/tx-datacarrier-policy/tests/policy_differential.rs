@@ -3,7 +3,7 @@
 //!
 //! Each vector is a transaction that is standard under Core's own rules and
 //! sits at, or just past, one of the classifier's limits. The node judges it
-//! with `testmempoolaccept`; the classifier (`solo_pool_rs::policy::check`)
+//! with `testmempoolaccept`; the classifier ([`tx_datacarrier_policy::check`])
 //! judges it twice, with the spent coins (exact mode) and without (shape
 //! mode). All three verdicts must agree, reject reason included, under three
 //! node configurations: Knots' defaults, the deployed node's settings, and a
@@ -25,7 +25,7 @@
 //!
 //! ```text
 //! BITCOIND=/path/to/knots/bitcoind \
-//!     cargo test --release --test policy_differential -- --ignored --nocapture
+//!     cargo test --release -p tx-datacarrier-policy --test policy_differential -- --ignored --nocapture
 //! ```
 //!
 //! On any other node it skips, except under CI (`$CI` set), where it fails,
@@ -47,26 +47,7 @@ use bitcoin::{
 };
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde_json::{json, Value};
-use solo_pool_rs::policy::{check, Rule, Rules};
-
-/// Every rule, to map a node reject reason back to one.
-const ALL_RULES: [Rule; 15] = [
-    Rule::Cat21,
-    Rule::ScriptSigSize,
-    Rule::ScriptPubKeySize,
-    Rule::Datacarrier,
-    Rule::Runes,
-    Rule::BarePubkey,
-    Rule::BareMultisig,
-    Rule::Olga,
-    Rule::MultiOpReturn,
-    Rule::BareDatacarrier,
-    Rule::DatacarrierNonStandard,
-    Rule::DatacarrierExceeded,
-    Rule::SpentScriptSize,
-    Rule::RedeemScriptSize,
-    Rule::WitnessSize,
-];
+use tx_datacarrier_policy::{check, Rule, Rules};
 
 /// The rules the vectors must make the node reject at least once, across
 /// all configurations.
@@ -233,7 +214,7 @@ fn rule_for_reason(reason: &str, exact: &Result<(), Rule>) -> Option<Rule> {
     if reason == "scriptpubkey" && *exact == Err(Rule::Datacarrier) {
         return Some(Rule::Datacarrier);
     }
-    ALL_RULES.into_iter().find(|r| {
+    Rule::ALL.into_iter().find(|r| {
         let base = r.reason();
         reason == base
             || reason == format!("bad-txns-input-{base}")
@@ -583,6 +564,17 @@ struct Config {
 }
 
 fn configs() -> Vec<Config> {
+    // `Rules` is non-exhaustive, so outside the crate it is built by changing
+    // fields of the default.
+    let mut deployed = Rules::default();
+    deployed.datacarrier_size = 42;
+    deployed.reject_tokens = true;
+    let mut permissive = Rules::default();
+    permissive.accept_non_std_datacarrier = true;
+    permissive.permit_bare_multisig = true;
+    permissive.permit_bare_pubkey = true;
+    permissive.permit_bare_datacarrier = true;
+    permissive.reject_parasites = false;
     vec![
         Config {
             name: "defaults",
@@ -592,11 +584,7 @@ fn configs() -> Vec<Config> {
         Config {
             name: "deployed",
             args: &["-datacarriersize=42", "-rejecttokens=1"],
-            rules: Rules {
-                datacarrier_size: 42,
-                reject_tokens: true,
-                ..Rules::default()
-            },
+            rules: deployed,
         },
         Config {
             name: "permissive",
@@ -607,14 +595,7 @@ fn configs() -> Vec<Config> {
                 "-permitbaredatacarrier=1",
                 "-rejectparasites=0",
             ],
-            rules: Rules {
-                accept_non_std_datacarrier: true,
-                permit_bare_multisig: true,
-                permit_bare_pubkey: true,
-                permit_bare_datacarrier: true,
-                reject_parasites: false,
-                ..Rules::default()
-            },
+            rules: permissive,
         },
     ]
 }
@@ -627,7 +608,7 @@ fn label(v: &Result<(), Rule>) -> String {
 }
 
 #[test]
-#[ignore = "needs a Knots or Roots bitcoind; run with: cargo test --release --test policy_differential -- --ignored --nocapture"]
+#[ignore = "needs a Knots or Roots bitcoind; run with: cargo test --release -p tx-datacarrier-policy --test policy_differential -- --ignored --nocapture"]
 fn classifier_matches_node_policy() {
     let version = node_version();
     let supported = version

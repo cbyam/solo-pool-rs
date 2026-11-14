@@ -1,18 +1,34 @@
-//! Transaction policy the pool can apply to a block template.
+//! Bitcoin Knots' data-carrier and token transaction policy, as a library.
 //!
-//! The rules are the ones Bitcoin Knots enforces and Bitcoin Core v31.1 does
-//! not, so a Core node plus these rules gives Knots-like blocks. Each rule keeps
-//! the meaning and the default of its Knots option. The logic is a port of
-//! Bitcoin Roots' `src/policy/policy.cpp` and the data-carrier checks in its
-//! `src/validation.cpp` (MIT licensed, Copyright The Bitcoin Core developers),
-//! which reimplement the Knots behaviour on a Core v31.1 base. Checks that Core
-//! already applies (non-standard scripts, dust, the 80-byte stack item limits)
-//! are left to the node. Design: `docs/design/template-policy.md`.
+//! [`check`] tells whether a transaction passes the policy rules Bitcoin Knots
+//! enforces and Bitcoin Core v31.1 does not: OP_RETURN size and count, data
+//! embedded in executed scripts (inscription envelopes, push/`OP_DROP`, Olga,
+//! OPNet), oversize scripts and witnesses, Runes, CAT-21, and bare pubkey,
+//! multisig and data-carrier outputs. A Core node plus these rules gives
+//! Knots-like blocks. Each field of [`Rules`] keeps the meaning and the
+//! default of its Knots option. Checks Core already applies (non-standard
+//! scripts, dust, the 80-byte stack item limits) are left to the node.
+//!
+//! The logic is a port of Bitcoin Roots' `src/policy/policy.cpp` and the
+//! data-carrier checks in its `src/validation.cpp` (MIT licensed, Copyright
+//! The Bitcoin Core developers), which reimplement the Knots behaviour on a
+//! Core v31.1 base.
 //!
 //! The embedded-data checks need the script each input executes. With the
 //! spent coins (`spent = Some(..)`) it is found exactly, as Knots does; without
 //! them it is inferred from the witness shape, which can differ on unusual
 //! inputs.
+//!
+//! ```
+//! use bitcoin::Transaction;
+//! use tx_datacarrier_policy::{check, Rules};
+//!
+//! fn declined(tx: &Transaction) -> Option<&'static str> {
+//!     let mut rules = Rules::default(); // Knots 29.3's defaults
+//!     rules.reject_tokens = true;
+//!     check(tx, &rules, None).err().map(|rule| rule.reason())
+//! }
+//! ```
 
 mod inputs;
 mod script;
@@ -37,7 +53,10 @@ const DUST_RELAY_FEE: u64 = 3000;
 const MAX_PUBKEYS_PER_MULTISIG: i64 = 20;
 
 /// The policy settings. Field defaults are Knots 29.3's (`bitcoind -help`).
+/// Start from [`Rules::default`] and change fields; new settings may be added
+/// in a minor release.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Rules {
     /// Knots `-datacarriersize`: the most OP_RETURN script bytes a transaction
     /// may carry, summed over its outputs. Knots' `-datacarrier=0` is 0 here.
@@ -85,7 +104,9 @@ impl Default for Rules {
 }
 
 /// Why a transaction is declined.
+/// New rules may be added in a minor release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Rule {
     Cat21,
     ScriptSigSize,
@@ -105,6 +126,25 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Every rule, in declaration order.
+    pub const ALL: [Rule; 15] = [
+        Rule::Cat21,
+        Rule::ScriptSigSize,
+        Rule::ScriptPubKeySize,
+        Rule::Datacarrier,
+        Rule::Runes,
+        Rule::BarePubkey,
+        Rule::BareMultisig,
+        Rule::Olga,
+        Rule::MultiOpReturn,
+        Rule::BareDatacarrier,
+        Rule::DatacarrierNonStandard,
+        Rule::DatacarrierExceeded,
+        Rule::SpentScriptSize,
+        Rule::RedeemScriptSize,
+        Rule::WitnessSize,
+    ];
+
     /// Knots' reject reason. Knots prefixes the input checks with
     /// `bad-txns-input-` and the witness check with `bad-witness-`.
     /// `datacarrier` is Roots' (and Core 30's) reason; Knots 29 checks
