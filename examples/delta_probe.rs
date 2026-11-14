@@ -17,6 +17,9 @@
 //! On Knots it also sends the -1e17 priority delta and sets
 //! `-blockprioritysize=0`, as the pool would.
 //!
+//! `--node-arg <arg>` (repeatable) passes an option to all three nodes, for
+//! example `--node-arg -blockprioritysize=0` on Roots.
+//!
 //! The workdir must be empty or absent. Ports `--port-base` to `--port-base +
 //! 21` are used (default 18700). Results go to `<workdir>/results.json`.
 //! `bitcoind` defaults to `$BITCOIND`, else `bitcoind` on the PATH.
@@ -57,6 +60,7 @@ struct Args {
     workdir: PathBuf,
     mode: Mode,
     port_base: u16,
+    node_args: Vec<String>,
 }
 
 fn parse_args() -> Args {
@@ -65,6 +69,7 @@ fn parse_args() -> Args {
         workdir: std::env::temp_dir().join("delta-probe"),
         mode: Mode::Big,
         port_base: 18700,
+        node_args: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -83,6 +88,7 @@ fn parse_args() -> Args {
                 }
             }
             "--port-base" => args.port_base = value().parse().unwrap_or_else(|_| usage("bad port")),
+            "--node-arg" => args.node_args.push(value()),
             other => usage(&format!("unknown argument {other}")),
         }
     }
@@ -92,7 +98,7 @@ fn parse_args() -> Args {
 fn usage(msg: &str) -> ! {
     eprintln!("{msg}");
     eprintln!(
-        "usage: delta_probe [--bitcoind PATH] [--workdir DIR] [--mode big|zero] [--port-base N]"
+        "usage: delta_probe [--bitcoind PATH] [--workdir DIR] [--mode big|zero] [--port-base N] [--node-arg ARG]..."
     );
     std::process::exit(2);
 }
@@ -115,7 +121,11 @@ impl Node {
             dir: a.workdir.join(name),
             p2p: a.port_base + offset,
             rpc: a.port_base + offset + 1,
-            extra: extra.iter().map(|s| s.to_string()).collect(),
+            extra: extra
+                .iter()
+                .map(|s| s.to_string())
+                .chain(a.node_args.iter().cloned())
+                .collect(),
             child: None,
         }
     }
@@ -378,6 +388,7 @@ fn main() {
     };
     let mut results = Map::new();
     results.insert("node".into(), json!(version));
+    results.insert("node_args".into(), json!(args.node_args));
     results.insert(
         "mode".into(),
         json!(if args.mode == Mode::Big {

@@ -324,11 +324,19 @@ ports 18700 to 18721 and writes `results.json` to the workdir:
 
 ```
 cargo run --release --example delta_probe -- \
-    --bitcoind <path> --workdir <empty dir> --mode big|zero
+    --bitcoind <path> --workdir <empty dir> --mode big|zero [--node-arg <arg>]...
 ```
 
-Roots has not been run yet. Before enforce ships, the enforce-mode E2E test
-covers these on every node in the matrix, Roots included.
+**Roots** (v31.1-roots.6, 2026-11-14) behaves like Core and Knots on every
+check above: replacement, eviction first with the same extra round trip, and
+refusal on return (`min relay fee not met`). Its delta also survives a
+mempool replacement. The difference is the template (gotcha 1): on a stock
+Roots node, with its priority area on, a deprioritised transaction was in
+`getblocktemplate` in all three runs with the large delta (the lone one in
+two runs, the parent and its child in the third). With
+`--node-arg -blockprioritysize=0`, none was, in three runs of three. Before
+enforce ships, the enforce-mode E2E test covers these on every node in the
+matrix, Roots included.
 
 ## Gotchas found on regtest
 
@@ -344,7 +352,10 @@ covers these on every node in the matrix, Roots included.
    node the documentation recommends `blockprioritysize=0`.
 
    A stock Roots node is the case the deltas cannot close: its priority area
-   is on and there is no priority delta to send. The policy still holds,
+   is on and there is no priority delta to send. Confirmed on v31.1-roots.6
+   (see the Roots results above): a deprioritised transaction reached the
+   template in every run on a stock node and in none with
+   `blockprioritysize=0`. The policy still holds,
    because the backstop removes what the priority area picks, but that space
    is left empty. Documentation alone cannot fix this. The pool's app on
    Umbrel cannot change the node's config, and a missed line in the docs
@@ -591,7 +602,7 @@ Also before enforce ships:
   confirmed on regtest, and the explorer check under Visibility is done.
   Done for Core 31.1 and Knots 29.3 on 2026-11-14 (see "What the delta
   changes besides block building"). The explorer check is done too (see
-  Visibility). Roots remains.
+  Visibility), and Roots on 2026-11-14.
 
 A change in those internals is a fee risk, not a correctness risk: the
 backstop keeps declined transactions out and the proposal check rejects an
@@ -650,10 +661,16 @@ oversize OP_RETURN (`scriptpubkey`, see the note under Rules); the test maps
 it to `datacarrier` only when the classifier says `datacarrier`. Changing the
 deployed settings in the test to 43 bytes fails it, as it should.
 
+Roots v31.1-roots.6, same day: every verdict agrees under all three
+settings, and Roots reports `datacarrier` itself, so the `scriptpubkey`
+mapping is not used. Its option names and defaults match Knots 29.3's;
+`-datacarriersize` is summed over all outputs ("in aggregate"), as the
+classifier does.
+
 Not covered, because Core's own rules refuse the transaction first at these
 settings: `scriptsig-size` and `scriptcheck-size` (Core's 1,650-byte scriptSig
 limit) and `script-size` (spending a coin with a scriptPubKey over 1,650
-bytes means spending a non-standard output). Roots has not been run.
+bytes means spending a non-standard output).
 
 ## Decided
 
