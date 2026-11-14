@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "solo-pool-rs"
-version = "0.6.13"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "axum",

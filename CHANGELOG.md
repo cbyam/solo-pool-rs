@@ -9,6 +9,23 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-11-14
+
+The 1.0 release candidate. [`docs/stable-surface.md`](docs/stable-surface.md)
+lists what 1.0 promises: config keys, Stratum V1 and V2 behaviour on the
+wire, the HTTP JSON, metric names and labels, files on disk, and the
+packaging contract. It becomes the promise when 1.0.0 is tagged, after the
+production soak ends quietly.
+
+### Removed
+- The four Prometheus summaries deprecated in 0.6.12:
+  `pool_share_difficulty`, `pool_share_validation_duration_ms`,
+  `pool_connection_duration_secs` and `pool_vardiff_change_ratio`. Use
+  `pool_share_work_total`, `pool_share_validation_duration_seconds`,
+  `pool_connection_duration_seconds` and `pool_vardiff_retarget_ratio`
+  instead. A dashboard panel or alert on an old name goes blank after the
+  upgrade. No metric is exported as a summary any more.
+
 ### Changed
 - Dependency update: hyper 1.8.1 to 1.12.0, which drops `pin-utils`
   (RUSTSEC-2026-0441, unmaintained). hyper only serves the dashboard and
@@ -1200,7 +1217,8 @@ everything else bumps the **patch** version.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.13...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.13...v1.0.0-rc.1
 [0.6.13]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.12...v0.6.13
 [0.6.12]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.11...v0.6.12
 [0.6.11]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.10...v0.6.11
