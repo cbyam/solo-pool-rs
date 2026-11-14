@@ -87,3 +87,13 @@ jobs:
           CFLAGS: "-march=x86-64-v3"
           CXXFLAGS: "-march=x86-64-v3"
         run: cargo test --release --test block_acceptance -- --ignored --nocapture
+
+      # The template policy classifier against the node's own policy, under
+      # three settings. Knots only: Core does not enforce these rules, so the
+      # test fails under CI on any other node rather than skipping.
+      - name: Run policy differential test (release)
+        if: startsWith(matrix.node.name, 'Knots')
+        env:
+          CFLAGS: "-march=x86-64-v3"
+          CXXFLAGS: "-march=x86-64-v3"
+        run: cargo test --release --test policy_differential -- --ignored --nocapture

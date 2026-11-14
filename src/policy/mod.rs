@@ -107,6 +107,8 @@ pub enum Rule {
 impl Rule {
     /// Knots' reject reason. Knots prefixes the input checks with
     /// `bad-txns-input-` and the witness check with `bad-witness-`.
+    /// `datacarrier` is Roots' (and Core 30's) reason; Knots 29 checks
+    /// `-datacarriersize` per output and reports `scriptpubkey`.
     pub fn reason(self) -> &'static str {
         match self {
             Rule::Cat21 => "parasite-cat21",

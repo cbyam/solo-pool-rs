@@ -62,6 +62,12 @@ from comparing Roots' policy code with Core v31.1's.
 | `permit_bare_pubkey` | `-permitbarepubkey` (0) | allowed | bare pay-to-pubkey outputs (`bare-pubkey`) |
 | `permit_bare_datacarrier` | `-permitbaredatacarrier` (0) | allowed | transactions whose only outputs are data carriers or dust (`bare-datacarrier`) |
 
+Knots 29.3 checks `-datacarriersize` per output, inside `IsStandard`, and
+reports an oversize OP_RETURN as the generic `scriptpubkey`. The `datacarrier`
+reason and the limit summed over all outputs are Roots' (and Core 30's). The
+verdicts differ only when several OP_RETURN outputs are allowed, which Knots
+never does.
+
 Defaults in parentheses are from `bitcoind -help` on Knots 29.3. Where Core has
 the same option, the rule follows Knots' meaning and default, not Core's.
 `permit_multiple_op_return` has no Knots option; it exists so an operator can
@@ -602,9 +608,30 @@ later.
   per rule, at and just past each limit) through the node's
   `testmempoolaccept` and through the crate, and fails on any disagreement.
   It runs in the E2E matrix against Knots and Roots. This test is the reason
-  to trust the crate; it lands with the extraction.
+  to trust the crate. It exists ahead of the extraction as
+  `tests/policy_differential.rs` (2026-11-14), and moves into the crate with
+  it.
 - **Publishing.** crates.io at 0.x, versioned apart from the pool. Its own 1.0
   waits for outside use, and does not follow the pool's.
+
+### Differential test results
+
+First run, 2026-11-14, Knots 29.3: 22 vectors under three settings (Knots'
+defaults; the deployed node's `datacarriersize=42` and `rejecttokens=1`; and
+a permissive set with `acceptnonstddatacarrier`, `permitbaremultisig`,
+`permitbarepubkey` and `permitbaredatacarrier` on and `rejectparasites` off).
+Exact and shape mode agreed with the node on every vector, including each
+boundary: OP_RETURN scripts of 42/43, 83/84 and 1,650/1,651 bytes, a tapscript
+envelope counted at exactly 83 and 84 bytes, and a tapscript witness of
+1,650 and 1,651 bytes. The one difference was the reject reason for an
+oversize OP_RETURN (`scriptpubkey`, see the note under Rules); the test maps
+it to `datacarrier` only when the classifier says `datacarrier`. Changing the
+deployed settings in the test to 43 bytes fails it, as it should.
+
+Not covered, because Core's own rules refuse the transaction first at these
+settings: `scriptsig-size` and `scriptcheck-size` (Core's 1,650-byte scriptSig
+limit) and `script-size` (spending a coin with a scriptPubKey over 1,650
+bytes means spending a non-standard output). Roots has not been run.
 
 ## Decided
 
