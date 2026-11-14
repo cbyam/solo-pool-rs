@@ -213,10 +213,13 @@ If a later design has the pool set the version itself, two rules apply:
 
 ### Delta bookkeeping
 
-The node clears a delta when its transaction confirms or is replaced by a
-conflicting one (`txmempool.cpp:398,420` in v31.1). A delta for a transaction
-that expires or is evicted stays on record, and deltas survive restarts in
-`mempool.dat`. So:
+The node clears a delta only when a block confirms its transaction or a
+transaction that conflicts with it (`removeForBlock` and the `removeConflicts`
+it calls, `txmempool.cpp:704-743` in Knots 29.3). A delta for a transaction
+that expires, is evicted, or is replaced in the mempool stays on record, and
+deltas survive restarts in `mempool.dat`. The replacement case was confirmed
+on regtest on 2026-11-14 on Core 31.1 and Knots 29.3: after the replacement the
+entry shows `in_mempool: false` and stays until the original confirms. So:
 
 - A periodic cleanup lists `getprioritisedtransactions` and cancels, with the
   opposite delta, every entry carrying the pool's delta whose `in_mempool` is
@@ -247,34 +250,75 @@ feerate cutoff work.
 A delta changes the fee the node's mempool uses everywhere, not only in the
 block builder. Peers never see it and the transaction is unchanged, so RBF
 and relay work as before for everyone else. On the operator's node, a delta
-this large has three side effects. They follow from how Core uses the
-modified fee and are not yet confirmed on regtest:
+this large has three side effects. All three were confirmed on regtest on
+2026-11-14, on Core 31.1 and Knots 29.3 (results below):
 
-- **Replacement gets easier.** Core compares a replacement against the
-  modified fees of the transactions it replaces, so the node accepts a
+- **Replacement gets easier.** The node compares a replacement against the
+  modified fees of the transactions it replaces, so it accepts a
   replacement of a deprioritised transaction that pays less than its real
   fee. Peers refuse that replacement, so the node's mempool can differ from
   theirs by a few transactions. Mining is unaffected: the replacement has a
-  new txid, which clears the delta, and the pool classifies it like any
-  other transaction. A bumped unwanted transaction is deprioritised again.
+  new txid, and the pool classifies it like any other transaction. A bumped
+  unwanted transaction is deprioritised again. The replaced transaction's
+  delta is not cleared (see "Delta bookkeeping"), so the cleanup handles it
+  like an evicted one. A replaced transaction stays in the compact-block
+  extra pool when the replacement arrived from a peer, so a block that mines
+  the original costs no extra round trip.
 - **Deprioritised transactions are evicted first.** Mempool trimming ranks
   by modified feerate, so a full mempool drops them and their descendants
-  before anything else. If another pool then mines one, the node lacks it
-  and fetches it while validating that block: one more round trip in
-  compact-block reconstruction, which delays the new tip and the clean job
-  sent to miners. Measure it on regtest; if it shows up, the delta can be
-  sized to keep the feerate just below `blockmintxfee` instead of far below
-  it.
-- **A returning transaction is refused.** A delta outlives eviction (see
-  "Delta bookkeeping"). Until the cleanup cancels it, a rebroadcast of that
+  before anything else. Evicted transactions do not go into the extra pool.
+  If another pool then mines one, the node lacks it and fetches it while
+  validating that block: one more round trip in compact-block
+  reconstruction, which delays the new tip and the clean job sent to miners.
+  The delta has to stay far below zero all the same: one sized to leave the
+  modified fee near zero lets a paying child pull its parent back into the
+  template (see the results).
+- **A returning transaction is refused.** A delta outlives eviction and
+  replacement. Until the cleanup cancels it, a rebroadcast of that
   transaction fails the node's minimum fee check and is not relayed. For
   that window the node filters at relay, against "relay stays the node's
-  business" in the narrow-only rule. The cleanup interval bounds the window;
-  the regtest test measures it, and if it matters the cleanup runs on each
-  eviction rather than on a timer.
+  business" in the narrow-only rule. Cancelling the delta makes the
+  transaction acceptable again at once, so the cleanup interval is the
+  window. If it matters, the cleanup runs on each mempool removal (ZMQ
+  `sequence` reports them) rather than on a timer.
 
-Before enforce ships, a regtest test confirms each of these on Core, Knots
-and Roots, and this section is updated with what it finds.
+**Regtest results** (2026-11-14). Three nodes: the operator's node with a
+5 MB mempool and the deltas, a peer with no deltas that mines, and a relay
+that carries the same delta and forwards replacements to the operator's node
+over P2P. Every transaction is P2WPKH. Each check ran twice: with the
+design's delta of −1,000,000,003 sats, and with a delta equal to minus the
+transaction's fee, so the modified fee is exactly 0.
+
+| Check | Core 31.1 | Knots 29.3 |
+|---|---|---|
+| 2.7 sat/vB replacement of a deprioritised 90.9 sat/vB transaction | Accepted; the peer refuses it (`insufficient fee`) | Same |
+| Mempools 20 s later | Operator has the replacement, peer the original | Same |
+| Delta on the replaced transaction | Kept (`in_mempool: false`) until the original confirms | Same |
+| Peer mines the original, replacement had arrived by P2P | 0 transactions requested, 1 from the extra pool | Same |
+| Full mempool, 5 sat/vB filler: deprioritised 50 sat/vB parent with a 100 sat/vB child, and a lone 50 sat/vB transaction | All three evicted first; filler stays | Same |
+| Peer mines all three | 3 requested; 29 ms from compact block to reconstruction on localhost, against 0.01 ms for a control block | 3 requested; 18 ms against 0.01 ms |
+| Rebroadcast while the delta stands | Refused, `mempool min fee not met` | Refused, `min relay fee not met` |
+| Rebroadcast after cancelling the delta | Accepted | Accepted |
+
+With the modified fee at exactly 0, both nodes put the parent and its paying
+child into `getblocktemplate`: the package feerate is the child's fee over
+both sizes, well above `blockmintxfee`. The same child kept the parent from
+being evicted. The lone transaction was still evicted first and still
+refused on return (`0 < 720` on Core, `0 < 141` on Knots), so a near-zero delta gives up the policy and
+buys nothing. The localhost timings only show that the extra round trip
+happens. On a real network it costs one round trip to the peer that sent
+the block.
+
+A replacement sent by RPC is a special case: its replaced transaction
+reaches the extra pool only if a peer relays the original again and the
+node rejects it, which happened in some runs and not others.
+
+The probe is `docs/design/template-policy-delta-probe.py` (Python, stdlib
+only). Run it as `python3 docs/design/template-policy-delta-probe.py
+<path-to-bitcoind> <empty-workdir> big|zero`; it starts its own regtest nodes
+on ports 18700 to 18721 and writes `results.json` to the workdir. Roots has
+not been run yet. Before enforce ships, the enforce-mode E2E test covers
+these on every node in the matrix, Roots included.
 
 ## Gotchas found on regtest
 
@@ -517,6 +561,8 @@ Also before enforce ships:
 
 - **The delta side effects** (replacement, eviction, refusal on return) are
   confirmed on regtest, and the explorer check under Visibility is done.
+  Done for Core 31.1 and Knots 29.3 on 2026-11-14 (see "What the delta
+  changes besides block building"); Roots and the explorer check remain.
 
 A change in those internals is a fee risk, not a correctness risk: the
 backstop keeps declined transactions out and the proposal check rejects an
@@ -572,6 +618,9 @@ later.
   the first matching rule; descendants under `descendant`; plus a total.
 - **Before enforce** (2026-10-18): a 2,016-block audit, and every supported
   node major in the E2E matrix.
+- **Delta size** (2026-11-14): the delta stays far below zero. Sizing it to
+  leave the modified fee near zero, to soften eviction, lets a paying child
+  pull its parent back into the template on Core and Knots.
 
 ## Open questions
 
