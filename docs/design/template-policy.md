@@ -473,14 +473,32 @@ An operator choosing a policy should see what it costs.
 - **Mempool explorers diverge in enforce mode.** A self-hosted mempool
   explorer builds its projected blocks from the node's mempool itself and
   does not call GBT. `getrawmempool true` reports `fees.base` and
-  `fees.modified` for each transaction. If the explorer's projection uses
-  the modified fee, it shows the pool's policy, because the deltas sit on
-  the same node. If it uses the base fee, it shows what the rest of the
-  network is likely to mine, which is still the right view for fee
-  estimates, and its audit of a found block marks the declined transactions
-  as missing. Which one it does is unchecked: deprioritise one transaction
-  on regtest and see whether it leaves the projected block. Observe mode
-  sets no deltas, so the explorer and the pool agree until enforce.
+  `fees.modified` for each transaction. The mempool explorer (mempool/mempool
+  v3.3.1, the one on the deployed host) uses the base fee: it sets each
+  transaction's fee from `mempoolEntry.fees.base`
+  (`backend/src/api/bitcoin/bitcoin-api.ts:391`, shared by its `none` and
+  `electrum` backends). So it shows what the rest of the network is likely to
+  mine, which is still the right view for fee estimates, and not the pool's
+  template. Observe mode sets no deltas, so the explorer and the pool agree
+  until enforce.
+
+  Checked on regtest on 2026-11-14 (Knots 29.3, a throwaway backend with
+  `BACKEND: none`, mempool filled to two projected blocks with 5 sat/vB
+  transactions). Two 50 sat/vB transactions were deprioritised, one after
+  the explorer had seen it and one the moment it entered the mempool. Both
+  stayed in projected block 0, and `/api/v1/tx` reported their real fee
+  (7,050 sats) while the node reported `fees.modified` of −9.99992953 BTC
+  and left both out of `getblocktemplate`. A delta cannot be set before the
+  explorer first sees a transaction: one set before broadcast makes the node
+  refuse it (see "A returning transaction is refused").
+
+  With its block audit on (`MEMPOOL.AUDIT`, which needs its database), the
+  explorer will then list the declined transactions in a block the pool
+  finds as censored, "missing, without excuse" in `audit.ts`, for any paying
+  1 sat/vB or more, and score the block lower. That follows from the code;
+  the audit itself was not run. The dashboard's template tile above is the
+  operator's view of what the pool declined, and the documentation for
+  enforce mode should say why the explorer disagrees.
 - `/stats` fields carrying the same.
 
 ## Rollout
@@ -572,7 +590,8 @@ Also before enforce ships:
 - **The delta side effects** (replacement, eviction, refusal on return) are
   confirmed on regtest, and the explorer check under Visibility is done.
   Done for Core 31.1 and Knots 29.3 on 2026-11-14 (see "What the delta
-  changes besides block building"); Roots and the explorer check remain.
+  changes besides block building"). The explorer check is done too (see
+  Visibility). Roots remains.
 
 A change in those internals is a fee risk, not a correctness risk: the
 backstop keeps declined transactions out and the proposal check rejects an
