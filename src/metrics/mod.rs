@@ -16,8 +16,8 @@ use tracing::{info, warn};
 /// permanent label set in the exporter. 24 h matches the stats-map eviction.
 const METRIC_IDLE_TIMEOUT_SECS: u64 = 86_400;
 
-/// Bucket upper bounds for the histogram metrics. Any metric not listed here
-/// is exported as a summary.
+/// Bucket upper bounds for the histogram metrics. A histogram without buckets
+/// here would be exported as a summary; a test keeps that from happening.
 ///
 /// Validation is a double SHA-256 plus bookkeeping, so tens of microseconds;
 /// the top buckets are there to catch a stall.
@@ -93,14 +93,9 @@ pub fn miner_disconnected() {
 /// `difficulty` is the credited difficulty (`Vardiff::credit_for`), so
 /// `rate(pool_share_work_total[5m]) * 2^32` is the worker's hashrate on the
 /// same basis as `pool_hashrate_estimated_hps`.
-///
-/// `pool_share_difficulty` is the deprecated summary, kept until 1.0. Its
-/// quantiles only repeated the assigned difficulty; the counter keeps its
-/// `_sum`, the one part a sampled gauge cannot rebuild.
 pub fn share_accepted(difficulty: u64, worker: &str) {
     counter!("pool_shares_accepted_total", "worker" => worker.to_string()).increment(1);
     counter!("pool_share_work_total", "worker" => worker.to_string()).increment(difficulty);
-    histogram!("pool_share_difficulty", "worker" => worker.to_string()).record(difficulty as f64);
 }
 
 pub fn share_rejected(reason: &str, worker: &str) {
@@ -118,13 +113,8 @@ pub fn share_rejected(reason: &str, worker: &str) {
     .increment(1);
 }
 
-/// Recorded as fractional milliseconds. Validation runs well under a
-/// millisecond, so whole milliseconds recorded almost every share as 0.
-///
-/// `pool_share_validation_duration_ms` is the deprecated summary, kept until
-/// 1.0; the histogram in seconds replaces it.
+/// Recorded with its fraction. Validation runs well under a millisecond.
 pub fn share_validation_time(elapsed: Duration) {
-    histogram!("pool_share_validation_duration_ms").record(elapsed.as_secs_f64() * 1000.0);
     histogram!("pool_share_validation_duration_seconds").record(elapsed.as_secs_f64());
 }
 
@@ -135,16 +125,11 @@ pub fn share_validation_time(elapsed: Duration) {
 /// Only `shares` sessions go into `pool_connection_duration_seconds`. cgminer
 /// and Avalon firmware open side connections that authorize and close within
 /// a second, and counting them pulled every Avalon's duration toward zero.
-///
-/// `pool_connection_duration_secs` is the deprecated summary, kept until 1.0.
-/// It still records every authorized session, as it always has.
 pub fn session_closed(worker: Option<&str>, shares_submitted: u64, elapsed: Duration) {
     let Some(worker) = worker else {
         counter!("pool_connections_closed_total", "reason" => "no_auth").increment(1);
         return;
     };
-    histogram!("pool_connection_duration_secs", "worker" => worker.to_string())
-        .record(elapsed.as_secs_f64());
     if shares_submitted == 0 {
         counter!("pool_connections_closed_total", "reason" => "no_shares").increment(1);
         return;
@@ -191,12 +176,9 @@ pub fn rpc_fallback_used() {
 pub fn vardiff_retarget(worker: &str, old_diff: u64, new_diff: u64) {
     gauge!("pool_worker_difficulty", "worker" => worker.to_string()).set(new_diff as f64);
     let ratio = new_diff as f64 / old_diff as f64;
-    // pool_vardiff_change_ratio is the deprecated summary, kept until 1.0.
-    histogram!("pool_vardiff_change_ratio").record(ratio);
     histogram!("pool_vardiff_retarget_ratio").record(ratio);
-    // The ratio is exported as a summary over a short rolling window, and
-    // retargets are sparse enough that its quantiles mostly read 0. A counter
-    // makes the retarget rate itself something a dashboard can plot.
+    // Retargets are sparse, so a counter makes the retarget rate itself
+    // something a dashboard can plot.
     let direction = if new_diff > old_diff { "up" } else { "down" };
     counter!(
         "pool_vardiff_retargets_total",
@@ -370,19 +352,21 @@ mod tests {
 
         let rendered = handle.render();
         assert!(
-            rendered.contains("pool_share_validation_duration_ms_sum 0.5\n"),
+            rendered.contains("pool_share_validation_duration_seconds_sum 0.0005\n"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("pool_connection_duration_secs_sum{worker=\"rig1\"} 1.5\n"),
+            rendered.contains("pool_connection_duration_seconds_sum{worker=\"rig1\"} 1.5\n"),
             "{rendered}"
         );
     }
 
-    /// The replacement metrics render as Prometheus histograms with the
-    /// buckets `init` configures, while the deprecated names stay summaries.
+    /// The duration and ratio metrics render as Prometheus histograms with the
+    /// buckets `init` configures, and nothing renders as a summary: the four
+    /// deprecated summaries were removed in 1.0.0-rc.1, and a histogram added
+    /// without buckets would bring one back.
     #[test]
-    fn replacement_metrics_are_histograms_and_old_names_stay_summaries() {
+    fn histograms_have_buckets_and_nothing_is_a_summary() {
         let recorder = super::builder().unwrap().build_recorder();
         let handle = recorder.handle();
 
@@ -403,19 +387,28 @@ mod tests {
             "# TYPE pool_vardiff_retarget_ratio histogram",
             "pool_vardiff_retarget_ratio_bucket{le=\"0.33\"} 0\n",
             "pool_vardiff_retarget_ratio_bucket{le=\"0.5\"} 1\n",
-            "# TYPE pool_share_validation_duration_ms summary",
-            "# TYPE pool_connection_duration_secs summary",
-            "# TYPE pool_vardiff_change_ratio summary",
         ] {
             assert!(
                 rendered.contains(expected),
                 "missing {expected:?} in:\n{rendered}"
             );
         }
+        assert!(!rendered.contains(" summary\n"), "{rendered}");
+        for removed in [
+            "pool_share_difficulty",
+            "pool_share_validation_duration_ms",
+            "pool_connection_duration_secs",
+            "pool_vardiff_change_ratio",
+        ] {
+            assert!(
+                !rendered.contains(removed),
+                "{removed} is still exported:\n{rendered}"
+            );
+        }
     }
 
-    /// Accepted work sums credited difficulty and matches the deprecated
-    /// summary's `_sum`, the basis for hashrate in PromQL.
+    /// Accepted work sums credited difficulty, the basis for hashrate in
+    /// PromQL.
     #[test]
     fn accepted_work_counts_credited_difficulty() {
         let recorder = super::builder().unwrap().build_recorder();
@@ -430,7 +423,6 @@ mod tests {
         for expected in [
             "# TYPE pool_share_work_total counter",
             "pool_share_work_total{worker=\"rig1\"} 5120\n",
-            "pool_share_difficulty_sum{worker=\"rig1\"} 5120\n",
             "pool_shares_accepted_total{worker=\"rig1\"} 2\n",
         ] {
             assert!(
@@ -442,7 +434,7 @@ mod tests {
 
     /// Sessions that never submitted a share are counted, not timed, so the
     /// side connections Avalon firmware opens do not drag its durations
-    /// toward zero. The deprecated summary keeps its old behaviour.
+    /// toward zero.
     #[test]
     fn sessions_without_shares_are_counted_but_not_timed() {
         let recorder = super::builder().unwrap().build_recorder();
@@ -462,7 +454,6 @@ mod tests {
             "pool_connections_closed_total{reason=\"shares\"} 1\n",
             "pool_connection_duration_seconds_count{worker=\"avalon\"} 1\n",
             "pool_connection_duration_seconds_sum{worker=\"avalon\"} 600\n",
-            "pool_connection_duration_secs_count{worker=\"avalon\"} 3\n",
         ] {
             assert!(
                 rendered.contains(expected),
