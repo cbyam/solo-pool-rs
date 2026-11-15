@@ -36,16 +36,19 @@ Gates, in the order they can be closed:
   "Stats not saving" pill, `/stats` `stats_store_error`, and
   `pool_stats_store_ok 0`, until a later write succeeds.
 - [ ] **Prod soak.** Two months of continuous mainnet mining with no
-  correctness bug on the share or block path, started 2026-09-05 on 0.6.6.
+  correctness bug on the share or block path. It first started 2026-09-05 on
+  0.6.6; the SRI v1.12 port and the vardiff crediting change touched the share
+  path after that, so it counts from the 0.6.11-dev.4 deploy on 2026-09-25.
   Patch-day restarts do not reset it; a change to share validation or block
-  submission does. Earliest completion around 2026-11-05.
-- [ ] **Remove the four deprecated summary metrics in the rc.**
+  submission does. Earliest completion around 2026-11-25.
+- [x] **Remove the four deprecated summary metrics in the rc.** Done in
+  1.0.0-rc.1.
   `pool_share_difficulty`, `pool_share_validation_duration_ms`,
   `pool_connection_duration_secs` and `pool_vardiff_change_ratio`, together,
   with the deprecation table in `docs/stable-surface.md`. Their replacements
   (`pool_share_work_total` and three histograms) shipped alongside them first.
-- [ ] **Tag v1.0.0-rc.1** once the doc ships; **1.0.0** after a quiet end to
-  the soak. Official Umbrel store acceptance is wanted but is not a gate: the
+- [ ] **Tag v1.0.0-rc.1** once the doc ships (rc PR 2026-11-14); **1.0.0**
+  after a quiet end to the soak. Official Umbrel store acceptance is wanted but is not a gate: the
   review is outside our control, and Umbrel users already run the pool from
   the community store.
 

@@ -1,9 +1,9 @@
 # Stable surface
 
-**Status: draft for the 1.0 release candidate.** Until 1.0 ships this document
-describes intent, not a promise. The "Before this is final" section at the end
-lists what still has to change in the code or the docs for every statement
-here to be true.
+**Status: release candidate (1.0.0-rc.1).** The code matches this document.
+It becomes the promise when 1.0.0 is tagged; until then a change is still
+possible if the rc turns up a problem, and goes in the "Before this is final"
+section at the end first.
 
 ## What 1.0 means
 
@@ -300,28 +300,22 @@ the ports must match.
 compatible, removing or relabelling one is not. Histogram bucket bounds are
 not covered.
 
-All four summaries are deprecated and are removed at 1.0. Each has a
-replacement, and the replacements are the promised names:
+`pool_share_work_total` sums the credited difficulty of accepted shares, so
+`rate(pool_share_work_total[5m]) * 2^32` is hashrate in H/s. The durations
+and the retarget ratio are histograms, whose buckets are cumulative, so
+`histogram_quantile()` works over any range a query picks.
+`pool_connection_duration_seconds` records only sessions that submitted at
+least one share.
 
-| Deprecated summary | Replacement |
+No metric is a summary. The four deprecated summaries were removed in
+1.0.0-rc.1, each after its replacement had shipped in 0.6.12:
+
+| Removed summary | Use instead |
 |---|---|
 | `pool_share_difficulty` | `pool_share_work_total` (counter) |
 | `pool_share_validation_duration_ms` | `pool_share_validation_duration_seconds` (histogram) |
 | `pool_connection_duration_secs` | `pool_connection_duration_seconds` (histogram) |
 | `pool_vardiff_change_ratio` | `pool_vardiff_retarget_ratio` (histogram) |
-
-`pool_share_work_total` sums the credited difficulty of accepted shares, the
-same total as the old summary's `_sum`, so `rate(pool_share_work_total[5m])
-* 2^32` is hashrate in H/s. The old summary's quantiles only repeated the
-assigned difficulty, which `pool_worker_difficulty` already reports.
-
-A summary's quantiles cover only the last 60 seconds and read 0 when nothing
-was recorded in that window, which for retargets and disconnects is most of
-the time. Its `_sum` and `_count` are cumulative and stay correct. A
-histogram's buckets are cumulative too, so `histogram_quantile()` works over
-any range a query picks. `pool_connection_duration_seconds` records only
-sessions that submitted at least one share; the deprecated summary records
-every authorized session.
 
 | Metric | Type | Labels |
 |---|---|---|
