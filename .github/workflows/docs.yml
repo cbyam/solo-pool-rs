@@ -1,0 +1,83 @@
+name: Docs
+
+# Publishes the repository's Markdown as a site on GitHub Pages. Pull
+# requests build and link-check it; pushes to main also deploy it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: v0.5.4
+
+jobs:
+  build:
+    name: Build and link-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mdBook
+        run: |
+          curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin mdbook
+
+      # Copy the docs into book/src, keeping their paths so links between
+      # them still resolve. A link to anything the site does not carry
+      # (source files, workflows, config.toml.example) is pointed at the
+      # file on GitHub instead.
+      - name: Stage the docs
+        run: |
+          mkdir -p book/src
+          cp book/SUMMARY.md book/src/
+          cp --parents README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md book/src/
+          cp -r --parents docs book/src/
+          find book/src -name '*.md' ! -name SUMMARY.md | while read -r f; do
+            rel="${f#book/src/}"
+            perl -i -pe '
+              BEGIN { $d = shift }
+              s{\]\((?!https?:|#|mailto:)([^)#\s]+)(#[^)]*)?\)}{
+                my ($p, $a) = ($1, $2 // "");
+                my $full = $d eq "." ? $p : "$d/$p";
+                1 while $full =~ s{[^/]+/\.\./}{};
+                ($p =~ /\.(md|png)$/ && -e "book/src/$full")
+                  ? "]($p$a)"
+                  : "](https://github.com/${{ github.repository }}/blob/main/$full$a)"
+              }ge' "$(dirname "$rel")" "$f"
+          done
+
+      - name: Build
+        run: mdbook build book
+
+      - name: Check internal links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress --root-dir "${{ github.workspace }}/book/book" book/book
+          fail: true
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: book/book
+
+  deploy:
+    name: Deploy
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

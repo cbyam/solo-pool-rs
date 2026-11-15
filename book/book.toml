@@ -1,0 +1,16 @@
+# Documentation site: the repository's Markdown, published by
+# .github/workflows/docs.yml. The files stay where they are; the workflow
+# copies them into book/src (ignored) and builds from there.
+[book]
+title = "solo-pool-rs"
+src = "src"
+
+# The index preprocessor would serve README.md as index.html and leave every
+# link to README.md pointing at a page that does not exist. The site's
+# index.html is still written from the first chapter.
+[build]
+use-default-preprocessors = false
+
+[output.html]
+git-repository-url = "https://github.com/cbyam/solo-pool-rs"
+edit-url-template = "https://github.com/cbyam/solo-pool-rs/edit/main/{path}"
