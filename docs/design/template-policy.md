@@ -152,6 +152,23 @@ and was accepted by `submitblock`.
 - **The template itself**, as the fallback: a new unwanted transaction appears
   in one template, the backstop removes it there and deprioritises it, and it is
   gone from the next refresh on.
+- **A sweep of the mempool** when enforce mode starts and after the node
+  restarts. `rawtx` covers only new arrivals, and the template fallback learns
+  the existing mempool one template at a time: with the deployed settings
+  about 40% of weight is declinable, so without a sweep the first templates
+  after turning enforce on run well short of full. The sweep reads
+  `getrawmempool` and fetches and classifies each transaction it has not seen,
+  off the engine task and with the batching rules under Latency.
+
+`rawtx` has a cost at new tips. The node publishes every transaction of a
+connected block on it as well (`BlockConnected` in
+`zmq/zmqnotificationinterface.cpp` calls `NotifyTransaction` for each), a few
+thousand messages that land at the moment the new-tip job matters most. The
+pool skips those without classifying them: a transaction already in a block
+needs no delta. The same publisher delays the node's `hashblock` notification
+by seconds when its queue is busy (see `ZMQ_GRACE_SECS` in
+`src/bitcoin/zmq.rs`), so enforce mode requires `zmq.poll_fallback = true`
+and refuses to start without it.
 
 ### The backstop filter
 
@@ -235,6 +252,34 @@ entry shows `in_mempool: false` and stays until the original confirms. So:
 
 The regtest run confirmed both behaviours on Core 31.1 and Knots 29.3.
 
+Deltas add up, and the pool's record of what it set can drift from the
+node's:
+
+- **Doubled deltas.** The `rawtx` path and the backstop can both hit one
+  transaction, and a restarted pool no longer knows what it set before. Two
+  calls leave −2,000,000,006, which no longer matches the distinctive value,
+  so a cleanup that matches it exactly would skip that entry for good. The
+  pool keeps one set of txids it has deprioritised and never calls twice for
+  one txid, and the cleanup treats any non-zero multiple of the distinctive
+  delta as the pool's and cancels the whole amount.
+- **Reconcile from the node.** The node's `getprioritisedtransactions` is the
+  record, not the pool's memory. The pool rebuilds its set from it at start
+  and whenever it sees the node restart (the RPC connection drops, or
+  `uptime` goes backwards).
+- **A node restart can drop the deltas.** They survive only in `mempool.dat`;
+  a node run with `-persistmempool=0`, or one whose file failed to load,
+  comes back without them. Without the reconcile step, the pool would think
+  a transaction rebroadcast after the restart is deprioritised, find it in a
+  template, and raise the ignored-delta warning on a healthy node. After a
+  reconcile, a txid missing from the node's list is classified again, not
+  counted as ignored.
+- **The boot cleanup runs with the policy off**, so it runs on installs that
+  never used the policy. It must stay silent when the RPC fails or the node
+  lacks it, or healthy installs get a boot warning again (rule 6 in the
+  review guide). Safer still, it runs only if a marker in the stats database
+  says enforce was on at some point; with no stats database it runs and
+  stays silent on failure.
+
 ### Checking that the node honours the deltas
 
 The pool does not trust its node to apply the deltas; it checks. A
@@ -287,6 +332,12 @@ this large has three side effects. All three were confirmed on regtest on
   transaction acceptable again at once, so the cleanup interval is the
   window. If it matters, the cleanup runs on each mempool removal (ZMQ
   `sequence` reports them) rather than on a timer.
+
+**Deltas are node-global.** Anything else that builds blocks from the same
+node gets the filtered template too: a second pool, a DATUM Gateway, a test
+miner pointed at the node's GBT. The operator's explorer differs the other
+way (see Visibility). The enforce documentation says so, and the dashboard
+tile names the node the deltas are on.
 
 **Regtest results** (2026-11-14). Three nodes: the operator's node with a
 5 MB mempool and the deltas, a peer with no deltas that mines, and a relay
@@ -395,6 +446,35 @@ block. Rules:
 3. Batch deprioritise calls, and hold them for a second or two after a new tip,
    while the template refresh and propagation matter most.
 
+The node's lock is one queue; the pool has two of its own:
+
+- **The RPC client.** `bitcoincore-rpc`'s `SimpleHttpTransport` keeps one
+  socket behind a `Mutex` and holds it for the whole request, so every call
+  through the one `RpcClient` in `src/bitcoin/rpc.rs` is serialized. Today
+  `submit_block` shares that client with the template fetch, the one-second
+  tip poll and the 30-second network-stats poll, so a found block can already
+  wait up to one `getblocktemplate` (about 100 to 140 ms on the deployed node,
+  measured 2026-11-14) in the roughly 0.4% of the time one is in flight.
+  Policy calls (the sweep, deltas, cleanup, proposal checks) must not join
+  that queue: they get an `RpcClient` of their own. Submission getting its
+  own client too is a separate, smaller change.
+- **The engine task.** `TemplateEngine::run` in `src/mining/engine.rs` is one
+  sequential loop: `refresh` fetches the template, builds the job and
+  broadcasts it in line, and a new-tip signal waits until a running refresh
+  finishes. Classification of the template's transactions stays in that path
+  (pure Rust, a few ms). Everything that calls the node runs on a separate
+  policy task fed by a channel: deltas, the sweep, the cleanup and the
+  proposal check. The engine never awaits it.
+- **What miners get at a new tip.** If the new template is clean, which is
+  the normal case once the deltas are set, the job goes out at once, as
+  today. If the backstop changed it, the proposal check has not returned
+  yet, so the engine sends a coinbase-only job with `clean_jobs = true` at
+  once and replaces it with the filtered template (`clean_jobs = false`)
+  when the check passes, about 130 ms later. Miners are never left on the
+  old tip while the check runs. In the first enforce release, which has no
+  rewrite (see Decided), the coinbase-only job instead stays until a refetch
+  after the 5-second cache window returns a clean template.
+
 Propagation does not suffer. Peers rebuild a compact block from their own
 mempools. Core peers hold every transaction, including the ones the pool
 declined. Knots peers lack the declined ones, so leaving them out saves those
@@ -410,9 +490,9 @@ after 1.0 is a compatible change (a new section with defaults).
 The section ships **experimental**: its keys, metrics and `/stats` fields may
 change or go away in a minor release, the pool logs a warning at boot while
 `mode` is not `off`, and it becomes stable only after enforce mode has run on
-prod. This needs an experimental clause in `docs/stable-surface.md`, which has
-to land before 1.0; without it, the section would fall under the 1.x promise
-the day it ships.
+prod. The experimental clause is in `docs/stable-surface.md` ("Experimental
+features"), on main since before 1.0.0-rc.1. When the section ships, it gets a
+row in that table, in the same release.
 
 ```toml
 [template_policy]
@@ -578,8 +658,17 @@ templates are unchanged. Run it behind the deployed Knots node
 first: Knots has already filtered, so anything the pool would still decline
 points to a rule that is stricter than Knots or wrong.
 
-**Phase 2, the release after: enforce mode.** Deprioritising, the backstop
-filter, the proposal check and delta bookkeeping. Before it ships, a regtest
+That run only catches over-declining. A rule the pool applies too loosely
+declines nothing behind Knots, because Knots already removed those
+transactions, so observe mode there cannot see it. The evidence against
+under-declining is the differential test (22 crafted vectors at and past each
+limit) and the mainnet audit. Observe mode behind a Core node shows the
+declines at their real size but has no node verdict to compare with.
+
+**Phase 2, the release after: enforce mode.** Deprioritising, the mempool
+sweep, delta bookkeeping and the ignored-delta check. The backstop detects a
+dirty template but does not rewrite it; the rewrite and the proposal check
+come in a later release (see Decided). Before it ships, a regtest
 test in the E2E matrix (Core and Knots) builds an inscription, a Runes
 transaction, a large OP_RETURN, a CAT-21 transaction and a child of a declined
 parent, then checks that the template holds none of them, that the proposal
@@ -692,6 +781,17 @@ bytes means spending a non-standard output).
 - **Delta size** (2026-11-14): the delta stays far below zero. Sizing it to
   leave the modified fee near zero, to soften eviction, lets a paying child
   pull its parent back into the template on Core and Knots.
+- **First enforce release without the template rewrite** (2026-11-15).
+  Enforce ships first with deltas, the sweep, bookkeeping and the
+  ignored-delta check, and no backstop rewrite. On a dirty template the pool
+  keeps the current job, or at a new tip sends a coinbase-only job, then
+  refetches after the 5-second cache window (gotcha 2). Once the
+  ignored-delta signal persists (a stock Roots node, gotcha 1), it refuses
+  enforce rather than mining coinbase-only for good. The rewrite (dependant
+  removal, fee subtraction, a recomputed witness commitment) and the
+  proposal check follow once that has run on prod. Until then the pool adds
+  no consensus-critical code and copies the node's witness commitment as
+  today.
 
 ## Open questions
 
