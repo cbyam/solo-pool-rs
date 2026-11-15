@@ -9,6 +9,12 @@ everything else bumps the **patch** version.
 
 ## [Unreleased]
 
+### Added
+- A documentation site on GitHub Pages: the README, mining guide, FAQ,
+  stable surface, changelog and contributing docs in one place, with a
+  sidebar and search. Built from the same Markdown files, so the
+  repository's own docs are unchanged.
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 The 1.0 release candidate. [`docs/stable-surface.md`](docs/stable-surface.md)

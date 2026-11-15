@@ -53,6 +53,12 @@ request (see the Development section of the [README](README.md#development)
 for the local command), and `cargo audit` / `cargo deny` run when a PR touches
 `Cargo.toml`, `Cargo.lock`, or `deny.toml`.
 
+The Docs workflow builds the documentation site from the repository's
+Markdown and fails on a broken internal link. A new page goes in
+[`book/SUMMARY.md`](book/SUMMARY.md) to appear in the sidebar. To preview the
+site, install [mdBook](https://rust-lang.github.io/mdBook/), run the "Stage
+the docs" step from `.github/workflows/docs.yml`, then `mdbook serve book`.
+
 ## Commit messages
 
 The project uses [Conventional Commits](https://www.conventionalcommits.org/):
