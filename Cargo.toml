@@ -46,10 +46,10 @@ tokio-stream = "0.1" # StreamExt for tmq Subscribe socket
 # Noise encryption is live: codec_sv2 (noise_sv2 feature) + noise_sv2 below.
 # The crates are released as a matched set (SRI v1.12.0 here) and move
 # together; the message-type constants live in the protocol crates.
-binary_sv2 = "7.0.0"           # SV2 binary message (de)serialization
-framing_sv2 = "8.0.0"          # SV2 frame header (extension_type, msg_type, length)
-common_messages_sv2 = "9.0.0"  # SetupConnection(Success/Error)
-mining_sv2 = "12.0.0"          # mining protocol messages (extended channel)
+binary_sv2 = "8.0.0"           # SV2 binary message (de)serialization
+framing_sv2 = "9.0.0"          # SV2 frame header (extension_type, msg_type, length)
+common_messages_sv2 = "10.0.0"  # SetupConnection(Success/Error)
+mining_sv2 = "13.0.0"          # mining protocol messages (extended channel)
 
 # ── Serialization ──────────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
