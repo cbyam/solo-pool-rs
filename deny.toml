@@ -25,6 +25,9 @@ ignore = [
   # it needs write access to the pool's data directory, which already means
   # full control of the pool. See .cargo/audit.toml for the full note.
   { id = "RUSTSEC-2026-0459", reason = "bundled copy not built; system copy needs a planted -wal in the pool data dir" },
+  # RUSTSEC-2026-0543 (chrono unmaintained) is ignored in .cargo/audit.toml
+  # only. chrono is a lockfile-only optional dependency of serde_with and is
+  # never built, so cargo deny does not see it. See the note there.
 ]
 
 [licenses]

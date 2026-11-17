@@ -24,4 +24,18 @@ ignore = [
   # distro updates or by building with rusqlite's `bundled` feature on 0.41+
   # (libsqlite3-sys 0.39, SQLite 3.54). Planned post-1.0.
   "RUSTSEC-2026-0459",
+
+  # chrono is unmaintained (no vulnerability reported).
+  #
+  # Nothing here builds chrono. The pool's own unused dependency on it is
+  # gone. It stays in Cargo.lock only as an optional dependency of serde_with
+  # (pulled in by charming, the chart renderer), whose `chrono` feature is
+  # off. cargo audit reads Cargo.lock, so it reports the entry anyway.
+  # cargo deny reads the resolved graph and does not, which is why deny.toml
+  # has no matching entry (an unmatched ignore there only produces a warning).
+  #
+  # Drop this entry once serde_with stops listing chrono, or if
+  # `cargo tree --target all -i chrono` ever prints a dependent: at that point
+  # the crate is really in the build and needs a decision, not an ignore.
+  "RUSTSEC-2026-0543",
 ]
