@@ -62,6 +62,12 @@ from comparing Roots' policy code with Core v31.1's.
 | `permit_bare_pubkey` | `-permitbarepubkey` (0) | allowed | bare pay-to-pubkey outputs (`bare-pubkey`) |
 | `permit_bare_datacarrier` | `-permitbaredatacarrier` (0) | allowed | transactions whose only outputs are data carriers or dust (`bare-datacarrier`) |
 
+Knots 29.3 checks `-datacarriersize` per output, inside `IsStandard`, and
+reports an oversize OP_RETURN as the generic `scriptpubkey`. The `datacarrier`
+reason and the limit summed over all outputs are Roots' (and Core 30's). The
+verdicts differ only when several OP_RETURN outputs are allowed, which Knots
+never does.
+
 Defaults in parentheses are from `bitcoind -help` on Knots 29.3. Where Core has
 the same option, the rule follows Knots' meaning and default, not Core's.
 `permit_multiple_op_return` has no Knots option; it exists so an operator can
@@ -146,6 +152,23 @@ and was accepted by `submitblock`.
 - **The template itself**, as the fallback: a new unwanted transaction appears
   in one template, the backstop removes it there and deprioritises it, and it is
   gone from the next refresh on.
+- **A sweep of the mempool** when enforce mode starts and after the node
+  restarts. `rawtx` covers only new arrivals, and the template fallback learns
+  the existing mempool one template at a time: with the deployed settings
+  about 40% of weight is declinable, so without a sweep the first templates
+  after turning enforce on run well short of full. The sweep reads
+  `getrawmempool` and fetches and classifies each transaction it has not seen,
+  off the engine task and with the batching rules under Latency.
+
+`rawtx` has a cost at new tips. The node publishes every transaction of a
+connected block on it as well (`BlockConnected` in
+`zmq/zmqnotificationinterface.cpp` calls `NotifyTransaction` for each), a few
+thousand messages that land at the moment the new-tip job matters most. The
+pool skips those without classifying them: a transaction already in a block
+needs no delta. The same publisher delays the node's `hashblock` notification
+by seconds when its queue is busy (see `ZMQ_GRACE_SECS` in
+`src/bitcoin/zmq.rs`), so enforce mode requires `zmq.poll_fallback = true`
+and refuses to start without it.
 
 ### The backstop filter
 
@@ -213,10 +236,13 @@ If a later design has the pool set the version itself, two rules apply:
 
 ### Delta bookkeeping
 
-The node clears a delta when its transaction confirms or is replaced by a
-conflicting one (`txmempool.cpp:398,420` in v31.1). A delta for a transaction
-that expires or is evicted stays on record, and deltas survive restarts in
-`mempool.dat`. So:
+The node clears a delta only when a block confirms its transaction or a
+transaction that conflicts with it (`removeForBlock` and the `removeConflicts`
+it calls, `txmempool.cpp:704-743` in Knots 29.3). A delta for a transaction
+that expires, is evicted, or is replaced in the mempool stays on record, and
+deltas survive restarts in `mempool.dat`. The replacement case was confirmed
+on regtest on 2026-11-14 on Core 31.1 and Knots 29.3: after the replacement the
+entry shows `in_mempool: false` and stays until the original confirms. So:
 
 - A periodic cleanup lists `getprioritisedtransactions` and cancels, with the
   opposite delta, every entry carrying the pool's delta whose `in_mempool` is
@@ -225,6 +251,34 @@ that expires or is evicted stays on record, and deltas survive restarts in
   carrying its delta, so switching the policy off leaves nothing behind.
 
 The regtest run confirmed both behaviours on Core 31.1 and Knots 29.3.
+
+Deltas add up, and the pool's record of what it set can drift from the
+node's:
+
+- **Doubled deltas.** The `rawtx` path and the backstop can both hit one
+  transaction, and a restarted pool no longer knows what it set before. Two
+  calls leave −2,000,000,006, which no longer matches the distinctive value,
+  so a cleanup that matches it exactly would skip that entry for good. The
+  pool keeps one set of txids it has deprioritised and never calls twice for
+  one txid, and the cleanup treats any non-zero multiple of the distinctive
+  delta as the pool's and cancels the whole amount.
+- **Reconcile from the node.** The node's `getprioritisedtransactions` is the
+  record, not the pool's memory. The pool rebuilds its set from it at start
+  and whenever it sees the node restart (the RPC connection drops, or
+  `uptime` goes backwards).
+- **A node restart can drop the deltas.** They survive only in `mempool.dat`;
+  a node run with `-persistmempool=0`, or one whose file failed to load,
+  comes back without them. Without the reconcile step, the pool would think
+  a transaction rebroadcast after the restart is deprioritised, find it in a
+  template, and raise the ignored-delta warning on a healthy node. After a
+  reconcile, a txid missing from the node's list is classified again, not
+  counted as ignored.
+- **The boot cleanup runs with the policy off**, so it runs on installs that
+  never used the policy. It must stay silent when the RPC fails or the node
+  lacks it, or healthy installs get a boot warning again (rule 6 in the
+  review guide). Safer still, it runs only if a marker in the stats database
+  says enforce was on at some point; with no stats database it runs and
+  stays silent on failure.
 
 ### Checking that the node honours the deltas
 
@@ -242,6 +296,99 @@ usual cause is `blockprioritysize` above 0. The same signal catches a future
 node release that changes how deltas, GBT caching or the block builder's
 feerate cutoff work.
 
+### What the delta changes besides block building
+
+A delta changes the fee the node's mempool uses everywhere, not only in the
+block builder. Peers never see it and the transaction is unchanged, so RBF
+and relay work as before for everyone else. On the operator's node, a delta
+this large has three side effects. All three were confirmed on regtest on
+2026-11-14, on Core 31.1 and Knots 29.3 (results below):
+
+- **Replacement gets easier.** The node compares a replacement against the
+  modified fees of the transactions it replaces, so it accepts a
+  replacement of a deprioritised transaction that pays less than its real
+  fee. Peers refuse that replacement, so the node's mempool can differ from
+  theirs by a few transactions. Mining is unaffected: the replacement has a
+  new txid, and the pool classifies it like any other transaction. A bumped
+  unwanted transaction is deprioritised again. The replaced transaction's
+  delta is not cleared (see "Delta bookkeeping"), so the cleanup handles it
+  like an evicted one. A replaced transaction stays in the compact-block
+  extra pool when the replacement arrived from a peer, so a block that mines
+  the original costs no extra round trip.
+- **Deprioritised transactions are evicted first.** Mempool trimming ranks
+  by modified feerate, so a full mempool drops them and their descendants
+  before anything else. Evicted transactions do not go into the extra pool.
+  If another pool then mines one, the node lacks it and fetches it while
+  validating that block: one more round trip in compact-block
+  reconstruction, which delays the new tip and the clean job sent to miners.
+  The delta has to stay far below zero all the same: one sized to leave the
+  modified fee near zero lets a paying child pull its parent back into the
+  template (see the results).
+- **A returning transaction is refused.** A delta outlives eviction and
+  replacement. Until the cleanup cancels it, a rebroadcast of that
+  transaction fails the node's minimum fee check and is not relayed. For
+  that window the node filters at relay, against "relay stays the node's
+  business" in the narrow-only rule. Cancelling the delta makes the
+  transaction acceptable again at once, so the cleanup interval is the
+  window. If it matters, the cleanup runs on each mempool removal (ZMQ
+  `sequence` reports them) rather than on a timer.
+
+**Deltas are node-global.** Anything else that builds blocks from the same
+node gets the filtered template too: a second pool, a DATUM Gateway, a test
+miner pointed at the node's GBT. The operator's explorer differs the other
+way (see Visibility). The enforce documentation says so, and the dashboard
+tile names the node the deltas are on.
+
+**Regtest results** (2026-11-14). Three nodes: the operator's node with a
+5 MB mempool and the deltas, a peer with no deltas that mines, and a relay
+that carries the same delta and forwards replacements to the operator's node
+over P2P. Every transaction is P2WPKH. Each check ran twice: with the
+design's delta of −1,000,000,003 sats, and with a delta equal to minus the
+transaction's fee, so the modified fee is exactly 0.
+
+| Check | Core 31.1 | Knots 29.3 |
+|---|---|---|
+| 2.7 sat/vB replacement of a deprioritised 90.9 sat/vB transaction | Accepted; the peer refuses it (`insufficient fee`) | Same |
+| Mempools 20 s later | Operator has the replacement, peer the original | Same |
+| Delta on the replaced transaction | Kept (`in_mempool: false`) until the original confirms | Same |
+| Peer mines the original, replacement had arrived by P2P | 0 transactions requested, 1 from the extra pool | Same |
+| Full mempool, 5 sat/vB filler: deprioritised 50 sat/vB parent with a 100 sat/vB child, and a lone 50 sat/vB transaction | All three evicted first; filler stays | Same |
+| Peer mines all three | 3 requested; 29 ms from compact block to reconstruction on localhost, against 0.01 ms for a control block | 3 requested; 18 ms against 0.01 ms |
+| Rebroadcast while the delta stands | Refused, `mempool min fee not met` | Refused, `min relay fee not met` |
+| Rebroadcast after cancelling the delta | Accepted | Accepted |
+
+With the modified fee at exactly 0, both nodes put the parent and its paying
+child into `getblocktemplate`: the package feerate is the child's fee over
+both sizes, well above `blockmintxfee`. The same child kept the parent from
+being evicted. The lone transaction was still evicted first and still
+refused on return (`0 < 720` on Core, `0 < 141` on Knots), so a near-zero delta gives up the policy and
+buys nothing. The localhost timings only show that the extra round trip
+happens. On a real network it costs one round trip to the peer that sent
+the block.
+
+A replacement sent by RPC is a special case: its replaced transaction
+reaches the extra pool only if a peer relays the original again and the
+node rejects it, which happened in some runs and not others.
+
+The probe is `examples/delta_probe.rs`. It starts its own regtest nodes on
+ports 18700 to 18721 and writes `results.json` to the workdir:
+
+```
+cargo run --release --example delta_probe -- \
+    --bitcoind <path> --workdir <empty dir> --mode big|zero [--node-arg <arg>]...
+```
+
+**Roots** (v31.1-roots.6, 2026-11-14) behaves like Core and Knots on every
+check above: replacement, eviction first with the same extra round trip, and
+refusal on return (`min relay fee not met`). Its delta also survives a
+mempool replacement. The difference is the template (gotcha 1): on a stock
+Roots node, with its priority area on, a deprioritised transaction was in
+`getblocktemplate` in all three runs with the large delta (the lone one in
+two runs, the parent and its child in the third). With
+`--node-arg -blockprioritysize=0`, none was, in three runs of three. Before
+enforce ships, the enforce-mode E2E test covers these on every node in the
+matrix, Roots included.
+
 ## Gotchas found on regtest
 
 1. **The coin-age priority area ignores fee deltas.** With Knots
@@ -256,7 +403,10 @@ feerate cutoff work.
    node the documentation recommends `blockprioritysize=0`.
 
    A stock Roots node is the case the deltas cannot close: its priority area
-   is on and there is no priority delta to send. The policy still holds,
+   is on and there is no priority delta to send. Confirmed on v31.1-roots.6
+   (see the Roots results above): a deprioritised transaction reached the
+   template in every run on a stock node and in none with
+   `blockprioritysize=0`. The policy still holds,
    because the backstop removes what the priority area picks, but that space
    is left empty. Documentation alone cannot fix this. The pool's app on
    Umbrel cannot change the node's config, and a missed line in the docs
@@ -296,6 +446,35 @@ block. Rules:
 3. Batch deprioritise calls, and hold them for a second or two after a new tip,
    while the template refresh and propagation matter most.
 
+The node's lock is one queue; the pool has two of its own:
+
+- **The RPC client.** `bitcoincore-rpc`'s `SimpleHttpTransport` keeps one
+  socket behind a `Mutex` and holds it for the whole request, so every call
+  through the one `RpcClient` in `src/bitcoin/rpc.rs` is serialized. Today
+  `submit_block` shares that client with the template fetch, the one-second
+  tip poll and the 30-second network-stats poll, so a found block can already
+  wait up to one `getblocktemplate` (about 100 to 140 ms on the deployed node,
+  measured 2026-11-14) in the roughly 0.4% of the time one is in flight.
+  Policy calls (the sweep, deltas, cleanup, proposal checks) must not join
+  that queue: they get an `RpcClient` of their own. Submission getting its
+  own client too is a separate, smaller change.
+- **The engine task.** `TemplateEngine::run` in `src/mining/engine.rs` is one
+  sequential loop: `refresh` fetches the template, builds the job and
+  broadcasts it in line, and a new-tip signal waits until a running refresh
+  finishes. Classification of the template's transactions stays in that path
+  (pure Rust, a few ms). Everything that calls the node runs on a separate
+  policy task fed by a channel: deltas, the sweep, the cleanup and the
+  proposal check. The engine never awaits it.
+- **What miners get at a new tip.** If the new template is clean, which is
+  the normal case once the deltas are set, the job goes out at once, as
+  today. If the backstop changed it, the proposal check has not returned
+  yet, so the engine sends a coinbase-only job with `clean_jobs = true` at
+  once and replaces it with the filtered template (`clean_jobs = false`)
+  when the check passes, about 130 ms later. Miners are never left on the
+  old tip while the check runs. In the first enforce release, which has no
+  rewrite (see Decided), the coinbase-only job instead stays until a refetch
+  after the 5-second cache window returns a clean template.
+
 Propagation does not suffer. Peers rebuild a compact block from their own
 mempools. Core peers hold every transaction, including the ones the pool
 declined. Knots peers lack the declined ones, so leaving them out saves those
@@ -311,9 +490,9 @@ after 1.0 is a compatible change (a new section with defaults).
 The section ships **experimental**: its keys, metrics and `/stats` fields may
 change or go away in a minor release, the pool logs a warning at boot while
 `mode` is not `off`, and it becomes stable only after enforce mode has run on
-prod. This needs an experimental clause in `docs/stable-surface.md`, which has
-to land before 1.0; without it, the section would fall under the 1.x promise
-the day it ships.
+prod. The experimental clause is in `docs/stable-surface.md` ("Experimental
+features"), on main since before 1.0.0-rc.1. When the section ships, it gets a
+row in that table, in the same release.
 
 ```toml
 [template_policy]
@@ -377,8 +556,40 @@ An operator choosing a policy should see what it costs.
   template the node would have built without the deltas, and in enforce mode
   the pool never sees that template. Observe mode on the operator's own node
   is the measurement.
-- A dashboard tile with the active rules and "fees declined" for the current
-  template and since start.
+- A dashboard tile with the template being mined: transaction count, total
+  fees, and what the policy declined from it (count, weight, fees), plus the
+  active rules and the totals since start. In enforce mode this is the only
+  view of the operator's real template, so it must not rely on any other
+  tool.
+- **Mempool explorers diverge in enforce mode.** A self-hosted mempool
+  explorer builds its projected blocks from the node's mempool itself and
+  does not call GBT. `getrawmempool true` reports `fees.base` and
+  `fees.modified` for each transaction. The mempool explorer (mempool/mempool
+  v3.3.1, the one on the deployed host) uses the base fee: it sets each
+  transaction's fee from `mempoolEntry.fees.base`
+  (`backend/src/api/bitcoin/bitcoin-api.ts:391`, shared by its `none` and
+  `electrum` backends). So it shows what the rest of the network is likely to
+  mine, which is still the right view for fee estimates, and not the pool's
+  template. Observe mode sets no deltas, so the explorer and the pool agree
+  until enforce.
+
+  Checked on regtest on 2026-11-14 (Knots 29.3, a throwaway backend with
+  `BACKEND: none`, mempool filled to two projected blocks with 5 sat/vB
+  transactions). Two 50 sat/vB transactions were deprioritised, one after
+  the explorer had seen it and one the moment it entered the mempool. Both
+  stayed in projected block 0, and `/api/v1/tx` reported their real fee
+  (7,050 sats) while the node reported `fees.modified` of −9.99992953 BTC
+  and left both out of `getblocktemplate`. A delta cannot be set before the
+  explorer first sees a transaction: one set before broadcast makes the node
+  refuse it (see "A returning transaction is refused").
+
+  With its block audit on (`MEMPOOL.AUDIT`, which needs its database), the
+  explorer will then list the declined transactions in a block the pool
+  finds as censored, "missing, without excuse" in `audit.ts`, for any paying
+  1 sat/vB or more, and score the block lower. That follows from the code;
+  the audit itself was not run. The dashboard's template tile above is the
+  operator's view of what the pool declined, and the documentation for
+  enforce mode should say why the explorer disagrees.
 - `/stats` fields carrying the same.
 
 ## Rollout
@@ -408,15 +619,56 @@ is embedded data; with `reject_tokens` most of it is Runes, which arrive in
 bursts (8% to 87% of a block's transactions in a seven-block sample). The fee
 figures are what the declined transactions paid, an upper bound on the cost:
 deprioritising lets the node refill their space. Anyone can rerun the audit
-with `cargo run --release --example template_audit`.
+with `cargo run --release -p tx-datacarrier-policy --example template_audit`.
 
-**Phase 1, the first release after 1.0: observe mode.** The pool classifies
-and records; templates are unchanged. Run it behind the deployed Knots node
+**Full difficulty period (2026-11-08).** Over mainnet blocks 973,069 to
+975,084 (2,016 blocks, about 8.5 million transactions; the deployed-settings
+run ended one block later):
+
+| Settings | Txs declined | Weight declined | Fees declined | Per-block weight (median, max) |
+|---|---|---|---|---|
+| Knots 29.3 defaults | 2.36% | 6.39% | 1.98% | 1.3%, 99.2% |
+| Deployed node (`datacarrier_size = 42`, `reject_tokens = true`) | 59.43% | 39.69% | 7.90% | 33.1%, 99.7% |
+
+With the deployed settings, the transaction and weight shares stay close to
+the 144-block window and the fee share halved (15.24% to 7.90%). Under Knots'
+defaults the weight share doubled and a block appeared that is 99.2%
+declinable, so even default settings can leave a template nearly empty
+before the refill; enforce mode's regtest test should include that case.
+Most of the default-settings weight is `txn-datacarrier-nonstandard` (5.19%);
+with `reject_tokens`, Runes alone are 56.47% of transactions and 31.89% of
+weight.
+
+The longer window found a shape-mode bug: a taproot key spend with an annex
+(`[signature, annex]`) was read as a witness script, so the annex counted as
+embedded data. Two mainnet transactions showed it (57da10d1..., carrying a
+16-byte BitVMX annex, and 52bc40e5..., a 43 kB annex). Both are nonstandard
+at the node anyway, since Core and Knots refuse any annex, so neither reaches
+a mempool template. With the fix, exact and shape mode disagree on one
+transaction in each run, 496b7fdb..., which spends a coin with a 4,908-byte
+bare scriptPubKey. Exact mode declines it under `script-size`; shape mode
+cannot see the size of a coin it does not have. A coin like that is declined
+when it is created (`scriptpubkey-size`, 132 outputs in the window), so the
+gap is one transaction in 8.5 million.
+
+**Phase 1, the first release after 1.0: observe mode.** The classifier is
+already in its own crate (see Library crate below), so the pool uses it as a
+dependency from the start. The pool classifies and records;
+templates are unchanged. Run it behind the deployed Knots node
 first: Knots has already filtered, so anything the pool would still decline
 points to a rule that is stricter than Knots or wrong.
 
-**Phase 2, the release after: enforce mode.** Deprioritising, the backstop
-filter, the proposal check and delta bookkeeping. Before it ships, a regtest
+That run only catches over-declining. A rule the pool applies too loosely
+declines nothing behind Knots, because Knots already removed those
+transactions, so observe mode there cannot see it. The evidence against
+under-declining is the differential test (22 crafted vectors at and past each
+limit) and the mainnet audit. Observe mode behind a Core node shows the
+declines at their real size but has no node verdict to compare with.
+
+**Phase 2, the release after: enforce mode.** Deprioritising, the mempool
+sweep, delta bookkeeping and the ignored-delta check. The backstop detects a
+dirty template but does not rewrite it; the rewrite and the proposal check
+come in a later release (see Decided). Before it ships, a regtest
 test in the E2E matrix (Core and Knots) builds an inscription, a Runes
 transaction, a large OP_RETURN, a CAT-21 transaction and a child of a declined
 parent, then checks that the template holds none of them, that the proposal
@@ -426,18 +678,88 @@ block-submit rehearsal.
 Also before enforce ships:
 
 - **Rerun the audit over a full difficulty period** (2,016 blocks, about two
-  weeks). The phase 0 window was 144 blocks, about one day, and inscription
-  and Runes traffic arrives in bursts. The coin-lookup mode stays unplanned
-  only if exact and shape mode still agree over the longer window.
+  weeks). Done 2026-11-08; see the results above. Exact and shape mode
+  disagree on one transaction, which only a coin lookup can catch; whether
+  that keeps the coin-lookup mode unplanned is an open question below.
 - **Node versions in the E2E matrix.** The mechanism depends on how Core and
   Knots implement `prioritisetransaction`, GBT caching and the block
   builder's feerate cutoff. A new Core or Knots major joins the matrix, and
   passes, before the documentation claims support for it. Between releases,
   the runtime check above catches a node that stops honouring the deltas.
 
+- **The delta side effects** (replacement, eviction, refusal on return) are
+  confirmed on regtest, and the explorer check under Visibility is done.
+  Done for Core 31.1 and Knots 29.3 on 2026-11-14 (see "What the delta
+  changes besides block building"). The explorer check is done too (see
+  Visibility), and Roots on 2026-11-14.
+
 A change in those internals is a fee risk, not a correctness risk: the
 backstop keeps declined transactions out and the proposal check rejects an
 invalid block, so what breaks is the refill.
+
+## Library crate
+
+The classifier is useful outside the pool: to another pool, a Template
+Provider, a mempool explorer, or a sidecar that applies the same rules to a
+plain Core or Roots node. It depends only on the `bitcoin` crate. It was
+extracted on 2026-11-14, on this branch and ahead of phase 1, so no live code
+moves later.
+
+- **Layout.** The repository is a Cargo workspace with the crate at
+  `crates/tx-datacarrier-policy/`; the mainnet audit and the differential test
+  moved with it. The pool depends on it by path once observe mode is wired
+  in; until then it does not, so the release binary is unchanged. The
+  regtest delta probe (`examples/delta_probe.rs`) tests node behaviour for
+  enforce mode and stays with the pool. A separate repository waits until
+  someone outside the pool uses the crate.
+- **API.** `Rules` for the settings, `check` taking a transaction and, when
+  available, its spent coins (exact mode with them, shape mode without), and
+  `Rule` with `Rule::ALL`. `Rule` and `Rules` are `#[non_exhaustive]`, so a
+  new rule or setting is not a breaking change; outside the crate, `Rules` is
+  built by changing fields of `Rules::default()`.
+- **rust-bitcoin.** The API takes `bitcoin` types, so a rust-bitcoin major
+  bump is a breaking release of the crate. The README says so and the crate
+  follows rust-bitcoin majors.
+- **Name.** `tx-datacarrier-policy`: descriptive and neutral, without
+  "knots" or "roots", which would suggest an affiliation. The README maps each
+  rule to the Knots, Roots and Core options and versions it follows, as the
+  rules table here does.
+- **Differential test.** The mainnet audit shows what the rules do on real
+  traffic; it does not show they still match the node after a Knots or Roots
+  release changes a default. A regtest test sends crafted transactions (one
+  per rule, at and just past each limit) through the node's
+  `testmempoolaccept` and through the crate, and fails on any disagreement.
+  It runs in the E2E matrix against Knots and Roots. This test is the reason
+  to trust the crate. It is `tests/policy_differential.rs` in the crate, and
+  runs in the E2E workflow on the Knots entry.
+- **Publishing.** crates.io at 0.x, versioned apart from the pool. Its own 1.0
+  waits for outside use, and does not follow the pool's. Not published yet;
+  the crate is 0.1.0 in the workspace.
+
+### Differential test results
+
+First run, 2026-11-14, Knots 29.3: 22 vectors under three settings (Knots'
+defaults; the deployed node's `datacarriersize=42` and `rejecttokens=1`; and
+a permissive set with `acceptnonstddatacarrier`, `permitbaremultisig`,
+`permitbarepubkey` and `permitbaredatacarrier` on and `rejectparasites` off).
+Exact and shape mode agreed with the node on every vector, including each
+boundary: OP_RETURN scripts of 42/43, 83/84 and 1,650/1,651 bytes, a tapscript
+envelope counted at exactly 83 and 84 bytes, and a tapscript witness of
+1,650 and 1,651 bytes. The one difference was the reject reason for an
+oversize OP_RETURN (`scriptpubkey`, see the note under Rules); the test maps
+it to `datacarrier` only when the classifier says `datacarrier`. Changing the
+deployed settings in the test to 43 bytes fails it, as it should.
+
+Roots v31.1-roots.6, same day: every verdict agrees under all three
+settings, and Roots reports `datacarrier` itself, so the `scriptpubkey`
+mapping is not used. Its option names and defaults match Knots 29.3's;
+`-datacarriersize` is summed over all outputs ("in aggregate"), as the
+classifier does.
+
+Not covered, because Core's own rules refuse the transaction first at these
+settings: `scriptsig-size` and `scriptcheck-size` (Core's 1,650-byte scriptSig
+limit) and `script-size` (spending a coin with a scriptPubKey over 1,650
+bytes means spending a non-standard output).
 
 ## Decided
 
@@ -455,12 +777,30 @@ invalid block, so what breaks is the refill.
   the first matching rule; descendants under `descendant`; plus a total.
 - **Before enforce** (2026-10-18): a 2,016-block audit, and every supported
   node major in the E2E matrix.
+- **Crate name** (2026-11-14): `tx-datacarrier-policy`, under `crates/`.
+- **Delta size** (2026-11-14): the delta stays far below zero. Sizing it to
+  leave the modified fee near zero, to soften eviction, lets a paying child
+  pull its parent back into the template on Core and Knots.
+- **First enforce release without the template rewrite** (2026-11-15).
+  Enforce ships first with deltas, the sweep, bookkeeping and the
+  ignored-delta check, and no backstop rewrite. On a dirty template the pool
+  keeps the current job, or at a new tip sends a coinbase-only job, then
+  refetches after the 5-second cache window (gotcha 2). Once the
+  ignored-delta signal persists (a stock Roots node, gotcha 1), it refuses
+  enforce rather than mining coinbase-only for good. The rewrite (dependant
+  removal, fee subtraction, a recomputed witness commitment) and the
+  proposal check follow once that has run on prod. Until then the pool adds
+  no consensus-critical code and copies the node's witness commitment as
+  today.
 
 ## Open questions
 
-- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks, so
-  it is not planned; it stays an option if a later rule (the sigop limits)
-  needs the spent coins.
+- **The coin-lookup mode.** Phase 0 found no disagreement over 144 blocks.
+  Over 2,016 blocks, after the annex fix, shape mode misses one transaction
+  in 8.5 million: a spend of a coin whose scriptPubKey exceeds
+  `max_script_size`. Leaning: not planned, since that coin is declined when
+  created and the miss is that rare; it stays an option if a later rule (the
+  sigop limits) needs the spent coins.
 - **SV2 Template Distribution as a feed.** Bitcoin Core's IPC mining interface
   and the `sv2-tp` Template Provider deliver templates over SV2 instead of GBT.
   The pool already speaks SV2 to miners. Open: whether Knots ships the IPC
