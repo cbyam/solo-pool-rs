@@ -15,6 +15,13 @@ everything else bumps the **patch** version.
   sidebar and search. Built from the same Markdown files, so the
   repository's own docs are unchanged.
 
+### Changed
+- Removed the unused `chrono` dependency after RUSTSEC-2026-0543 marked the
+  crate unmaintained. No pool code used it and it is no longer compiled.
+  It remains in `Cargo.lock` as an optional, disabled dependency of
+  `serde_with` (via the chart renderer), so `cargo audit` carries a
+  documented ignore for that entry (#184).
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 The 1.0 release candidate. [`docs/stable-surface.md`](docs/stable-surface.md)
