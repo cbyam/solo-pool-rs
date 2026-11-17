@@ -168,6 +168,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "binary_sv2"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da5780623ef9b581d954185b52460da113c14604ad877c7cd10f688dd0843abc"
+dependencies = [
+ "derive_codec_sv2",
+]
+
+[[package]]
 name = "bitcoin"
 version = "0.32.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -438,20 +447,20 @@ version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27fa7e278b547a7793e352ec2d9346147758a45d7f6e0354762c632a5ef1022b"
 dependencies = [
- "binary_sv2",
+ "binary_sv2 7.0.0",
  "buffer_sv2",
- "framing_sv2",
+ "framing_sv2 8.0.0",
  "noise_sv2",
  "rand 0.8.8",
 ]
 
 [[package]]
 name = "common_messages_sv2"
-version = "9.0.0"
+version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20fc74eef0c73f31e57bbe5ecbda80629bc98b2dd5ca8ba7fc9a145ec22166c6"
+checksum = "05e2f4a94a3a7708873b266f409575df8eb5f71196aa59598040a0c4ac2b5588"
 dependencies = [
- "binary_sv2",
+ "binary_sv2 8.0.0",
 ]
 
 [[package]]
@@ -800,7 +809,16 @@ version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8cedad16f0ac769b23506b19b0b1004a40d822d30b35106ffb51845e3b8da405"
 dependencies = [
- "binary_sv2",
+ "binary_sv2 7.0.0",
+]
+
+[[package]]
+name = "framing_sv2"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1284eec6dea15b955ef8fef139f407c9c6c601c7283f504931e484ccb984f8"
+dependencies = [
+ "binary_sv2 8.0.0",
 ]
 
 [[package]]
@@ -1397,11 +1415,11 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mining_sv2"
-version = "12.0.0"
+version = "13.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab45eca584d0e0478ea87919f7c7f93d579bb453ecb1e772e46ffe9b20a89bdb"
+checksum = "c4eb1f79abc46c7ede19e7a4bec1d7a3edc457f5edb8454144c41550cc04dd0b"
 dependencies = [
- "binary_sv2",
+ "binary_sv2 8.0.0",
 ]
 
 [[package]]
@@ -1436,9 +1454,9 @@ dependencies = [
 
 [[package]]
 name = "noise_sv2"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21d54d5ba485f6a44a4195336cdbedca81e9afa875e656d7b28661ca9974c475"
+checksum = "4203061a5fdb8edc19f2e8d0208c8784d89290f6ad2b2839b3af253394d13ebf"
 dependencies = [
  "chacha20poly1305",
  "rand 0.8.8",
@@ -2179,7 +2197,7 @@ version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "axum",
- "binary_sv2",
+ "binary_sv2 8.0.0",
  "bitcoin",
  "bitcoincore-rpc",
  "bytes",
@@ -2187,7 +2205,7 @@ dependencies = [
  "codec_sv2",
  "common_messages_sv2",
  "dashmap",
- "framing_sv2",
+ "framing_sv2 9.0.0",
  "hex",
  "key-utils",
  "metrics",
