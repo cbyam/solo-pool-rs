@@ -12,6 +12,13 @@ a new capability bumps the **minor** version, and everything else bumps the
 ## [Unreleased]
 
 ### Added
+- Dashboard top bar with the pool name, network badge and a menu button. On
+  a desktop the button collapses the side menu, and the choice is
+  remembered; on a phone it opens the menu as before. The Mining paused,
+  Node stale and Stats not saving warnings moved to the top bar, so they
+  stay in view with the menu collapsed and, on a phone, without opening
+  the menu (they were hidden there until it was opened). The network badge
+  no longer overflows the side menu.
 - FAQ: guidance for miners that reach the pool over the internet. Plain
   Stratum V1 can be hijacked on the way (attackers used forged internet
   routes against several large pools in November 2026), so remote miners

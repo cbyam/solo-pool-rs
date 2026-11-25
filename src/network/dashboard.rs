@@ -665,19 +665,42 @@ body {
   font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 15px;
 }
-.shell { display: flex; min-height: 100vh; }
+.shell { display: flex; flex-direction: column; min-height: 100vh; }
+html { scroll-padding-top: 4rem; }
+
+/* ── Top bar: menu button, brand, and the warning pills, which stay in view
+   whether the rail is open, collapsed, or a closed phone drawer. ── */
+.topbar {
+  position: sticky; top: 0; z-index: 20; height: 3.25rem;
+  display: flex; align-items: center; gap: 0.75rem; padding: 0 1rem;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.brand img.mark { height: 1.9rem; width: auto; border-radius: 5px; display: block; }
+.brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; white-space: nowrap; }
+.topbar-alerts {
+  margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end;
+  gap: 0.4rem; min-width: 0;
+}
+#nav-burger {
+  flex: none; cursor: pointer; font-size: 1.15rem; line-height: 1; color: var(--muted);
+  background: none; border: 1px solid var(--border); border-radius: 5px;
+  width: 2.2rem; height: 2.2rem; display: grid; place-items: center;
+}
+#nav-burger:hover { color: var(--text); border-color: var(--muted); }
+#nav-burger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.frame { display: flex; flex: 1; min-height: 0; }
 
 /* ── Left rail ── */
 .rail {
-  width: 208px; flex: none; position: sticky; top: 0; height: 100vh;
+  width: 208px; flex: none; position: sticky; top: 3.25rem; height: calc(100vh - 3.25rem);
   display: flex; flex-direction: column; gap: 1.4rem;
   padding: 1.2rem 0.85rem; background: var(--surface);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border); overflow-y: auto;
 }
-.brand { display: flex; align-items: center; gap: 0.5rem; padding: 0 0.6rem; }
-.brand img.mark { height: 1.9rem; width: auto; border-radius: 5px; display: block; }
-.brand .name { font-weight: 700; font-size: 0.92rem; letter-spacing: -0.02em; white-space: nowrap; }
-#nav-burger { display: none; }
+/* Desktop: the menu button collapses the rail and main takes the width. */
+.shell.rail-collapsed .rail { display: none; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a, nav .nav-btn {
   color: var(--muted); text-decoration: none; font-size: 0.8rem; font-weight: 500;
@@ -887,7 +910,7 @@ tr:last-child td { border-bottom: none; }
 .modal-x:hover { color: var(--text); }
 .modal-actions { display: flex; align-items: center; margin-top: 0.4rem; }
 
-/* Rail "mining paused" pill — keeps the safety state visible while Settings
+/* Top-bar "mining paused" pill: keeps the safety state visible while Settings
    lives in a modal. */
 #paused-pill {
   display: none; align-items: center; gap: 0.35rem; cursor: pointer;
@@ -896,7 +919,7 @@ tr:last-child td { border-bottom: none; }
   padding: 0.3rem 0.5rem; background: none; font-family: inherit; text-align: left;
 }
 #paused-pill.show { display: inline-flex; }
-/* Rail "node stale" pill: the pool has not built a job from a fresh template
+/* Top-bar "node stale" pill: the pool has not built a job from a fresh template
    in a while, usually because bitcoind's RPC is down. */
 #node-pill {
   display: none; align-items: center; gap: 0.35rem; cursor: pointer;
@@ -906,7 +929,7 @@ tr:last-child td { border-bottom: none; }
 }
 #node-pill.show { display: inline-flex; }
 #node-pill.bad { color: var(--bad); border-color: var(--bad); }
-/* Rail "stats not saving" pill: a configured stats database failed to open or
+/* Top-bar "stats not saving" pill: a configured stats database failed to open or
    stopped taking writes. Mining is unaffected; found blocks, the round and the
    best shares are what is at risk. The error text rides in the tooltip. */
 #store-pill {
@@ -919,30 +942,21 @@ tr:last-child td { border-bottom: none; }
 
 /* ── Narrow screens: rail becomes a top bar ── */
 @media (max-width: 880px) {
-  .shell { flex-direction: column; }
-  /* Top bar: brand left, burger right; nav + foot live in a drawer that
-     expands below the bar (pushing content down — no overlay to manage). */
-  .rail {
-    width: 100%; height: auto; position: static; flex-direction: row;
-    flex-wrap: wrap; align-items: center; gap: 0.9rem; padding: 0.7rem 1rem;
+  /* The rail becomes a drawer under the top bar, closed by default and
+     pushing content down when open (no overlay to manage). The collapse
+     setting from a desktop does not apply here. */
+  .topbar { height: auto; min-height: 3.25rem; flex-wrap: wrap; padding: 0.5rem 1rem; }
+  .frame { flex-direction: column; }
+  .rail, .shell.rail-collapsed .rail { display: none; }
+  .shell.nav-open .rail {
+    display: flex; width: 100%; height: auto; position: static;
+    gap: 0.9rem; padding: 0.7rem 1rem; overflow: visible;
     border-right: none; border-bottom: 1px solid var(--border);
   }
-  #nav-burger {
-    display: block; margin-left: auto; cursor: pointer;
-    font-size: 1.15rem; line-height: 1; color: var(--muted);
-    background: none; border: 1px solid var(--border); border-radius: 5px;
-    padding: 0.25rem 0.55rem;
-  }
-  #nav-burger:hover { color: var(--text); border-color: var(--muted); }
-  .rail.nav-open #nav-burger { color: var(--text); border-color: var(--accent); }
-  nav, .rail-foot { display: none; }
-  .rail.nav-open nav {
-    display: flex; flex-direction: column; width: 100%;
-    padding-top: 0.5rem; border-top: 1px solid var(--border);
-  }
-  .rail.nav-open .rail-foot {
-    display: flex; flex-direction: row; flex-wrap: wrap; align-items: center;
-    width: 100%; margin-top: 0; gap: 0.8rem;
+  .shell.nav-open #nav-burger { color: var(--text); border-color: var(--accent); }
+  .shell.nav-open .rail-foot {
+    flex-direction: row; flex-wrap: wrap; align-items: center;
+    margin-top: 0; gap: 0.8rem;
   }
   .rail-foot .hide-sm { display: none; }
   main { padding: 1.2rem 1rem 2rem; }
@@ -965,9 +979,18 @@ tr:last-child td { border-bottom: none; }
 <body>
 <div class="shell">
 
-<aside class="rail">
+<header class="topbar">
+  <button type="button" id="nav-burger" aria-label="Toggle menu" aria-controls="rail" aria-expanded="true">&#9776;</button>
   <div class="brand"><img id="brand-logo" class="mark" src="/logo-dark.svg" alt="solo-pool-rs logo" width="64" height="64"><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
-  <button type="button" id="nav-burger" aria-label="Toggle menu" aria-expanded="false">&#9776;</button>
+  <div class="topbar-alerts">
+    <button id="paused-pill" title="The payout address is not valid for the node's network. Open Settings.">&#9888; Mining paused</button>
+    <button id="node-pill" title="No fresh block template from bitcoind. See the Network section.">&#9888; Node stale</button>
+    <a id="store-pill" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md#stats-not-saving" target="_blank" rel="noopener">&#9888; Stats not saving</a>
+  </div>
+</header>
+
+<div class="frame">
+<aside class="rail" id="rail">
   <nav id="rail-nav">
     <a href="#overview" data-section="overview" class="active">Overview</a>
     <a href="#workers" data-section="workers">Workers</a>
@@ -978,9 +1001,6 @@ tr:last-child td { border-bottom: none; }
     <a href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md" target="_blank" rel="noopener">Help &#8599;</a>
   </nav>
   <div class="rail-foot">
-    <button id="paused-pill" title="The payout address is not valid for the node's network — open Settings">&#9888; Mining paused</button>
-    <button id="node-pill" title="No fresh block template from bitcoind — see the Network section">&#9888; Node stale</button>
-    <a id="store-pill" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md#stats-not-saving" target="_blank" rel="noopener">&#9888; Stats not saving</a>
     <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
     <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
     <span id="rail-node" title="Age of the newest block template the pool built from bitcoind"><span id="node-led" class="led led-off rail-led"></span>Node &middot; <span id="rail-node-text">&mdash;</span></span>
@@ -1212,6 +1232,7 @@ tr:last-child td { border-bottom: none; }
 
 </main>
 </div>
+</div>
 
 <script>
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -1363,17 +1384,39 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   if (!chartCollapsed()) loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
 });
 
-// ── Mobile nav drawer ────────────────────────────────────────────────────────
-const railEl = document.querySelector('.rail');
+// ── Menu button ──────────────────────────────────────────────────────────────
+// Desktop: collapses the rail, persisted like the theme. Narrow screens: opens
+// the rail as a drawer under the top bar, closed on every load.
+const shellEl = document.querySelector('.shell');
 const burgerEl = document.getElementById('nav-burger');
+const RAIL_COLLAPSED_KEY = 'railCollapsed';
+const narrowMq = window.matchMedia('(max-width: 880px)');
+function railShown() {
+  return narrowMq.matches
+    ? shellEl.classList.contains('nav-open')
+    : !shellEl.classList.contains('rail-collapsed');
+}
+function syncBurger() { burgerEl.setAttribute('aria-expanded', railShown() ? 'true' : 'false'); }
+try {
+  if (localStorage.getItem(RAIL_COLLAPSED_KEY) === '1') shellEl.classList.add('rail-collapsed');
+} catch (_) {}
+syncBurger();
+narrowMq.addEventListener('change', () => { shellEl.classList.remove('nav-open'); syncBurger(); });
 burgerEl.addEventListener('click', () => {
-  const open = railEl.classList.toggle('nav-open');
-  burgerEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (narrowMq.matches) {
+    shellEl.classList.toggle('nav-open');
+  } else {
+    const collapsed = shellEl.classList.toggle('rail-collapsed');
+    try { localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (_) {}
+  }
+  syncBurger();
 });
-// Any tap inside the drawer that navigates or opens a modal also closes it.
+// On a narrow screen, any tap in the drawer that navigates or opens a modal
+// also closes it.
 document.getElementById('rail-nav').addEventListener('click', () => {
-  railEl.classList.remove('nav-open');
-  burgerEl.setAttribute('aria-expanded', 'false');
+  if (!narrowMq.matches) return;
+  shellEl.classList.remove('nav-open');
+  syncBurger();
 });
 
 // ── Chart collapse toggle ────────────────────────────────────────────────────
