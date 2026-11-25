@@ -459,10 +459,11 @@ A feature can ship before it is promised. While it is experimental:
 
 | Feature | Since | Surface |
 |---|---|---|
-| none yet | | |
+| Template policy, observe mode | unreleased | The `[template_policy]` config section; the `pool_template_declined_*` metrics; the `template_policy` object in `/stats` |
 
-`[template_policy]` (see `docs/design/template-policy.md`) is planned to
-ship here, observe mode first.
+`[template_policy]` is described in `docs/design/template-policy.md`.
+Observe mode records what the rules would decline and leaves templates
+unchanged. Enforce mode is planned to ship here later.
 
 ## Stances
 

@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use solo_pool_rs::{
     bitcoin::{rpc::RpcClient, zmq},
     config, metrics,
-    mining::engine::TemplateEngine,
+    mining::{engine::TemplateEngine, policy::TemplateObserver},
     network, protocol,
     security::BanList,
     settings,
@@ -219,11 +219,28 @@ async fn main() -> Result<()> {
     let new_block_rx = zmq::start(&config.zmq, rpc.clone()).await;
 
     // ── Template engine ───────────────────────────────────────────────────────
+    // Template policy (experimental). Validated at config load, so the mode
+    // cannot fail to parse here.
+    let policy_observer = match config.template_policy.mode()? {
+        config::PolicyMode::Off => None,
+        config::PolicyMode::Observe => {
+            let rules = config.template_policy.rules();
+            tracing::warn!(
+                ?rules,
+                "[template_policy] mode = \"observe\" is EXPERIMENTAL: its config keys, \
+                 metrics and /stats fields may change in a minor release. Templates are \
+                 checked against the rules and the results recorded; the jobs miners \
+                 receive are unchanged"
+            );
+            Some(Arc::new(TemplateObserver::new(rules)))
+        }
+    };
     let engine = TemplateEngine::new(
         rpc.clone(),
         config.pool.clone(),
         runtime_settings.clone(),
         stats.clone(),
+        policy_observer,
     );
 
     // Spawn the template refresh loop

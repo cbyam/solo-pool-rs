@@ -18,6 +18,9 @@ pub struct Config {
     /// Stratum V2 settings. Optional — defaults to enabled if the section is absent.
     #[serde(default)]
     pub sv2: Sv2Config,
+    /// Template policy (experimental). Optional: off when the section is absent.
+    #[serde(default)]
+    pub template_policy: TemplatePolicyConfig,
     /// `section.key` names applied from `SOLO_POOL_*` environment overrides,
     /// for the caller to log once tracing is up (load runs before it is).
     #[serde(skip)]
@@ -116,6 +119,106 @@ impl Default for Sv2Config {
             authority_key_file: default_authority_key_file(),
             cert_validity_secs: default_cert_validity_secs(),
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Template policy (experimental)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What the pool does with the policy rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyMode {
+    /// The rules are not run.
+    Off,
+    /// Every template is checked and the results recorded. Templates and jobs
+    /// are unchanged.
+    Observe,
+}
+
+/// `[template_policy]`: Knots-style data-carrier and token rules applied to
+/// the node's block template. Experimental (see `docs/stable-surface.md`,
+/// "Experimental features"). Each rule key keeps the meaning and the default
+/// of its Bitcoin Knots option; see `docs/design/template-policy.md`.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct TemplatePolicyConfig {
+    /// "off" or "observe". Read through `mode()`.
+    pub mode: String,
+    /// Knots `-datacarriersize`, in bytes.
+    pub datacarrier_size: usize,
+    /// Knots has no option and always rejects a second OP_RETURN output.
+    pub permit_multiple_op_return: bool,
+    /// Knots `-acceptnonstddatacarrier`.
+    pub accept_non_std_datacarrier: bool,
+    /// Knots `-datacarrierfullcount`.
+    pub datacarrier_full_count: bool,
+    /// Knots `-maxscriptsize`, in bytes.
+    pub max_script_size: usize,
+    /// Knots `-rejecttokens`.
+    pub reject_tokens: bool,
+    /// Knots `-rejectparasites`.
+    pub reject_parasites: bool,
+    /// Knots `-permitbaremultisig`.
+    pub permit_bare_multisig: bool,
+    /// Knots `-permitbarepubkey`.
+    pub permit_bare_pubkey: bool,
+    /// Knots `-permitbaredatacarrier`.
+    pub permit_bare_datacarrier: bool,
+}
+
+impl Default for TemplatePolicyConfig {
+    fn default() -> Self {
+        // The classifier crate owns the Knots defaults; take them from there
+        // so the two cannot drift.
+        let r = tx_datacarrier_policy::Rules::default();
+        Self {
+            mode: "off".into(),
+            datacarrier_size: r.datacarrier_size,
+            permit_multiple_op_return: r.permit_multiple_op_return,
+            accept_non_std_datacarrier: r.accept_non_std_datacarrier,
+            datacarrier_full_count: r.datacarrier_full_count,
+            max_script_size: r.max_script_size,
+            reject_tokens: r.reject_tokens,
+            reject_parasites: r.reject_parasites,
+            permit_bare_multisig: r.permit_bare_multisig,
+            permit_bare_pubkey: r.permit_bare_pubkey,
+            permit_bare_datacarrier: r.permit_bare_datacarrier,
+        }
+    }
+}
+
+impl TemplatePolicyConfig {
+    /// The configured mode. Enforce mode is designed but not in this build,
+    /// so it is refused by name instead of being read as a typo.
+    pub fn mode(&self) -> Result<PolicyMode> {
+        match self.mode.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(PolicyMode::Off),
+            "observe" => Ok(PolicyMode::Observe),
+            "enforce" => anyhow::bail!(
+                "[template_policy] mode = \"enforce\" is not available in this version: \
+                 use \"observe\" (templates unchanged) or \"off\""
+            ),
+            other => anyhow::bail!(
+                "[template_policy] mode must be \"off\" or \"observe\" (got \"{other}\")"
+            ),
+        }
+    }
+
+    /// The classifier settings these keys describe.
+    pub fn rules(&self) -> tx_datacarrier_policy::Rules {
+        let mut r = tx_datacarrier_policy::Rules::default();
+        r.datacarrier_size = self.datacarrier_size;
+        r.permit_multiple_op_return = self.permit_multiple_op_return;
+        r.accept_non_std_datacarrier = self.accept_non_std_datacarrier;
+        r.datacarrier_full_count = self.datacarrier_full_count;
+        r.max_script_size = self.max_script_size;
+        r.reject_tokens = self.reject_tokens;
+        r.reject_parasites = self.reject_parasites;
+        r.permit_bare_multisig = self.permit_bare_multisig;
+        r.permit_bare_pubkey = self.permit_bare_pubkey;
+        r.permit_bare_datacarrier = self.permit_bare_datacarrier;
+        r
     }
 }
 
@@ -395,6 +498,10 @@ impl Config {
             );
         }
 
+        // An unknown or unavailable mode fails here, with the key named,
+        // instead of being treated as "off" and silently doing nothing.
+        self.template_policy.mode()?;
+
         self.validate_vardiff()
     }
 
@@ -607,6 +714,97 @@ mod tests {
     fn shipped_example_config_passes_validation() {
         // The example is what operators copy, so it must satisfy every guard.
         example_config().validate().expect("example must validate");
+    }
+
+    #[test]
+    fn template_policy_is_off_without_a_section_and_follows_knots_defaults() {
+        let cfg = example_config();
+        assert_eq!(
+            cfg.template_policy.mode().unwrap(),
+            super::PolicyMode::Off,
+            "the example must not turn an experimental feature on"
+        );
+        assert_eq!(
+            super::TemplatePolicyConfig::default().rules(),
+            tx_datacarrier_policy::Rules::default()
+        );
+    }
+
+    #[test]
+    fn template_policy_keys_reach_the_classifier() {
+        let src = "mode = \"Observe\"\ndatacarrier_size = 42\nreject_tokens = true\n";
+        let tp: super::TemplatePolicyConfig = toml::from_str(src).unwrap();
+        assert_eq!(tp.mode().unwrap(), super::PolicyMode::Observe);
+        let rules = tp.rules();
+        assert_eq!(rules.datacarrier_size, 42);
+        assert!(rules.reject_tokens);
+        // Keys left out keep the Knots default.
+        assert!(rules.reject_parasites);
+        assert_eq!(rules.max_script_size, 1650);
+    }
+
+    #[test]
+    fn template_policy_bad_mode_fails_at_boot_naming_the_key() {
+        for (mode, needle) in [("enforce", "not available"), ("on", "must be")] {
+            let mut cfg = example_config();
+            cfg.template_policy.mode = mode.to_string();
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("[template_policy] mode") && err.contains(needle),
+                "unexpected error for {mode}: {err}"
+            );
+        }
+    }
+
+    /// The example config with its environment overrides applied, the way
+    /// `load` builds it, optionally without its `[template_policy]` table.
+    fn example_with_env(drop_policy_table: bool, vars: &[(&str, &str)]) -> anyhow::Result<Config> {
+        let mut value: toml::Value = toml::from_str(include_str!("../config.toml.example"))?;
+        if drop_policy_table {
+            value.as_table_mut().unwrap().remove("template_policy");
+        }
+        apply_env_overrides(
+            &mut value,
+            vars.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+        )?;
+        let cfg: Config = value.try_into()?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    #[test]
+    fn template_policy_env_overrides_work_with_or_without_the_table() {
+        // Umbrel's shipped config.toml has no [template_policy] table, so
+        // the environment is the only way to turn the policy on there: the
+        // override has to create the section. The example ships the table
+        // with mode = "off", and the override has to replace that.
+        let vars = [
+            ("SOLO_POOL_TEMPLATE_POLICY__MODE", "observe"),
+            ("SOLO_POOL_TEMPLATE_POLICY__DATACARRIER_SIZE", "42"),
+            ("SOLO_POOL_TEMPLATE_POLICY__REJECT_TOKENS", "true"),
+        ];
+        for drop_policy_table in [true, false] {
+            let cfg = example_with_env(drop_policy_table, &vars)
+                .unwrap_or_else(|e| panic!("table dropped = {drop_policy_table}: {e:#}"));
+            assert_eq!(
+                cfg.template_policy.mode().unwrap(),
+                super::PolicyMode::Observe
+            );
+            let rules = cfg.template_policy.rules();
+            assert_eq!(rules.datacarrier_size, 42);
+            assert!(rules.reject_tokens);
+            assert!(rules.reject_parasites, "unset keys keep the Knots default");
+        }
+
+        // Without the table and without overrides the policy stays off.
+        let cfg = example_with_env(true, &[]).unwrap();
+        assert_eq!(cfg.template_policy.mode().unwrap(), super::PolicyMode::Off);
+
+        // enforce is refused through the environment as it is in the file.
+        let err = example_with_env(true, &[("SOLO_POOL_TEMPLATE_POLICY__MODE", "enforce")])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[template_policy] mode"), "{err}");
     }
 
     #[test]

@@ -1564,6 +1564,7 @@ impl PoolStats {
             template_age_secs: None,
             template_error: None,
             stats_store_error: self.store_error(),
+            template_policy: None,
         }
     }
 }
@@ -1623,6 +1624,12 @@ pub struct StatsSnapshot {
     /// not: it failed to open at boot, or its latest write failed. Null when
     /// persistence is healthy or not configured.
     pub stats_store_error: Option<String>,
+    /// What the template policy would decline from the current template
+    /// (experimental, `[template_policy]`). Filled by the dashboard from the
+    /// TemplateEngine. The key is absent while the policy is off, so `/stats`
+    /// is unchanged for anyone who has not turned it on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_policy: Option<crate::mining::policy::PolicySnapshot>,
 }
 
 #[derive(Serialize)]
