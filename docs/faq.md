@@ -105,6 +105,43 @@ fixed, so miners receive no work. Set a valid address in Settings or in
 `[pool] coinbase_address`. An address saved from Settings takes precedence
 over the config file on later starts.
 
+## Miners that reach the pool over the internet
+
+If your miners and the pool share a LAN, nothing here applies. It matters
+when Stratum crosses the public internet: miners at another site, or a
+Stratum port forwarded through your router.
+
+Plain Stratum V1 is unencrypted, and the miner has no way to check which
+server it is talking to. In November 2026 attackers used forged internet
+routes (BGP hijacks) to send miners' Stratum V1 traffic for several large
+pools to their own servers. The miners reconnected to the usual address, a
+fake server answered, and they hashed for the attacker for minutes to hours
+while reporting the pool as alive
+([Braiins write-up](https://braiins.com/blog/bitcoin-hashrate-hijacking-unencrypted-stratum-v1)).
+On a solo pool the loss is not only shares: a block found during a hijack
+pays the attacker.
+
+What protects a remote miner:
+
+- **Stratum V2 with the pool's key pinned.** The miner checks the server's
+  identity on every connection and refuses one that cannot prove it is your
+  pool. Pinning is the part that matters (next section). SV2 without a
+  pinned key is encrypted, but an impostor can encrypt too, and the miner
+  cannot tell it from your pool.
+- **No plain `stratum+tcp://` fallback over the internet.** A miner that
+  fails its SV2 connection moves to its backup pool. If that backup is plain
+  SV1 across the internet, an attacker who breaks the SV2 connection gets
+  the miner anyway. Remove such entries, or point the backup at something
+  on the miner's own LAN.
+- **A VPN for SV1-only miners.** Carry Stratum through a WireGuard or other
+  VPN tunnel between the sites instead of forwarding the port. The pool
+  does not offer SV1 over TLS.
+
+Signs of a hijack, seen from the miner: a share difficulty far above your
+`[vardiff] max_difficulty` (the attacks above set hundreds of millions and
+more), or a miner that says it is connected while the pool's dashboard
+shows it offline.
+
 ## Pinning the pool's identity on an SV2 miner
 
 The pool's authority public key is printed at startup, shown in the
@@ -117,7 +154,9 @@ The key lives in `[sv2] authority_key_file`, so keep that file in persistent
 storage (`data/` in Docker, `/var/lib/solo-pool-rs` under systemd). Deleting
 it, or setting `persist_authority_key = false`, gives the pool a new
 identity, and pinned miners refuse to connect until they are given the new
-key. Miners without a pinned key connect either way.
+key. Miners without a pinned key connect either way, but they cannot tell
+your pool from an impostor, so pin the key on any miner that reaches the
+pool over the internet.
 
 ## What are my odds of finding a block
 
