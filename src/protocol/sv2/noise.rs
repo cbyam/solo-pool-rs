@@ -285,20 +285,24 @@ impl NoiseReader {
                     let msg_type = frame.header().msg_type();
                     return Ok((msg_type, frame.payload().to_vec()));
                 }
-                Ok(Decrypted::Incomplete(missing, state)) => {
+                Ok(Decrypted::Incomplete(state)) => {
                     self.state = Some(state);
-                    // `missing` is the next read, at most one 64 KB chunk,
+                    // `read_len()` is the next read, at most one 64 KB chunk,
                     // not the length the header declared, so the guard counts
                     // what the frame has taken so far. Below one chunk it
                     // refuses on the header alone, as before; above it, within
                     // one chunk of the cap. Either way it refuses before
-                    // `writable()` grows the buffer for the read.
+                    // `read_buf()` grows the buffer for the read.
+                    let missing = self.decoder.read_len();
                     let total = self.frame_read.saturating_add(missing);
                     if total > self.max_frame {
                         return Err(oversize_err(total, self.max_frame));
                     }
-                    let writable = self.decoder.writable();
-                    self.reader.read_exact(writable).await?;
+                    let buf = self.decoder.read_buf();
+                    self.reader.read_exact(buf).await?;
+                    self.decoder
+                        .advance(missing)
+                        .map_err(|e| io_err(format!("noise decode error: {e:?}")))?;
                     self.frame_read = total;
                 }
                 Err(e) => return Err(io_err(format!("noise decode error: {e:?}"))),

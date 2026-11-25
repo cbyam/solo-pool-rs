@@ -918,10 +918,15 @@ impl Sv2Client {
                     self.decrypt = Some(state);
                     return (f.header().msg_type(), f.payload().to_vec());
                 }
-                Ok(Decrypted::Incomplete(_, state)) => {
+                Ok(Decrypted::Incomplete(state)) => {
                     self.decrypt = Some(state);
-                    let buf = self.decoder.writable();
-                    self.stream.read_exact(buf).expect("read from pool");
+                    let n = self.decoder.read_len();
+                    self.stream
+                        .read_exact(self.decoder.read_buf())
+                        .expect("read from pool");
+                    self.decoder
+                        .advance(n)
+                        .expect("advance within the read window");
                 }
                 Err(e) => panic!("noise decode: {e:?}"),
             }
@@ -959,7 +964,7 @@ impl Sv2Work {
         match msg_type {
             0x1f => {
                 let j: NewExtendedMiningJob = binary_sv2::from_bytes(payload).unwrap();
-                let future = j.min_ntime.clone().into_inner().is_none();
+                let future = j.ntime_start.clone().into_inner().is_none();
                 let job_id = j.job_id;
                 let merkle_path = j
                     .merkle_path
@@ -984,7 +989,7 @@ impl Sv2Work {
                 let p: SetNewPrevHash = binary_sv2::from_bytes(payload).unwrap();
                 self.prev_hash = Some(Sv2PrevHash {
                     prev: p.prev_hash.as_ref().try_into().unwrap(),
-                    min_ntime: p.min_ntime,
+                    min_ntime: p.ntime_start,
                     nbits: p.nbits,
                 });
                 self.active = Some(p.job_id);

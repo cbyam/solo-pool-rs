@@ -89,7 +89,7 @@ pub fn build_new_extended_job(
     Ok(NewExtendedMiningJobOwned {
         channel_id,
         job_id,
-        min_ntime,
+        ntime_start: min_ntime,
         version: job.version,
         // BIP320 general-purpose bits may be rolled by the device.
         version_rolling_allowed: true,
@@ -115,7 +115,7 @@ pub fn build_set_new_prev_hash(
         channel_id,
         job_id,
         prev_hash: U256Owned::from(prev),
-        min_ntime: job.cur_time,
+        ntime_start: job.cur_time,
         nbits,
     })
 }
