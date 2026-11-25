@@ -11,6 +11,19 @@ a new capability bumps the **minor** version, and everything else bumps the
 
 ## [Unreleased]
 
+### Added
+- FAQ: guidance for miners that reach the pool over the internet. Plain
+  Stratum V1 can be hijacked on the way (attackers used forged internet
+  routes against several large pools in November 2026), so remote miners
+  should use Stratum V2 with the pool's key pinned, drop plain SV1 backup
+  pools, or tunnel SV1 through a VPN. Miners on the same LAN are not
+  affected.
+
+### Changed
+- `SECURITY.md` now names 1.x as the supported line (it still listed 0.6.x)
+  and states that redirection of unencrypted Stratum V1 traffic is a property
+  of the protocol, not a pool vulnerability, with a pointer to the FAQ.
+
 ## [1.0.0] - 2026-11-25
 
 The first stable release. [`docs/stable-surface.md`](docs/stable-surface.md)

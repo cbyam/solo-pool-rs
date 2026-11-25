@@ -9,13 +9,15 @@ crash the pool, so vulnerability reports are taken seriously.
 
 ## Supported Versions
 
-This is a pre-1.0 project; only the latest minor release line receives security
-fixes. Older lines are not patched — upgrade to the current release.
+Security fixes land on the latest 1.x release. Older releases, including all
+of 0.x, are not patched: upgrade to the current release. Within 1.x an upgrade
+is compatible by promise (see [`docs/stable-surface.md`](docs/stable-surface.md)),
+so staying current should need no config or miner changes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.6.x   | :white_check_mark: |
-| < 0.6   | :x:                |
+| 1.x     | :white_check_mark: |
+| < 1.0   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -54,6 +56,12 @@ metrics/dashboard endpoint.
 Out of scope: vulnerabilities in Bitcoin Core/Knots itself, your node or host
 configuration, and exposing the dashboard/RPC to untrusted networks (bind them
 to localhost or a trusted LAN — they are not hardened for public exposure).
+
+Stratum V1 is unencrypted and unauthenticated by design of the protocol, so
+interception or redirection of SV1 traffic on the network is not a pool
+vulnerability. For miners that reach the pool over the internet, see
+[Miners that reach the pool over the internet](docs/faq.md#miners-that-reach-the-pool-over-the-internet)
+in the FAQ.
 
 ## Dependencies
 
