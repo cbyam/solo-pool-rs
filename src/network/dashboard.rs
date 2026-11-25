@@ -220,6 +220,7 @@ async fn stats_json(State(state): State<DashState>) -> Json<crate::stats::StatsS
     let health = state.engine.template_health();
     snap.template_age_secs = health.age_secs;
     snap.template_error = health.error;
+    snap.template_policy = state.engine.policy_snapshot();
     Json(snap)
 }
 
@@ -1189,6 +1190,13 @@ tr:last-child td { border-bottom: none; }
       <div class="val" id="v-btc-price" style="font-size:0.92rem;">BTC <span id="v-btc-price-num">&mdash;</span></div>
       <div class="sub" id="v-btc-change">24h: &mdash;</div>
     </div>
+    <div class="kpi" id="kpi-policy" hidden>
+      <div class="label" title="EXPERIMENTAL ([template_policy] in the config). Observe mode checks each block template against Bitcoin Knots' data-carrier and token rules and records what they would decline. The template is mined unchanged.">Template policy</div>
+      <div class="val" id="v-policy-declined" title="Transactions in the template being mined that the rules would decline">&mdash;</div>
+      <div class="sub" id="v-policy-share" title="Share of the template's transactions, weight and fees. The fee share is an upper bound on the cost: a node that left these transactions out would fill the space with others.">&mdash;</div>
+      <div class="sub" id="v-policy-since" title="Distinct transactions the rules would have declined since the pool started, and what they paid">&mdash;</div>
+      <div class="sub" id="v-policy-rules" title="Observe mode: the template is mined unchanged. Rules: the [template_policy] keys set away from their Knots 29.3 default">&mdash;</div>
+    </div>
   </div>
 </section>
 
@@ -1780,6 +1788,33 @@ function renderNode(d) {
   pill.classList.toggle('bad', level === 'bad');
 }
 
+// Template policy (experimental, observe mode). /stats carries the object only
+// while the policy is on, so with it off the tile stays hidden and the page is
+// as it was.
+function renderPolicy(d) {
+  const p = d.template_policy;
+  const card = document.getElementById('kpi-policy');
+  card.hidden = !p;
+  if (!p) return;
+  const t = p.template, x = p.declined, all = p.declined_since_start;
+  const share = (part, whole) => whole > 0 ? fmtPct(part / whole * 100) : '0%';
+  const val = document.getElementById('v-policy-declined');
+  val.textContent = x.txs.toLocaleString() + (x.txs === 1 ? ' tx declined' : ' txs declined');
+  val.title = 'Transactions in the template being mined (height ' + p.height.toLocaleString()
+    + ') that the rules would decline'
+    + (p.declined_by_rule.length
+      ? ':\n' + p.declined_by_rule.map(r => r.rule + ': ' + r.txs.toLocaleString()).join('\n')
+      : '');
+  document.getElementById('v-policy-share').textContent =
+    'of ' + t.txs.toLocaleString() + (t.txs === 1 ? ' tx' : ' txs') + ' · weight ' + share(x.weight, t.weight)
+    + ' · fees ' + share(x.fees_sats, t.fees_sats);
+  document.getElementById('v-policy-since').textContent =
+    'Since start: ' + all.txs.toLocaleString() + (all.txs === 1 ? ' tx · ' : ' txs · ')
+    + (all.fees_sats / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 }) + ' BTC';
+  document.getElementById('v-policy-rules').textContent = 'Observe · rules: '
+    + (p.non_default_rules.length ? p.non_default_rules.join(', ') : 'Knots defaults');
+}
+
 // Stats database health: the pool keeps mining without it, so the only sign
 // of a broken store would otherwise be a found block missing after a restart.
 function renderStore(d) {
@@ -1832,6 +1867,7 @@ async function refresh() {
     renderBlocks(d, nowSec);
     renderNode(d);
     renderStore(d);
+    renderPolicy(d);
     document.getElementById('v-best-share').textContent = fmtDiff(d.best_share_difficulty);
     document.getElementById('v-session-best-share').textContent = fmtDiff(d.session_best_share_difficulty);
     document.getElementById('v-best-over-network').textContent = d.network_difficulty > 0 ? fmtPct(d.best_share_difficulty / d.network_difficulty * 100) : '—';

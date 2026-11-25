@@ -200,6 +200,43 @@ pub fn update_job_height(height: u64) {
     gauge!("pool_job_height").set(height as f64);
 }
 
+/// A transaction the template policy would decline, counted the first time a
+/// template holds it (experimental, `[template_policy]`). `rule` is the Knots
+/// reject reason of the first rule it breaks, or `descendant` for a child of
+/// a declined transaction. The `_all_` series are the same totals without the
+/// label, so a total never depends on summing over `rule`.
+pub fn template_declined(rule: &'static str, weight: u64, fee_sats: u64) {
+    counter!("pool_template_declined_txs_total", "rule" => rule).increment(1);
+    counter!("pool_template_declined_weight_total", "rule" => rule).increment(weight);
+    counter!("pool_template_declined_fees_sats_total", "rule" => rule).increment(fee_sats);
+    counter!("pool_template_declined_all_txs_total").increment(1);
+    counter!("pool_template_declined_all_weight_total").increment(weight);
+    counter!("pool_template_declined_all_fees_sats_total").increment(fee_sats);
+}
+
+/// What the policy would decline from the template being mined. Called on
+/// every template while the policy is on, so it also registers every
+/// `pool_template_declined_*` series at 0 from the first template and keeps
+/// them past the exporter's idle timeout (see `keep_pool_series_alive`).
+/// With the policy off nothing here runs and none of the series exist.
+pub fn template_policy_current(txs: u64, weight: u64, fees_sats: u64) {
+    gauge!("pool_template_declined_txs").set(txs as f64);
+    gauge!("pool_template_declined_weight").set(weight as f64);
+    gauge!("pool_template_declined_fees_sats").set(fees_sats as f64);
+    for rule in crate::mining::policy::rule_labels() {
+        counter!("pool_template_declined_txs_total", "rule" => rule).increment(0);
+        counter!("pool_template_declined_weight_total", "rule" => rule).increment(0);
+        counter!("pool_template_declined_fees_sats_total", "rule" => rule).increment(0);
+    }
+    for name in [
+        "pool_template_declined_all_txs_total",
+        "pool_template_declined_all_weight_total",
+        "pool_template_declined_all_fees_sats_total",
+    ] {
+        counter!(name).increment(0);
+    }
+}
+
 /// Touch every pool-wide series so the exporter's 24 h idle timeout, which
 /// exists to bound the `worker` label, never expires them. Without this,
 /// `pool_blocks_found_total` vanished a day after a block and came back at 0,
