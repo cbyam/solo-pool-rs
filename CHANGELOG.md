@@ -23,6 +23,15 @@ a new capability bumps the **minor** version, and everything else bumps the
 - `SECURITY.md` now names 1.x as the supported line (it still listed 0.6.x)
   and states that redirection of unencrypted Stratum V1 traffic is a property
   of the protocol, not a pool vulnerability, with a pointer to the FAQ.
+- Stratum V2 crates moved to the SRI v1.13.0 set together: `binary_sv2` 8,
+  `framing_sv2` 9, `codec_sv2` 8.1, `common_messages_sv2` 10, `mining_sv2`
+  13 and `noise_sv2` 2.1. Nothing changes on the wire: the byte-exact golden
+  tests pass unchanged and SV1 and SV2 blocks are accepted end to end. The
+  Noise decoder now decrypts each 64 KB chunk as it arrives instead of
+  buffering a whole frame's ciphertext first, and the pool's
+  `max_message_bytes` cap still refuses an oversize frame before reading it.
+  Dependabot's grouped update (#182) left `codec_sv2` behind and did not
+  build.
 
 ## [1.0.0] - 2026-11-25
 

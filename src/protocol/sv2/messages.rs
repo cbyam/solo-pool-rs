@@ -190,7 +190,7 @@ pub fn open_channel_error_extranonce(request_id: u32) -> Result<Vec<u8>> {
 pub fn set_target(channel_id: u32, target_le: [u8; 32]) -> Result<Vec<u8>> {
     encode(SetTargetOwned {
         channel_id,
-        maximum_target: U256Owned::from(target_le),
+        target: U256Owned::from(target_le),
     })
 }
 

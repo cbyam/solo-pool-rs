@@ -58,10 +58,11 @@ async fn recv(
                 let mt = f.header().msg_type();
                 return (mt, f.payload().to_vec());
             }
-            Ok(Decrypted::Incomplete(_, state)) => {
+            Ok(Decrypted::Incomplete(state)) => {
                 *st = Some(state);
-                let w = dec.writable();
-                s.read_exact(w).await.unwrap();
+                let n = dec.read_len();
+                s.read_exact(dec.read_buf()).await.unwrap();
+                dec.advance(n).expect("advance within the read window");
             }
             Err(e) => panic!("decode error: {e:?}"),
         }
