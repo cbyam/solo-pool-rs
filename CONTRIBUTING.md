@@ -42,10 +42,10 @@ CI runs the following on every pull request, with `RUSTFLAGS=-D warnings`. All
 must pass, so run them locally first:
 
 ```bash
-cargo fmt --all -- --check                               # formatting
-cargo clippy --all-targets --all-features -- -D warnings  # lints
-cargo test --all                                         # tests
-cargo build --release                                    # release build
+cargo fmt --all -- --check                                           # formatting
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # lints
+cargo test --all                                                     # tests
+cargo build --release                                                # release build
 ```
 
 The E2E workflow also runs the regtest block-acceptance test on every pull
@@ -124,6 +124,10 @@ config.rs, settings.rs   - config file + env overrides; runtime payout address
 
 The mining engine, validator, vardiff, and template code are protocol-agnostic;
 SV1 and SV2 share the same job pipeline.
+
+`crates/tx-datacarrier-policy/` is the template policy classifier, a separate
+crate in the same workspace. The pool does not use it yet; see
+`docs/design/template-policy.md`.
 
 ## Releasing
 

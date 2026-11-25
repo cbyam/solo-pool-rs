@@ -19,9 +19,14 @@ WORKDIR /build
 # across source-only changes. The package has a library target as well as
 # the binary, so both files must exist or Cargo stops at target resolution.
 COPY Cargo.toml Cargo.lock ./
+# Cargo loads every workspace member's manifest. The pool does not depend on
+# the policy crate, so its stub stays empty and is never compiled.
+COPY crates/tx-datacarrier-policy/Cargo.toml ./crates/tx-datacarrier-policy/
 # .cargo/config.toml carries the libzmq alignment defines (see the file).
 COPY .cargo ./.cargo
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && : > src/lib.rs \
+    && mkdir crates/tx-datacarrier-policy/src \
+    && : > crates/tx-datacarrier-policy/src/lib.rs \
     && cargo build --release --locked \
     && rm -rf src
 

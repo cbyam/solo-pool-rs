@@ -7,6 +7,9 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+# Its own workspace, apart from the pool's.
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 

@@ -91,6 +91,12 @@ key-utils = "1.2.0"
 [dev-dependencies]
 tokio-test = "0.4"
 
+# The template policy classifier lives in its own crate (see
+# docs/design/template-policy.md, "Library crate"). The fuzz crate is its own
+# workspace (the empty [workspace] in fuzz/Cargo.toml).
+[workspace]
+members = [".", "crates/tx-datacarrier-policy"]
+
 [profile.release]
 opt-level = 3
 lto = true
