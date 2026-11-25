@@ -682,13 +682,24 @@ html { scroll-padding-top: 4rem; }
   margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end;
   gap: 0.4rem; min-width: 0;
 }
-#nav-burger {
-  flex: none; cursor: pointer; font-size: 1.15rem; line-height: 1; color: var(--muted);
+/* Icons: one inline sprite, drawn for this page (no icon font or CDN, which
+   the CSP would block anyway). Stroke-only, so they take the text colour. */
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.ico {
+  width: 1.15rem; height: 1.15rem; flex: none; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+#nav-burger, #rail-toggle {
+  flex: none; cursor: pointer; color: var(--muted);
   background: none; border: 1px solid var(--border); border-radius: 5px;
   width: 2.2rem; height: 2.2rem; display: grid; place-items: center;
 }
-#nav-burger:hover { color: var(--text); border-color: var(--muted); }
-#nav-burger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#nav-burger:hover, #rail-toggle:hover { color: var(--text); border-color: var(--muted); }
+#nav-burger:focus-visible, #rail-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The top-bar button only opens the phone drawer; on a desktop the rail
+   carries its own collapse button above the menu. */
+#nav-burger { display: none; }
+#rail-toggle { margin-left: 0.25rem; margin-bottom: -0.6rem; }
 
 .frame { display: flex; flex: 1; min-height: 0; }
 
@@ -699,10 +710,19 @@ html { scroll-padding-top: 4rem; }
   padding: 1.2rem 0.85rem; background: var(--surface);
   border-right: 1px solid var(--border); overflow-y: auto;
 }
-/* Desktop: the menu button collapses the rail and main takes the width. */
-.shell.rail-collapsed .rail { display: none; }
+/* Desktop: the collapse button shrinks the rail to its icons; names show as
+   tooltips, and the foot keeps the theme toggle and the two status LEDs. */
+.shell.rail-collapsed .rail { width: 3.6rem; padding-inline: 0.45rem; align-items: center; }
+.shell.rail-collapsed .lbl, .shell.rail-collapsed .foot-full { display: none; }
+.shell.rail-collapsed #rail-toggle { margin-left: 0; }
+.shell.rail-collapsed nav { width: 100%; }
+.shell.rail-collapsed nav a, .shell.rail-collapsed nav .nav-btn { justify-content: center; padding-inline: 0; }
+.shell.rail-collapsed .rail-foot { padding: 0; align-items: center; }
+.shell.rail-collapsed #theme-toggle { padding: 0.35rem; }
+.shell.rail-collapsed .rail-led { margin-right: 0; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a, nav .nav-btn {
+  display: flex; align-items: center; gap: 0.6rem;
   color: var(--muted); text-decoration: none; font-size: 0.8rem; font-weight: 500;
   padding: 0.42rem 0.6rem; border-radius: 5px; border-left: 2px solid transparent;
   font-family: inherit; text-align: left; background: none; border-top: none;
@@ -716,6 +736,7 @@ nav a.active { color: var(--text); background: var(--surface2); border-left-colo
   font-variant-numeric: tabular-nums;
 }
 #theme-toggle {
+  display: inline-flex; align-items: center; gap: 0.4rem;
   align-self: flex-start; cursor: pointer; font: inherit; color: var(--muted);
   background: none; border: 1px solid var(--border); border-radius: 5px;
   padding: 0.3rem 0.6rem;
@@ -946,8 +967,10 @@ tr:last-child td { border-bottom: none; }
      pushing content down when open (no overlay to manage). The collapse
      setting from a desktop does not apply here. */
   .topbar { height: auto; min-height: 3.25rem; flex-wrap: wrap; padding: 0.5rem 1rem; }
+  #nav-burger { display: grid; }
+  #rail-toggle { display: none; }
   .frame { flex-direction: column; }
-  .rail, .shell.rail-collapsed .rail { display: none; }
+  .rail { display: none; }
   .shell.nav-open .rail {
     display: flex; width: 100%; height: auto; position: static;
     gap: 0.9rem; padding: 0.7rem 1rem; overflow: visible;
@@ -978,9 +1001,20 @@ tr:last-child td { border-bottom: none; }
 </head>
 <body>
 <div class="shell">
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="i-overview" viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4.5-5"/><circle cx="12" cy="17" r="1.2"/></symbol>
+  <symbol id="i-workers" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/><rect x="10" y="10" width="4" height="4" rx=".6"/><path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3"/></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24"><rect x="2.5" y="9" width="6" height="6" rx="1.2"/><rect x="15.5" y="9" width="6" height="6" rx="1.2"/><rect x="9" y="9" width="6" height="6" rx="1.2"/><path d="M8.5 12h.5M15 12h.5"/></symbol>
+  <symbol id="i-connect" viewBox="0 0 24 24"><path d="M9 3.5V8M15 3.5V8M6.5 8h11v3a5.5 5.5 0 0 1-11 0z"/><path d="M12 16.5v4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M18 7h2M4 17h3M12 17h8"/><circle cx="15.5" cy="7" r="2.3"/><circle cx="9.5" cy="17" r="2.3"/></symbol>
+  <symbol id="i-metrics" viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M7.5 16.5v-4M12 16.5v-9M16.5 16.5v-6.5"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.9v.1"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></symbol>
+</svg>
 
 <header class="topbar">
-  <button type="button" id="nav-burger" aria-label="Toggle menu" aria-controls="rail" aria-expanded="true">&#9776;</button>
+  <button type="button" id="nav-burger" aria-label="Open menu" aria-controls="rail" aria-expanded="false"><svg class="ico" aria-hidden="true"><use href="#i-menu"/></svg></button>
   <div class="brand"><img id="brand-logo" class="mark" src="/logo-dark.svg" alt="solo-pool-rs logo" width="64" height="64"><span class="name">solo-pool-rs</span><span id="net-badge" hidden></span></div>
   <div class="topbar-alerts">
     <button id="paused-pill" title="The payout address is not valid for the node's network. Open Settings.">&#9888; Mining paused</button>
@@ -991,22 +1025,23 @@ tr:last-child td { border-bottom: none; }
 
 <div class="frame">
 <aside class="rail" id="rail">
+  <button type="button" id="rail-toggle" aria-label="Collapse menu" aria-controls="rail" aria-expanded="true" title="Collapse menu"><svg class="ico" aria-hidden="true"><use href="#i-menu"/></svg></button>
   <nav id="rail-nav">
-    <a href="#overview" data-section="overview" class="active">Overview</a>
-    <a href="#workers" data-section="workers">Workers</a>
-    <a href="#network" data-section="network">Network</a>
-    <button type="button" class="nav-btn" id="open-connect">Connect</button>
-    <button type="button" class="nav-btn" id="open-settings">Settings</button>
-    <a href="/metrics">Raw metrics &#8599;</a>
-    <a href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md" target="_blank" rel="noopener">Help &#8599;</a>
+    <a href="#overview" data-section="overview" class="active" aria-label="Overview" title="Overview"><svg class="ico" aria-hidden="true"><use href="#i-overview"/></svg><span class="lbl">Overview</span></a>
+    <a href="#workers" data-section="workers" aria-label="Workers" title="Workers"><svg class="ico" aria-hidden="true"><use href="#i-workers"/></svg><span class="lbl">Workers</span></a>
+    <a href="#network" data-section="network" aria-label="Network" title="Network"><svg class="ico" aria-hidden="true"><use href="#i-network"/></svg><span class="lbl">Network</span></a>
+    <button type="button" class="nav-btn" id="open-connect" aria-label="Connect" title="Connect"><svg class="ico" aria-hidden="true"><use href="#i-connect"/></svg><span class="lbl">Connect</span></button>
+    <button type="button" class="nav-btn" id="open-settings" aria-label="Settings" title="Settings"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
+    <a href="/metrics" aria-label="Raw metrics" title="Raw metrics"><svg class="ico" aria-hidden="true"><use href="#i-metrics"/></svg><span class="lbl">Raw metrics &#8599;</span></a>
+    <a href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md" target="_blank" rel="noopener" aria-label="Help" title="Help"><svg class="ico" aria-hidden="true"><use href="#i-help"/></svg><span class="lbl">Help &#8599;</span></a>
   </nav>
   <div class="rail-foot">
-    <button id="theme-toggle" title="Toggle light/dark theme">&#9681; Theme</button>
-    <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span>Block <span id="rail-height">&mdash;</span></span>
-    <span id="rail-node" title="Age of the newest block template the pool built from bitcoind"><span id="node-led" class="led led-off rail-led"></span>Node &middot; <span id="rail-node-text">&mdash;</span></span>
-    <span id="server-uptime" title="How long this pool process has been running">Uptime &mdash;</span>
-    <span id="last-updated" class="hide-sm">Loading&hellip;</span>
-    <span class="hide-sm">v"##,
+    <button id="theme-toggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme"><svg class="ico" aria-hidden="true"><use href="#i-theme"/></svg><span class="lbl">Theme</span></button>
+    <span class="hide-sm"><span id="conn-led" class="led led-off rail-led" title="Connecting&hellip;"></span><span class="lbl">Block <span id="rail-height">&mdash;</span></span></span>
+    <span id="rail-node" title="Age of the newest block template the pool built from bitcoind"><span id="node-led" class="led led-off rail-led"></span><span class="lbl">Node &middot; <span id="rail-node-text">&mdash;</span></span></span>
+    <span id="server-uptime" class="foot-full" title="How long this pool process has been running">Uptime &mdash;</span>
+    <span id="last-updated" class="hide-sm foot-full">Loading&hellip;</span>
+    <span class="hide-sm foot-full">v"##,
     env!("CARGO_PKG_VERSION"),
     r##" &middot; <a href="https://github.com/cbyam/solo-pool-rs">source</a></span>
   </div>
@@ -1384,39 +1419,49 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   if (!chartCollapsed()) loadChart(selectedWindow); // re-skin chart from the new theme's CSS vars
 });
 
-// ── Menu button ──────────────────────────────────────────────────────────────
-// Desktop: collapses the rail, persisted like the theme. Narrow screens: opens
-// the rail as a drawer under the top bar, closed on every load.
+// ── Menu ─────────────────────────────────────────────────────────────────────
+// Desktop: the button above the menu collapses the rail to its icons,
+// remembered like the theme. Narrow screens: the top-bar button opens the
+// rail as a drawer, closed on every load; the collapse setting is not
+// applied there.
 const shellEl = document.querySelector('.shell');
 const burgerEl = document.getElementById('nav-burger');
+const railToggleEl = document.getElementById('rail-toggle');
 const RAIL_COLLAPSED_KEY = 'railCollapsed';
 const narrowMq = window.matchMedia('(max-width: 880px)');
-function railShown() {
-  return narrowMq.matches
-    ? shellEl.classList.contains('nav-open')
-    : !shellEl.classList.contains('rail-collapsed');
+// In memory too, so the button still works where storage is blocked.
+let railCollapsedMem = false;
+try { railCollapsedMem = localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'; } catch (_) {}
+function railCollapsedPref() { return railCollapsedMem; }
+function syncMenu() {
+  const collapsed = !narrowMq.matches && railCollapsedPref();
+  shellEl.classList.toggle('rail-collapsed', collapsed);
+  if (!narrowMq.matches) shellEl.classList.remove('nav-open');
+  railToggleEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  const label = collapsed ? 'Expand menu' : 'Collapse menu';
+  railToggleEl.setAttribute('aria-label', label);
+  railToggleEl.title = label;
+  const open = shellEl.classList.contains('nav-open');
+  burgerEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  burgerEl.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
 }
-function syncBurger() { burgerEl.setAttribute('aria-expanded', railShown() ? 'true' : 'false'); }
-try {
-  if (localStorage.getItem(RAIL_COLLAPSED_KEY) === '1') shellEl.classList.add('rail-collapsed');
-} catch (_) {}
-syncBurger();
-narrowMq.addEventListener('change', () => { shellEl.classList.remove('nav-open'); syncBurger(); });
+syncMenu();
+narrowMq.addEventListener('change', syncMenu);
+railToggleEl.addEventListener('click', () => {
+  railCollapsedMem = !railCollapsedMem;
+  try { localStorage.setItem(RAIL_COLLAPSED_KEY, railCollapsedMem ? '1' : '0'); } catch (_) {}
+  syncMenu();
+});
 burgerEl.addEventListener('click', () => {
-  if (narrowMq.matches) {
-    shellEl.classList.toggle('nav-open');
-  } else {
-    const collapsed = shellEl.classList.toggle('rail-collapsed');
-    try { localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (_) {}
-  }
-  syncBurger();
+  shellEl.classList.toggle('nav-open');
+  syncMenu();
 });
 // On a narrow screen, any tap in the drawer that navigates or opens a modal
 // also closes it.
 document.getElementById('rail-nav').addEventListener('click', () => {
   if (!narrowMq.matches) return;
   shellEl.classList.remove('nav-open');
-  syncBurger();
+  syncMenu();
 });
 
 // ── Chart collapse toggle ────────────────────────────────────────────────────

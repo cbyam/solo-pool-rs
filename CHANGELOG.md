@@ -12,9 +12,10 @@ a new capability bumps the **minor** version, and everything else bumps the
 ## [Unreleased]
 
 ### Added
-- Dashboard top bar with the pool name, network badge and a menu button. On
-  a desktop the button collapses the side menu, and the choice is
-  remembered; on a phone it opens the menu as before. The Mining paused,
+- Dashboard top bar with the pool name and network badge, and a side menu
+  with icons. On a desktop, the button above Overview collapses the menu to
+  its icons, and the choice is remembered; on a phone the top-bar button
+  opens the menu as before. The Mining paused,
   Node stale and Stats not saving warnings moved to the top bar, so they
   stay in view with the menu collapsed and, on a phone, without opening
   the menu (they were hidden there until it was opened). The network badge
