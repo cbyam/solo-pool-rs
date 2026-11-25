@@ -1,9 +1,8 @@
 # Stable surface
 
-**Status: release candidate (1.0.0-rc.1).** The code matches this document.
-It becomes the promise when 1.0.0 is tagged; until then a change is still
-possible if the rc turns up a problem, and goes in the "Before this is final"
-section at the end first.
+**Status: stable (1.0.0).** The code matches this document, and from 1.0.0
+it is the promise: a change that breaks anything under "What is covered"
+needs a major version.
 
 ## What 1.0 means
 

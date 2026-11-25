@@ -4,10 +4,21 @@ All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-While the project is pre-1.0, breaking changes bump the **minor** version and
-everything else bumps the **patch** version.
+From 1.0.0, an incompatible change to anything in
+[`docs/stable-surface.md`](docs/stable-surface.md) bumps the **major** version,
+a new capability bumps the **minor** version, and everything else bumps the
+**patch** version. Before 1.0, breaking changes bumped the minor version.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-25
+
+The first stable release. [`docs/stable-surface.md`](docs/stable-surface.md)
+is now the promise: config keys, Stratum V1 and V2 behaviour on the wire,
+the HTTP JSON, metric names and labels, files on disk, and the packaging
+contract do not change incompatibly within 1.x. 1.0.0-rc.1 ran on mainnet
+from 2026-11-15 without a correctness problem, ending a two-month production
+soak that began 2026-09-25. No pool behaviour changed since the rc.
 
 ### Added
 - A documentation site on GitHub Pages: the README, mining guide, FAQ,
@@ -1230,7 +1241,8 @@ production soak ends quietly.
 - Dashboard rework: worker rendering and stats mapping fixes; reject rate moved
   into the rejected card; best share keyed by vardiff difficulty.
 
-[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/cbyam/solo-pool-rs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/cbyam/solo-pool-rs/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.13...v1.0.0-rc.1
 [0.6.13]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.12...v0.6.13
 [0.6.12]: https://github.com/cbyam/solo-pool-rs/compare/v0.6.11...v0.6.12
