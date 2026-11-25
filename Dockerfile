@@ -5,7 +5,7 @@
 # against the builder's glibc, libstdc++ and libsqlite3.
 
 # ── Builder ──────────────────────────────────────────────────────────────────
-FROM rust:1-trixie@sha256:8a4e90c7946b74626488b1446f712c0fe0ed1a596cbd3d871684bc9c5433ae07 AS builder
+FROM rust:1-trixie@sha256:0b0ea86881537b3f645aace7e8e39556289f8787db057317c8d4978548213b9e AS builder
 
 # rusqlite links the system SQLite, found through pkg-config. No system libzmq
 # is needed: zmq-sys compiles libzmq from source and links it statically.
