@@ -22,6 +22,14 @@ a new capability bumps the **minor** version, and everything else bumps the
   miners. Off by default; with it off, nothing in `/stats` or `/metrics`
   changes. `mode = "enforce"` is refused at boot: it is not in this version.
   See `docs/design/template-policy.md`.
+- Dashboard top bar with the pool name and network badge, and a side menu
+  with icons. On a desktop, the button above Overview collapses the menu to
+  its icons, and the choice is remembered; on a phone the top-bar button
+  opens the menu as before. The Mining paused, Node stale and Stats not
+  saving warnings moved to the top bar, so they stay in view with the menu
+  collapsed and, on a phone, without opening the menu (they were hidden
+  there until it was opened). The network badge no longer overflows the
+  side menu.
 - FAQ: guidance for miners that reach the pool over the internet. Plain
   Stratum V1 can be hijacked on the way (attackers used forged internet
   routes against several large pools in November 2026), so remote miners
