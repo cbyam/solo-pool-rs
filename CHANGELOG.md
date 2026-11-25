@@ -12,6 +12,16 @@ a new capability bumps the **minor** version, and everything else bumps the
 ## [Unreleased]
 
 ### Added
+- Template policy, observe mode (experimental). A new optional
+  `[template_policy]` section with `mode = "observe"` checks every block
+  template against Bitcoin Knots' data-carrier and token rules and records
+  what they would decline: `pool_template_declined_*` metrics per rule, a log
+  line, a `template_policy` object in `/stats`, and a Template policy tile in
+  the dashboard's Network section. Templates, jobs and found
+  blocks are unchanged, and the check runs after the job has been sent to
+  miners. Off by default; with it off, nothing in `/stats` or `/metrics`
+  changes. `mode = "enforce"` is refused at boot: it is not in this version.
+  See `docs/design/template-policy.md`.
 - FAQ: guidance for miners that reach the pool over the internet. Plain
   Stratum V1 can be hijacked on the way (attackers used forged internet
   routes against several large pools in November 2026), so remote miners

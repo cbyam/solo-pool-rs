@@ -146,6 +146,39 @@ hashblock_endpoint = "tcp://127.0.0.1:28332"
 poll_fallback = true
 poll_interval_ms = 1000
 
+[template_policy]
+# EXPERIMENTAL. Keys, metrics and /stats fields in this section may change or
+# be removed in a minor release. The section is optional and off by default.
+#
+# Checks the node's block template against Bitcoin Knots' data-carrier and
+# token policy rules, whatever node you run.
+#
+#   "off"      the rules are not run (default)
+#   "observe"  every template is checked and the result recorded: the
+#              pool_template_declined_* metrics, a log line when a template
+#              holds a transaction the rules would decline, and the
+#              template_policy object in /stats. Templates, jobs and found
+#              blocks are exactly what they are with "off".
+#
+# Behind a Knots node with the same settings, observe should report nothing:
+# the node has already left those transactions out. Behind Bitcoin Core it
+# shows what Knots-style rules would decline and what those transactions pay.
+mode = "off"
+
+# The rules. Each key has the meaning and the default of the Knots option
+# named beside it, so the defaults describe a stock Knots 29.3 node. Uncomment
+# to change one.
+# datacarrier_size = 83               # bytes; -datacarriersize
+# permit_multiple_op_return = false   # Knots always rejects a second OP_RETURN
+# accept_non_std_datacarrier = false  # -acceptnonstddatacarrier
+# datacarrier_full_count = true       # -datacarrierfullcount
+# max_script_size = 1650              # bytes; -maxscriptsize
+# reject_tokens = false               # -rejecttokens (Runes, Olga)
+# reject_parasites = true             # -rejectparasites (CAT-21)
+# permit_bare_multisig = false        # -permitbaremultisig
+# permit_bare_pubkey = false          # -permitbarepubkey
+# permit_bare_datacarrier = false     # -permitbaredatacarrier
+
 [vardiff]
 # Target number of seconds between share submissions per miner
 target_share_time_secs = 15

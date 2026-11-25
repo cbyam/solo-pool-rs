@@ -10,6 +10,7 @@ use crate::{
     bitcoin::{rpc::RpcClient, template, zmq::NewBlockReceiver},
     config::PoolConfig,
     error::PoolError,
+    mining::policy::{PolicySnapshot, TemplateObserver},
     settings::RuntimeSettings,
     stats::PoolStats,
 };
@@ -140,6 +141,11 @@ pub struct TemplateEngine {
     /// and a dead RPC leaves the old job in place while the age climbs.
     last_template_ok: parking_lot::Mutex<Option<Instant>>,
     last_template_error: parking_lot::Mutex<Option<String>>,
+
+    /// Template policy in observe mode (experimental); None when the policy
+    /// is off. It reads each template after its job has gone out and never
+    /// changes one.
+    policy_observer: Option<Arc<TemplateObserver>>,
 }
 
 /// Snapshot of the engine's template health for the dashboard.
@@ -173,6 +179,7 @@ impl TemplateEngine {
         pool_cfg: PoolConfig,
         settings: Arc<RuntimeSettings>,
         stats: Arc<PoolStats>,
+        policy_observer: Option<Arc<TemplateObserver>>,
     ) -> Arc<Self> {
         let (job_tx, _) = broadcast::channel(JOB_BROADCAST_CAP);
         Arc::new(Self {
@@ -186,7 +193,15 @@ impl TemplateEngine {
             inflight_submits: AtomicUsize::new(0),
             last_template_ok: parking_lot::Mutex::new(None),
             last_template_error: parking_lot::Mutex::new(None),
+            policy_observer,
         })
+    }
+
+    /// What the template policy makes of the current template, for the
+    /// dashboard. None when the policy is off or no template has been
+    /// checked yet.
+    pub fn policy_snapshot(&self) -> Option<PolicySnapshot> {
+        self.policy_observer.as_ref()?.snapshot()
     }
 
     /// Template freshness and the last refresh failure, for the dashboard.
@@ -429,6 +444,15 @@ impl TemplateEngine {
                             clean: clean_jobs,
                         });
                         metrics::job_broadcast(receiver_count);
+
+                        // Template policy, observe mode. The job is already
+                        // with the miners, and the check runs on the blocking
+                        // pool, so it adds nothing to the time a new tip
+                        // takes to reach them and cannot hold up the next
+                        // refresh or a block submission.
+                        if let Some(observer) = self.policy_observer.clone() {
+                            task::spawn_blocking(move || observer.observe(&gbt));
+                        }
                     }
                     Err(e) => {
                         error!("Failed to build job: {e}");
