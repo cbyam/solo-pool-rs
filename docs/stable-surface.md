@@ -483,9 +483,10 @@ later.
 - **No dashboard authentication.** The HTTP interface is for a trusted LAN
   and is documented as such; the mutating routes are guarded against
   cross-site and rebinding attacks. A hostile LAN is out of scope.
-- **Knots upgrade hold.** While Knots ships mandatory RDTS enforcement, the
-  documented node builds are non-enforcing Knots or Bitcoin Core. This is
-  operational guidance in the README, not a code surface.
+- **Knots upgrade hold.** While Knots ships mandatory RDTS enforcement and,
+  from 29.4.2, a longer coinbase maturity as a mainnet consensus rule, the
+  documented node builds are Knots 29.3.knots20260507 or earlier, or Bitcoin
+  Core. This is operational guidance in the README, not a code surface.
 
 ## Change classification after 1.0
 
@@ -507,8 +508,8 @@ a boot-time warning and keeps working until the next major.
 ## Before this is final
 
 Each item is a place where the code or the shipped docs currently disagree
-with the text above, or a behaviour to settle before it is promised. Closing
-this list is a gate in `TODO.md` under "Before 1.0".
+with the text above. Since 1.0.0 such a disagreement is a bug, fixed in a
+patch release (see the change table above).
 
 Nothing is open. An item goes here as soon as the code or the docs drift from
 the text above.
