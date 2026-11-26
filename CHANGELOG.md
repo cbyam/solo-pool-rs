@@ -38,6 +38,9 @@ a new capability bumps the **minor** version, and everything else bumps the
   affected.
 
 ### Changed
+- Dashboard help links (Help in the menu, the Stats not saving pill, the
+  Rejecting note and the Powerball comparison) open the documentation site
+  at cbyam.github.io/solo-pool-rs instead of the Markdown files on GitHub.
 - `SECURITY.md` now names 1.x as the supported line (it still listed 0.6.x)
   and states that redirection of unencrypted Stratum V1 traffic is a property
   of the protocol, not a pool vulnerability, with a pointer to the FAQ.
