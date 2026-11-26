@@ -1020,7 +1020,7 @@ tr:last-child td { border-bottom: none; }
   <div class="topbar-alerts">
     <button id="paused-pill" title="The payout address is not valid for the node's network. Open Settings.">&#9888; Mining paused</button>
     <button id="node-pill" title="No fresh block template from bitcoind. See the Network section.">&#9888; Node stale</button>
-    <a id="store-pill" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md#stats-not-saving" target="_blank" rel="noopener">&#9888; Stats not saving</a>
+    <a id="store-pill" href="https://cbyam.github.io/solo-pool-rs/docs/faq.html#stats-not-saving" target="_blank" rel="noopener">&#9888; Stats not saving</a>
   </div>
 </header>
 
@@ -1034,7 +1034,7 @@ tr:last-child td { border-bottom: none; }
     <button type="button" class="nav-btn" id="open-connect" aria-label="Connect" title="Connect"><svg class="ico" aria-hidden="true"><use href="#i-connect"/></svg><span class="lbl">Connect</span></button>
     <button type="button" class="nav-btn" id="open-settings" aria-label="Settings" title="Settings"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
     <a href="/metrics" aria-label="Raw metrics" title="Raw metrics"><svg class="ico" aria-hidden="true"><use href="#i-metrics"/></svg><span class="lbl">Raw metrics &#8599;</span></a>
-    <a href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md" target="_blank" rel="noopener" aria-label="Help" title="Help"><svg class="ico" aria-hidden="true"><use href="#i-help"/></svg><span class="lbl">Help &#8599;</span></a>
+    <a href="https://cbyam.github.io/solo-pool-rs/docs/faq.html" target="_blank" rel="noopener" aria-label="Help" title="Help"><svg class="ico" aria-hidden="true"><use href="#i-help"/></svg><span class="lbl">Help &#8599;</span></a>
   </nav>
   <div class="rail-foot">
     <button id="theme-toggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme"><svg class="ico" aria-hidden="true"><use href="#i-theme"/></svg><span class="lbl">Theme</span></button>
@@ -1062,7 +1062,7 @@ tr:last-child td { border-bottom: none; }
       <span id="v-prob-daily">Daily: &mdash;</span>
       <span id="v-prob-monthly">Monthly: &mdash;</span>
       <span id="v-prob-yearly" title="Mean time between blocks at this hashrate; the real wait is anything from minutes to many times this">Expected wait: &mdash;</span>
-      <a id="v-prob-powerball" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/so-you-want-to-mine.md#what-you-can-expect" target="_blank" rel="noopener" title="Better than Powerball is still a long shot. What these odds mean for a home miner.">vs Powerball: &mdash;</a>
+      <a id="v-prob-powerball" href="https://cbyam.github.io/solo-pool-rs/docs/so-you-want-to-mine.html#what-you-can-expect" target="_blank" rel="noopener" title="Better than Powerball is still a long shot. What these odds mean for a home miner.">vs Powerball: &mdash;</a>
     </div>
 
     <div class="round-note">
@@ -1082,7 +1082,7 @@ tr:last-child td { border-bottom: none; }
       <div class="label">Rejects</div>
       <div class="val" id="v-reject-rate">&mdash;</div>
       <div class="sub" id="v-stale-rate">Stale: &mdash;</div>
-      <a class="sub trunc" id="v-reject-health" href="https://github.com/cbyam/solo-pool-rs/blob/main/docs/faq.md#a-miner-is-marked-rejecting" target="_blank" rel="noopener" hidden></a>
+      <a class="sub trunc" id="v-reject-health" href="https://cbyam.github.io/solo-pool-rs/docs/faq.html#a-miner-is-marked-rejecting" target="_blank" rel="noopener" hidden></a>
     </div>
     <div class="kpi">
       <div class="label">Best share</div>
