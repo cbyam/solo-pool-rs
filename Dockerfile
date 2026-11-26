@@ -19,8 +19,8 @@ WORKDIR /build
 # across source-only changes. The package has a library target as well as
 # the binary, so both files must exist or Cargo stops at target resolution.
 COPY Cargo.toml Cargo.lock ./
-# Cargo loads every workspace member's manifest. The pool does not depend on
-# the policy crate, so its stub stays empty and is never compiled.
+# The pool depends on the policy crate (a workspace member), so it gets a stub
+# here as well and its real source is copied in with the pool's below.
 COPY crates/tx-datacarrier-policy/Cargo.toml ./crates/tx-datacarrier-policy/
 # .cargo/config.toml carries the libzmq alignment defines (see the file).
 COPY .cargo ./.cargo
@@ -28,11 +28,13 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && : > src/lib.rs \
     && mkdir crates/tx-datacarrier-policy/src \
     && : > crates/tx-datacarrier-policy/src/lib.rs \
     && cargo build --release --locked \
-    && rm -rf src
+    && rm -rf src crates/tx-datacarrier-policy/src
 
-# Build the real binary.
+# Build the real binary. Touch both crates' sources: the stubs were built with
+# newer mtimes than the files COPY brings in.
 COPY src ./src
-RUN touch src/main.rs src/lib.rs \
+COPY crates/tx-datacarrier-policy/src ./crates/tx-datacarrier-policy/src
+RUN touch src/main.rs src/lib.rs crates/tx-datacarrier-policy/src/lib.rs \
     && cargo build --release --locked \
     && strip target/release/solo-pool-rs
 
