@@ -7,7 +7,7 @@ the source is laid out, and how releases are cut.
 ## Reporting issues
 
 - **Bugs and feature requests:** open a GitHub issue. Include your version
-  (`solo-pool-rs --version`, the dashboard footer, or the `version=` field
+  (`solo-pool-rs --version`, the bottom of the dashboard's side menu, or the `version=` field
   of the `solo-pool-rs starting` log line), relevant config (redact your address/credentials), and log
   excerpts.
 - **Security vulnerabilities:** do **not** open a public issue. Follow the
@@ -109,6 +109,8 @@ mining/validator.rs      - header reconstruction, SHA256d, target comparison
 mining/vardiff.rs        - per-session difficulty management
 mining/engine.rs         - current job store, job history, broadcast channel,
                            found-block submit, archive, retry and boot replay
+mining/policy.rs         - template policy, observe mode (experimental): checks
+                           each template after its job has gone out
     │
     ▼
 bitcoin/template.rs      - GBT → StratumJob (coinbase, merkle branch, job ID)
@@ -126,7 +128,7 @@ The mining engine, validator, vardiff, and template code are protocol-agnostic;
 SV1 and SV2 share the same job pipeline.
 
 `crates/tx-datacarrier-policy/` is the template policy classifier, a separate
-crate in the same workspace. The pool does not use it yet; see
+crate in the same workspace. The pool uses it in `mining/policy.rs`; see
 `docs/design/template-policy.md`.
 
 ## Releasing

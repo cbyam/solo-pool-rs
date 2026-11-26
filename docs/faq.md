@@ -170,5 +170,5 @@ context.
 
 ## Which version am I running
 
-`solo-pool-rs --version`, the dashboard footer, or `version` in
-`GET /api/info`.
+`solo-pool-rs --version`, the bottom of the dashboard's side menu (expand
+the menu if it is collapsed to icons), or `version` in `GET /api/info`.

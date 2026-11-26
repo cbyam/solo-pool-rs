@@ -53,6 +53,11 @@ a new capability bumps the **minor** version, and everything else bumps the
   `max_message_bytes` cap still refuses an oversize frame before reading it.
   Dependabot's grouped update (#182) left `codec_sv2` behind and did not
   build.
+- Documentation brought in line with 1.0 and the current code: the README
+  warns that Knots 29.4.2 and later left the main chain at block 973,554
+  over a coinbase-maturity rule, describes the post-1.0 versioning rule and
+  the workspace lint and test commands; the template policy design records
+  what has been built.
 
 ## [1.0.0] - 2026-11-25
 

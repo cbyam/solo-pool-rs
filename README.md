@@ -55,7 +55,7 @@ proof is in the repo and runs on every change:
 - **Run it yourself.** The regtest harness is one command (see
   [Development](#development)); on regtest you can mine real blocks through the
   pool in seconds. If something breaks there, that's exactly the bug report I
-  want pre-1.0. Open an issue.
+  want. Open an issue.
 
 Short track record is fair to weigh. But the coverage is public, reproducible,
 and exercised on every commit, so you can check it rather than trust it.
@@ -234,10 +234,13 @@ rpcallowip=127.0.0.1
 
 If you run Knots, stay on 29.3.knots20260507 or earlier, or use Bitcoin Core.
 Knots 29.3.knots20260508 and later enforce BIP110 (RDTS) and follow the
-minority chain that stalled at block 961,633 in August 2026, so any block
-found against one of those nodes is worthless. Bitcoin Core does not
-implement BIP110. The E2E test mines against both Core and the pinned Knots
-build.
+minority chain that stalled at block 961,633 in August 2026. Knots 29.4.2 and
+later also enforce a longer coinbase maturity on mainnet by default (6,480
+blocks for rewards from block 973,440, and 25,920 from block 979,919), so
+they reject main-chain block 973,554 (2026-10-28), which spends a reward
+after 105 blocks, and everything built on it. Any block found against one of
+those nodes is worthless. Bitcoin Core implements neither rule. The E2E test
+mines against both Core and the pinned Knots build.
 
 ---
 
@@ -417,9 +420,9 @@ check.
 ## Development
 
 ```bash
-cargo test                        # run unit + integration tests
+cargo test --all                  # unit + integration tests, whole workspace
 SOLO_POOL_LOGGING__LEVEL=debug cargo run -- config.toml
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 
 # End-to-end block-acceptance test: boots a real bitcoind -regtest, mines a
@@ -440,11 +443,12 @@ commit/PR conventions, a map of the source tree, and how releases are cut.
 
 ## Versioning
 
-Versioning follows [SemVer](https://semver.org/). While pre-1.0, breaking
-changes bump the **minor** version and everything else bumps the **patch**
-version. What 1.0 will promise, and what it will not, is drafted in
-[docs/stable-surface.md](docs/stable-surface.md). Changes are recorded in
-[CHANGELOG.md](CHANGELOG.md).
+Versioning follows [SemVer](https://semver.org/). What 1.x promises, and what
+it does not, is in [docs/stable-surface.md](docs/stable-surface.md): an
+incompatible change to anything covered there bumps the **major** version, a
+new capability bumps the **minor** version, and everything else bumps the
+**patch** version. Before 1.0, breaking changes bumped the minor version.
+Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

@@ -1,8 +1,10 @@
 # Template policy
 
-**Status: design, not built.** Nothing here ships before 1.0. The code freeze
-holds the pool binary until then, so the phase 0 work below stays on a branch
-until 1.0 is tagged.
+**Status: observe mode built, enforce mode designed.** Phase 0 (the
+classifier crate and the mainnet audit) merged in #147 and phase 1 (observe
+mode) in #190, both on 2026-11-25. Observe mode is unreleased on `main` and
+ships as an experimental feature in 1.1. Phase 2 (enforce mode) is design
+only.
 
 ## Goal
 
@@ -594,8 +596,8 @@ An operator choosing a policy should see what it costs.
 
 ## Rollout
 
-**Phase 0, now (on a branch, so the released binary and the soak are
-untouched).**
+**Phase 0 (merged in #147 on 2026-11-25; until 1.0 it stayed on a branch,
+so the released binary and the soak were untouched).**
 - This document.
 - The classifier as a standalone module with the Roots test vectors ported.
 - An audit tool that replays recent mainnet blocks. `getblock <hash> 3`
@@ -604,7 +606,7 @@ untouched).**
   with the exact coin lookup. This answers "how much does the policy cost" with
   data and tests the rules on real inscription traffic.
 
-**Phase 0 results (2026-10-16).** The classifier and audit tool are on
+**Phase 0 results (2026-10-16).** The classifier and audit tool were then on
 branch `feat/template-policy-classifier` (#147). Over mainnet blocks 971,566 to
 971,710 (144 blocks, about 680,000 transactions):
 
@@ -651,7 +653,8 @@ cannot see the size of a coin it does not have. A coin like that is declined
 when it is created (`scriptpubkey-size`, 132 outputs in the window), so the
 gap is one transaction in 8.5 million.
 
-**Phase 1, the first release after 1.0: observe mode.** The classifier is
+**Phase 1, the first release after 1.0: observe mode** (built in #190,
+unreleased). The classifier is
 already in its own crate (see Library crate below), so the pool uses it as a
 dependency from the start. The pool classifies and records;
 templates are unchanged. Run it behind the deployed Knots node
@@ -702,13 +705,13 @@ invalid block, so what breaks is the refill.
 The classifier is useful outside the pool: to another pool, a Template
 Provider, a mempool explorer, or a sidecar that applies the same rules to a
 plain Core or Roots node. It depends only on the `bitcoin` crate. It was
-extracted on 2026-11-14, on this branch and ahead of phase 1, so no live code
-moves later.
+extracted on 2026-11-14, on the phase 0 branch and ahead of phase 1, so no
+live code moved later.
 
 - **Layout.** The repository is a Cargo workspace with the crate at
   `crates/tx-datacarrier-policy/`; the mainnet audit and the differential test
-  moved with it. The pool depends on it by path once observe mode is wired
-  in; until then it does not, so the release binary is unchanged. The
+  moved with it. The pool depends on it by path since observe mode was wired
+  in (#190). The
   regtest delta probe (`examples/delta_probe.rs`) tests node behaviour for
   enforce mode and stays with the pool. A separate repository waits until
   someone outside the pool uses the crate.
